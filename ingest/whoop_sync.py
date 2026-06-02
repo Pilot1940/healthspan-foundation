@@ -259,12 +259,15 @@ def _map_workout(rec: dict, profile_id: str) -> dict:
         "max_hr_bpm": score.get("max_heart_rate"),
         "energy_burned_cal": _kj_to_kcal(score.get("kilojoule")),
         "duration_min": _duration_min(rec.get("start"), rec.get("end")),
-        "hr_zone0_pct": pct(z0), "hr_zone1_pct": pct(z1),
-        "hr_zone2_pct": pct(z2), "hr_zone3_pct": pct(z3),
-        "hr_zone4_pct": pct(z4), "hr_zone5_pct": pct(z5),
-        "hr_zone0_sec": _ms_to_sec(z0), "hr_zone1_sec": _ms_to_sec(z1),
-        "hr_zone2_sec": _ms_to_sec(z2), "hr_zone3_sec": _ms_to_sec(z3),
-        "hr_zone4_sec": _ms_to_sec(z4), "hr_zone5_sec": _ms_to_sec(z5),
+        # Only include zone fields if the API returned real data (any zone > 0).
+        # All-zero means zone_duration was absent — don't overwrite screenshot data.
+        **({"hr_zone0_sec": _ms_to_sec(z0), "hr_zone1_sec": _ms_to_sec(z1),
+             "hr_zone2_sec": _ms_to_sec(z2), "hr_zone3_sec": _ms_to_sec(z3),
+             "hr_zone4_sec": _ms_to_sec(z4), "hr_zone5_sec": _ms_to_sec(z5),
+             "hr_zone0_pct": pct(z0), "hr_zone1_pct": pct(z1),
+             "hr_zone2_pct": pct(z2), "hr_zone3_pct": pct(z3),
+             "hr_zone4_pct": pct(z4), "hr_zone5_pct": pct(z5),
+            } if total > 0 else {}),
         # cardio_load_pct / muscular_load_pct not exposed by WHOOP v2 API
         "source_file": "whoop_api",
     }
