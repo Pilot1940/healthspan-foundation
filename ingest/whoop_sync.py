@@ -234,7 +234,7 @@ def _duration_min(start_iso: str | None, end_iso: str | None) -> float | None:
 
 def _map_workout(rec: dict, profile_id: str) -> dict:
     score = rec.get("score") or {}
-    zones = score.get("zone_duration") or {}
+    zones = score.get("zone_durations") or {}  # API field is plural
     sport_id = rec.get("sport_id", -1)
 
     z0 = zones.get("zone_zero_milli") or 0
@@ -253,7 +253,7 @@ def _map_workout(rec: dict, profile_id: str) -> dict:
         "workout_start": rec.get("start"),
         "workout_end": rec.get("end"),
         "timezone": rec.get("timezone_offset"),
-        "activity_name": _SPORT_NAMES.get(sport_id, "Activity"),
+        "activity_name": rec.get("sport_name") or _SPORT_NAMES.get(sport_id, "Activity"),
         "activity_strain": score.get("strain"),
         "avg_hr_bpm": score.get("average_heart_rate"),
         "max_hr_bpm": score.get("max_heart_rate"),
