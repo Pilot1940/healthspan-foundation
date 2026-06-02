@@ -512,11 +512,17 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
         if sid and cid and cid in cycle_start_by_id:
             sleep_to_cycle_start[sid] = cycle_start_by_id[cid]
 
+    # Build sorted cycle lookup as fallback for naps not in the recovery feed
+    cycle_lookup = _build_cycle_lookup(cycles)
+
     def _map(sleep):
         sleep_id = sleep.get("id")
         cycle_start = sleep_to_cycle_start.get(sleep_id)
         if not cycle_start:
-            return None  # nap or unlinked sleep — skip
+            # Naps aren't in the recovery feed — derive cycle_start from cycle list
+            cycle_start = _find_cycle_start(cycle_lookup, sleep.get("start", ""))
+        if not cycle_start:
+            return None  # genuinely unresolvable, skip
         return _map_sleep(sleep, cycle_start, profile_id)
 
     counters = _run_sync_loop(conn, sync_id, sleeps, _map,
