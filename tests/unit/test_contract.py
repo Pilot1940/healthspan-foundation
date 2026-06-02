@@ -344,7 +344,7 @@ class TestSyncLog:
         assert sid == 42
         sql = cur.execute.call_args[0][0]
         assert "wearable_sync_log" in sql
-        assert "'running'" in sql
+        assert "'in_progress'" in sql
 
     def test_close_updates_status(self):
         conn = MagicMock()

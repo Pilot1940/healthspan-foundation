@@ -441,7 +441,7 @@ def open_sync_log(conn, provider: str, method: str, *, profile_id=None,
         """INSERT INTO wearable_sync_log
              (provider, method, sync_type, status, profile_id, source_path,
               records_in, records_upserted, records_skipped, records_failed, started_at)
-           VALUES (%s, %s, %s, 'running', %s, %s, 0, 0, 0, 0, now())
+           VALUES (%s, %s, %s, 'in_progress', %s, %s, 0, 0, 0, 0, now())
            RETURNING id""",
         (provider, method, sync_type, profile_id, source_path),
     )

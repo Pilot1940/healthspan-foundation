@@ -532,7 +532,7 @@ def main() -> None:
     # Auth
     print("Refreshing WHOOP access token …")
     access_token, new_refresh = _get_access_token(env)
-    if new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
+    if new_refresh and new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
         _write_env_key("WHOOP_REFRESH_TOKEN", new_refresh)
         print("  Refresh token rotated — .env updated.")
 
