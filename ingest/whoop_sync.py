@@ -22,6 +22,7 @@ This is a local one-off — do NOT schedule, do NOT deploy.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -106,6 +107,11 @@ def _write_env_key(key: str, value: str) -> None:
 # Token management
 # ---------------------------------------------------------------------------
 
+def _basic_auth_header(client_id: str, client_secret: str) -> str:
+    encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    return f"Basic {encoded}"
+
+
 def _get_access_token(env: dict) -> tuple[str, str]:
     """Return (access_token, refresh_token) using stored refresh token."""
     client_id = env.get("WHOOP_CLIENT_ID") or os.environ.get("WHOOP_CLIENT_ID", "")
@@ -122,11 +128,10 @@ def _get_access_token(env: dict) -> tuple[str, str]:
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
     return data["access_token"], data["refresh_token"]

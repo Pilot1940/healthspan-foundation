@@ -13,6 +13,7 @@ Usage:
 """
 from __future__ import annotations
 
+import base64
 import os
 import secrets
 import sys
@@ -79,9 +80,16 @@ def _write_env_key(key: str, value: str) -> None:
 # Token exchange
 # ---------------------------------------------------------------------------
 
+def _basic_auth_header(client_id: str, client_secret: str) -> str:
+    """WHOOP token endpoint requires credentials as HTTP Basic auth, not in the body."""
+    encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    return f"Basic {encoded}"
+
+
 def _exchange_code(code: str, client_id: str, client_secret: str) -> dict:
     import urllib.request
     import json
+    # Send credentials both in Basic auth header AND in body — WHOOP accepts either
     body = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "code": code,
@@ -91,8 +99,13 @@ def _exchange_code(code: str, client_id: str, client_secret: str) -> dict:
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode(errors="replace")
+        raise RuntimeError(f"WHOOP token exchange HTTP {e.code}: {err_body}") from e
 
 
 def try_refresh(client_id: str, client_secret: str, refresh_token: str) -> tuple[str, str] | None:
@@ -102,11 +115,10 @@ def try_refresh(client_id: str, client_secret: str, refresh_token: str) -> tuple
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
