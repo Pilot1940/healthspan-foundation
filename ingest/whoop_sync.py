@@ -377,6 +377,56 @@ _CYCLE_CONFLICTS = ["profile_id", "cycle_start"]
 _SLEEP_CONFLICTS = ["profile_id", "cycle_start", "sleep_onset"]
 
 
+def _build_cycle_lookup(cycles: list) -> list:
+    """Return sorted [(cycle_start_iso, cycle_end_iso), ...] for workout matching."""
+    result = []
+    for c in cycles:
+        s = c.get("start")
+        e = c.get("end")
+        if s:
+            result.append((s, e))
+    return sorted(result)
+
+
+def _find_cycle_start(cycle_lookup: list, workout_start_iso: str) -> str | None:
+    """Return the cycle_start for the cycle that contains workout_start, or None."""
+    for cycle_start, cycle_end in cycle_lookup:
+        if cycle_start <= workout_start_iso:
+            if cycle_end is None or workout_start_iso < cycle_end:
+                return cycle_start
+    return None
+
+
+def _run_sync_loop(conn, sync_id: int, items: list, record_fn, table: str,
+                   conflicts: list, id_key: str = "id") -> dict:
+    """Generic per-record upsert loop with SAVEPOINT isolation (prevents transaction abort)."""
+    counters = {"in": len(items), "upserted": 0, "skipped": 0, "failed": 0}
+    cur = conn.cursor()
+    for i, item in enumerate(items):
+        try:
+            cur.execute("SAVEPOINT sp_sync_rec")
+            row = record_fn(item)
+            if row is None:          # mapper signalled skip (e.g. no cycle_start found)
+                cur.execute("RELEASE SAVEPOINT sp_sync_rec")
+                counters["skipped"] += 1
+                continue
+            result = write(conn, table, row, conflicts)
+            cur.execute("RELEASE SAVEPOINT sp_sync_rec")
+            if result in ("inserted", "updated"):
+                counters["upserted"] += 1
+            else:
+                counters["skipped"] += 1
+        except Exception as e:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sp_sync_rec")
+            except Exception:
+                conn.rollback()
+            counters["failed"] += 1
+            log_error(conn, sync_id, item.get(id_key, f"rec-{i}"),
+                      "map_or_write", str(e), item)
+    return counters
+
+
 def sync_workouts(conn, access_token: str, profile_id: str,
                   since_iso: str, to_iso: str) -> dict:
     sync_id = open_sync_log(
@@ -384,21 +434,21 @@ def sync_workouts(conn, access_token: str, profile_id: str,
         sync_type="whoop_workouts", source_path=f"since={since_iso}"
     )
     records = _paginate(access_token, "/v2/activity/workout", since_iso, to_iso)
-    counters = {"in": len(records), "upserted": 0, "skipped": 0, "failed": 0}
+    # Fetch cycles to derive cycle_start (not in the workout API response)
+    cycles = _paginate(access_token, "/v2/cycle", since_iso, to_iso)
+    cycle_lookup = _build_cycle_lookup(cycles)
 
-    for i, rec in enumerate(records):
-        try:
-            row = _map_workout(rec, profile_id)
-            result = write(conn, "whoop_workouts", row, _WORKOUT_CONFLICTS)
-            if result in ("inserted", "updated"):
-                counters["upserted"] += 1
-            else:
-                counters["skipped"] += 1
-        except Exception as e:
-            counters["failed"] += 1
-            log_error(conn, sync_id, rec.get("id", f"rec-{i}"),
-                      "map_or_write", str(e), rec)
+    def _map(rec):
+        row = _map_workout(rec, profile_id)
+        cycle_start = _find_cycle_start(cycle_lookup, rec.get("start", ""))
+        if cycle_start:
+            row["cycle_start"] = cycle_start
+        else:
+            return None  # skip — can't satisfy NOT NULL without a cycle
+        return row
 
+    counters = _run_sync_loop(conn, sync_id, records, _map,
+                              "whoop_workouts", _WORKOUT_CONFLICTS)
     status = "success" if counters["failed"] == 0 else "partial"
     close_sync_log(conn, sync_id, status=status, records_in=counters["in"],
                    records_upserted=counters["upserted"],
@@ -415,34 +465,22 @@ def sync_cycles(conn, access_token: str, profile_id: str,
         conn, "whoop", "api", profile_id=profile_id,
         sync_type="whoop_cycles", source_path=f"since={since_iso}"
     )
-
-    # Fetch all three feeds; sleeps span slightly different dates so use wider window
     cycles = _paginate(access_token, "/v2/cycle", since_iso, to_iso)
     recoveries = _paginate(access_token, "/v2/recovery", since_iso, to_iso)
     sleeps_all = _paginate(access_token, "/v2/activity/sleep", since_iso, to_iso)
 
-    # Build lookup dicts keyed on WHOOP internal IDs
     recovery_by_cycle: dict = {r["cycle_id"]: r for r in recoveries if "cycle_id" in r}
     sleep_by_id: dict = {s["id"]: s for s in sleeps_all}
 
-    counters = {"in": len(cycles), "upserted": 0, "skipped": 0, "failed": 0}
-    for i, cycle in enumerate(cycles):
-        try:
-            cycle_id = cycle.get("id")
-            recovery = recovery_by_cycle.get(cycle_id)
-            sleep_id = (recovery or {}).get("sleep_id")
-            sleep = sleep_by_id.get(sleep_id) if sleep_id else None
-            row = _map_cycle(cycle, recovery, sleep, profile_id)
-            result = write(conn, "whoop_cycles", row, _CYCLE_CONFLICTS)
-            if result in ("inserted", "updated"):
-                counters["upserted"] += 1
-            else:
-                counters["skipped"] += 1
-        except Exception as e:
-            counters["failed"] += 1
-            log_error(conn, sync_id, cycle.get("id", f"cycle-{i}"),
-                      "map_or_write", str(e), cycle)
+    def _map(cycle):
+        cycle_id = cycle.get("id")
+        recovery = recovery_by_cycle.get(cycle_id)
+        sleep_id = (recovery or {}).get("sleep_id")
+        sleep = sleep_by_id.get(sleep_id) if sleep_id else None
+        return _map_cycle(cycle, recovery, sleep, profile_id)
 
+    counters = _run_sync_loop(conn, sync_id, cycles, _map,
+                              "whoop_cycles", _CYCLE_CONFLICTS)
     status = "success" if counters["failed"] == 0 else "partial"
     close_sync_log(conn, sync_id, status=status, records_in=counters["in"],
                    records_upserted=counters["upserted"],
@@ -464,7 +502,6 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
     cycles = _paginate(access_token, "/v2/cycle", since_iso, to_iso)
 
     cycle_start_by_id: dict = {c["id"]: c.get("start") for c in cycles}
-    # sleep_id → cycle_start (via recovery.cycle_id → cycle.start)
     sleep_to_cycle_start: dict = {}
     for r in recoveries:
         sid = r.get("sleep_id")
@@ -472,26 +509,15 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
         if sid and cid and cid in cycle_start_by_id:
             sleep_to_cycle_start[sid] = cycle_start_by_id[cid]
 
-    counters = {"in": len(sleeps), "upserted": 0, "skipped": 0, "failed": 0}
-    for i, sleep in enumerate(sleeps):
-        try:
-            sleep_id = sleep.get("id")
-            cycle_start = sleep_to_cycle_start.get(sleep_id)
-            if not cycle_start:
-                # Naps within a cycle may not appear in recovery; skip gracefully
-                counters["skipped"] += 1
-                continue
-            row = _map_sleep(sleep, cycle_start, profile_id)
-            result = write(conn, "whoop_sleeps", row, _SLEEP_CONFLICTS)
-            if result in ("inserted", "updated"):
-                counters["upserted"] += 1
-            else:
-                counters["skipped"] += 1
-        except Exception as e:
-            counters["failed"] += 1
-            log_error(conn, sync_id, sleep.get("id", f"sleep-{i}"),
-                      "map_or_write", str(e), sleep)
+    def _map(sleep):
+        sleep_id = sleep.get("id")
+        cycle_start = sleep_to_cycle_start.get(sleep_id)
+        if not cycle_start:
+            return None  # nap or unlinked sleep — skip
+        return _map_sleep(sleep, cycle_start, profile_id)
 
+    counters = _run_sync_loop(conn, sync_id, sleeps, _map,
+                              "whoop_sleeps", _SLEEP_CONFLICTS)
     status = "success" if counters["failed"] == 0 else "partial"
     close_sync_log(conn, sync_id, status=status, records_in=counters["in"],
                    records_upserted=counters["upserted"],
