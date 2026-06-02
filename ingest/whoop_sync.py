@@ -6,7 +6,7 @@ token, then paginates /v2/activity/workout, /v2/cycle, /v2/recovery, and
 information_schema) and upserts via lib/contract.write().
 
 Conflict keys (match live unique indexes):
-  whoop_workouts  ON CONFLICT (profile_id, workout_start)
+  whoop_workouts  ON CONFLICT (profile_id, whoop_id)
   whoop_cycles    ON CONFLICT (profile_id, cycle_start)
   whoop_sleeps    ON CONFLICT (profile_id, cycle_start, sleep_onset)
 
@@ -250,6 +250,7 @@ def _map_workout(rec: dict, profile_id: str) -> dict:
 
     row: dict = {
         "profile_id": profile_id,
+        "whoop_id": rec.get("id"),
         "workout_start": rec.get("start"),
         "workout_end": rec.get("end"),
         "timezone": rec.get("timezone_offset"),
@@ -375,7 +376,7 @@ def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
 # Per-table sync functions
 # ---------------------------------------------------------------------------
 
-_WORKOUT_CONFLICTS = ["profile_id", "workout_start"]
+_WORKOUT_CONFLICTS = ["profile_id", "whoop_id"]
 _CYCLE_CONFLICTS = ["profile_id", "cycle_start"]
 _SLEEP_CONFLICTS = ["profile_id", "cycle_start", "sleep_onset"]
 
