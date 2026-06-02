@@ -8,3 +8,9 @@ node_modules/
 *.egg-info/
 dist/
 .venv/
+
+# DB backups contain personal health data — never push to GitHub
+backups/
+
+# Stray chat-export artifacts
+2026-03-17-231720-*.txt
