@@ -128,10 +128,11 @@ def _get_access_token(env: dict) -> tuple[str, str]:
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
     req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
     req.add_header("Accept", "application/json")
     try:

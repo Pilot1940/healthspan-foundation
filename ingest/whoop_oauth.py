@@ -89,7 +89,7 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
 def _exchange_code(code: str, client_id: str, client_secret: str) -> dict:
     import urllib.request
     import json
-    # Send credentials both in Basic auth header AND in body — WHOOP accepts either
+    # WHOOP uses client_secret_post — credentials go in the body, not Basic auth
     body = urllib.parse.urlencode({
         "grant_type": "authorization_code",
         "code": code,
@@ -99,7 +99,6 @@ def _exchange_code(code: str, client_id: str, client_secret: str) -> dict:
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
     req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
     req.add_header("Accept", "application/json")
     try:
@@ -117,10 +116,11 @@ def try_refresh(client_id: str, client_secret: str, refresh_token: str) -> tuple
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
     }).encode()
     req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("Authorization", _basic_auth_header(client_id, client_secret))
     req.add_header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
     req.add_header("Accept", "application/json")
     try:
