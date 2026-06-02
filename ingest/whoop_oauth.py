@@ -256,11 +256,27 @@ def run_oauth() -> str:
 
     print(f"Code received — exchanging for tokens …", flush=True)
     tokens = _exchange_code(code, client_id, client_secret)
-    access_token = tokens["access_token"]
-    refresh_token = tokens["refresh_token"]
+    print(f"  Response keys: {list(tokens.keys())}")
 
-    _write_env_key("WHOOP_REFRESH_TOKEN", refresh_token)
-    print("Refresh token written to .env (gitignored).")
+    access_token = tokens.get("access_token")
+    if not access_token:
+        raise RuntimeError(f"No access_token in response. Keys: {list(tokens.keys())}")
+
+    # WHOOP may use refresh_token or refreshToken (camelCase)
+    refresh_token = (
+        tokens.get("refresh_token")
+        or tokens.get("refreshToken")
+        or tokens.get("token")
+    )
+    if refresh_token:
+        _write_env_key("WHOOP_REFRESH_TOKEN", refresh_token)
+        print("Refresh token written to .env (gitignored).")
+    else:
+        # No refresh token — store access token so sync can run once
+        _write_env_key("WHOOP_ACCESS_TOKEN", access_token)
+        print(f"  No refresh_token in response (keys: {list(tokens.keys())}).")
+        print("  Access token written to .env as WHOOP_ACCESS_TOKEN (valid ~1hr).")
+
     print("OAuth flow complete.")
     return access_token
 

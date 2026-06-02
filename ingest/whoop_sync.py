@@ -113,13 +113,23 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
 
 
 def _get_access_token(env: dict) -> tuple[str, str]:
-    """Return (access_token, refresh_token) using stored refresh token."""
+    """Return (access_token, new_refresh_token) using stored refresh token.
+
+    Falls back to WHOOP_ACCESS_TOKEN if no refresh token is stored (first-run
+    case where WHOOP didn't return a refresh_token in the exchange response).
+    """
     client_id = env.get("WHOOP_CLIENT_ID") or os.environ.get("WHOOP_CLIENT_ID", "")
     client_secret = env.get("WHOOP_CLIENT_SECRET") or os.environ.get("WHOOP_CLIENT_SECRET", "")
     refresh_token = env.get("WHOOP_REFRESH_TOKEN") or os.environ.get("WHOOP_REFRESH_TOKEN", "")
+
+    # Direct access token fallback (no refresh token stored yet)
     if not refresh_token:
+        access_token = env.get("WHOOP_ACCESS_TOKEN") or os.environ.get("WHOOP_ACCESS_TOKEN", "")
+        if access_token:
+            print("  Using WHOOP_ACCESS_TOKEN directly (no refresh token stored).")
+            return access_token, ""
         raise RuntimeError(
-            "WHOOP_REFRESH_TOKEN not found in .env. "
+            "Neither WHOOP_REFRESH_TOKEN nor WHOOP_ACCESS_TOKEN found in .env. "
             "Run `python -m ingest.whoop_oauth` first."
         )
     if not client_id or not client_secret:
