@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import threading
 import time
@@ -127,21 +128,26 @@ class _CallbackHandler(BaseHTTPRequestHandler):
             self.send_response(404); self.end_headers()
             return
         params = urllib.parse.parse_qs(parsed.query)
-        if "code" in params:
-            self.server.auth_code = params["code"][0]  # type: ignore[attr-defined]
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(
-                b"WHOOP authorisation successful. You can close this tab."
-            )
-        elif "error" in params:
+        if "error" in params:
             self.server.auth_code = None  # type: ignore[attr-defined]
             err = params.get("error", ["unknown"])[0]
             self.send_response(400); self.end_headers()
             self.wfile.write(f"Error from WHOOP: {err}".encode())
+        elif "code" in params:
+            # Verify state to prevent CSRF
+            returned_state = (params.get("state") or [""])[0]
+            if returned_state != getattr(self.server, "oauth_state", ""):
+                self.server.auth_code = None  # type: ignore[attr-defined]
+                self.send_response(400); self.end_headers()
+                self.wfile.write(b"State mismatch - possible CSRF. Try again.")
+                return
+            self.server.auth_code = params["code"][0]  # type: ignore[attr-defined]
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"WHOOP authorisation successful. You can close this tab.")
         else:
             self.send_response(400); self.end_headers()
-            self.wfile.write(b"Unexpected callback — no code or error.")
+            self.wfile.write(b"Unexpected callback - no code or error.")
 
     def log_message(self, *args):
         pass  # suppress request logs to stdout
@@ -191,18 +197,23 @@ def run_oauth() -> str:
             return access
         print("  Existing refresh token rejected — starting consent flow.")
 
+    # --- generate state (CSRF protection; WHOOP requires >= 8 chars) ---
+    state = secrets.token_urlsafe(16)
+
     # --- build authorization URL ---
     params = urllib.parse.urlencode({
         "response_type": "code",
         "client_id": client_id,
         "redirect_uri": _REDIRECT_URI,
         "scope": _SCOPES,
+        "state": state,
     })
     auth_url = f"{_AUTH_URL}?{params}"
 
     # --- start local callback server ---
     server = HTTPServer(("127.0.0.1", _CALLBACK_PORT), _CallbackHandler)
-    server.auth_code = None  # type: ignore[attr-defined]
+    server.auth_code = None   # type: ignore[attr-defined]
+    server.oauth_state = state  # type: ignore[attr-defined]
 
     t = threading.Thread(
         target=_run_callback_server, args=(server, _CONSENT_TIMEOUT_SEC), daemon=True
