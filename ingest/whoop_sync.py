@@ -158,9 +158,16 @@ def _get_access_token(env: dict) -> tuple[str, str]:
 # API pagination helper
 # ---------------------------------------------------------------------------
 
+_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
+
 def _paginate(access_token: str, path: str, since_iso: str, to_iso: str) -> list:
     """Fetch all pages from a WHOOP list endpoint. Returns flat list of records."""
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": _UA,
+        "Accept": "application/json",
+    }
     records: list = []
     next_token: str | None = None
 
