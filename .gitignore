@@ -14,3 +14,8 @@ backups/
 
 # Stray chat-export artifacts
 2026-03-17-231720-*.txt
+
+# filled per-instance config (carries a credential)
+config/healthspan.config.json
+config/*.config.json
+!config/*.example.json

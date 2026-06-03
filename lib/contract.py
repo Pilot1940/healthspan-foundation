@@ -44,6 +44,40 @@ class ConfigError(RuntimeError):
 
 
 # ----------------------------------------------------------------------------
+# Prevention rule #1 — number parsing. Strip thousands separators + units before
+# storing, and preserve a below/above-detection qualifier. Root-cause fix for the
+# audit's "1,020 kcal" → 20 corruption. Returns (value: float|None, qualifier: str|None).
+# ----------------------------------------------------------------------------
+
+_QUALIFIERS = ("<=", ">=", "<", ">")   # real detection bounds; '~' is approximate noise
+_NUM_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?|[-+]?\d+(?:\.\d+)?|[-+]?\.\d+")
+
+
+def parse_number(raw):
+    """'1,020 kcal' -> (1020.0, None); '<10.00 mg/dL' -> (10.0, '<'); 5.2 -> (5.2, None).
+
+    Strips thousands separators and trailing units; a leading '~' (approximately)
+    is dropped as noise; a leading < > <= >= is captured as the qualifier.
+    Returns (None, None) if no number is present.
+    """
+    if raw is None:
+        return (None, None)
+    if isinstance(raw, (int, float)):
+        return (float(raw), None)
+    s = str(raw).strip().lstrip("~").strip()
+    qualifier = None
+    for q in _QUALIFIERS:  # longest first (<= before <)
+        if s.startswith(q):
+            qualifier = q
+            s = s[len(q):].strip()
+            break
+    m = _NUM_RE.search(s)
+    if not m:
+        return (None, qualifier)
+    return (float(m.group(0).replace(",", "")), qualifier)
+
+
+# ----------------------------------------------------------------------------
 # Identifier safety — table/column names cannot be parameterised, so they are
 # validated against a strict pattern and double-quoted. (They come from our own
 # code, never user input, but defence in depth is cheap.)

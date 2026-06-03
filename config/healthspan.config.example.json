@@ -1,0 +1,34 @@
+{
+  "_comment": "Per-instance HealthSpan skill config. One template, one file per person. NEVER commit a filled copy — it carries a credential. Owner (PC) sees managed profiles; others are RLS-scoped to themselves.",
+
+  "profile_id": "<uuid of this person's profiles.id>",
+  "display_name": "PC | Dea",
+  "is_owner": true,
+
+  "_access_model": "A — per-person Supabase auth user + RLS (has_profile_access) + restricted grants (no DELETE/TRUNCATE; catalogs SELECT-only). Two connection modes supported; pick per instance:",
+
+  "connection": {
+    "mode": "supabase_client | direct_role",
+
+    "supabase_client": {
+      "_use_for": "Dea / mobile / web / Telegram (no localhost, no Postgres credential on device)",
+      "supabase_url": "https://dsnydskkjwziynwmzfkh.supabase.co",
+      "supabase_anon_key": "<publishable anon key — useless alone, RLS denies everything without a session>",
+      "auth_email": "dea@chitalkar.com",
+      "auth_note": "skill signs in with this person's Supabase auth session (password or stored refresh token); JWT carries auth.uid() → RLS scopes automatically"
+    },
+
+    "direct_role": {
+      "_use_for": "PC / local (matches current lib/db.py psycopg2 path)",
+      "db_url": "postgresql://healthspan_app:<password>@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres",
+      "auth_user_id": "<this person's profiles.auth_user_id>",
+      "jwt_claim_note": "skill MUST run set_config('request.jwt.claims', '{\"sub\":\"<auth_user_id>\",\"role\":\"authenticated\"}', false) at session start so has_profile_access() resolves — RLS as defence in depth"
+    }
+  },
+
+  "whoop": {
+    "client_id": "<from .env / WHOOP dev dashboard>",
+    "client_secret": "<from .env>",
+    "_token_note": "per-profile refresh token lives server-side (Supabase Edge whoop_tokens, PROMPT 12) once built; offline scope required"
+  }
+}

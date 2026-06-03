@@ -437,3 +437,36 @@ class TestResolveProfile:
         # must have queried for 'PC'
         sql_args = cur.execute.call_args[0][1]
         assert "PC" in str(sql_args)
+
+
+# ===========================================================================
+# Prevention rule #1 — parse_number (root-cause fix for "1,020 kcal" → 20)
+# ===========================================================================
+
+from lib.contract import parse_number
+
+
+class TestParseNumber:
+    def test_thousands_separator_preserved(self):
+        # the exact audit-bug inputs
+        assert parse_number("1,020 kcal") == (1020.0, None)
+        assert parse_number("~1,050 kcal") == (1050.0, None)
+        assert parse_number("2,997 g") == (2997.0, None)
+
+    def test_plain_numbers(self):
+        assert parse_number(5.2) == (5.2, None)
+        assert parse_number("5.2") == (5.2, None)
+        assert parse_number("112 mg/dL") == (112.0, None)
+
+    def test_below_detection_qualifier(self):
+        assert parse_number("<10.00 mg/dL") == (10.0, "<")
+        assert parse_number(">1000") == (1000.0, ">")
+        assert parse_number("<=5") == (5.0, "<=")
+
+    def test_no_number(self):
+        assert parse_number("Non Reactive") == (None, None)
+        assert parse_number(None) == (None, None)
+
+    def test_decimal_only(self):
+        assert parse_number(".59") == (0.59, None)
+        assert parse_number("0.11 S/CO") == (0.11, None)
