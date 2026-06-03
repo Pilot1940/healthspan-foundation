@@ -20,6 +20,13 @@ Principles (mirroring the BaySys data-quality spec):
     table, NOT prod.
   * No hardcoded thresholds — the confidence cutoff comes from system_config
     (CLAUDE.md rule #1).
+  * Trust the lab's PRINTED derived value — never re-derive it (prevention rule #7).
+    Labs use model variants a naive formula won't reproduce: HOMA-2 (not the simple
+    glucose*insulin/405 HOMA1), CKD-EPI 2021 (not MDRD), HOMA2 %S = 100/IR, etc.
+    Store the printed number. Only compute a derived value when the report omits it,
+    and then record the formula + inputs in notes and flag it derived. Unit
+    conversions (parse_number) are arithmetic and fine; verify the source unit from
+    the printed reference range, not a guess.
 """
 from __future__ import annotations
 
