@@ -108,3 +108,60 @@ def resolve_profile(conn, who: str | None = None) -> str:
             f"display_name={who!r} is ambiguous ({len(rows)} matches) — pass the UUID"
         )
     return str(rows[0][0])
+
+
+# ============================================================================
+# Access Model A — per-instance skill connection (PROMPT 14: support BOTH paths)
+# A2 (direct_role): psycopg2 as healthspan_app → SET ROLE authenticated + set the
+#                   JWT claim so RLS/has_profile_access scopes to this profile.
+# A1 (supabase_client): supabase-py with the person's auth session (JWT carries
+#                   auth.uid() → RLS automatic). Best for Dea/mobile/Telegram.
+# Driven by healthspan.config.json -> connection.mode.
+# ============================================================================
+import json as _json
+
+
+def load_config(path: str) -> dict:
+    """Load a per-instance healthspan.config.json."""
+    with open(path) as f:
+        return _json.load(f)
+
+
+def _set_profile_claim(conn, auth_user_id: str) -> None:
+    """A2: assume authenticated + set the JWT claim so has_profile_access() resolves.
+    Must run on every fresh connection/transaction before any data query."""
+    cur = conn.cursor()
+    cur.execute("SET ROLE authenticated")
+    cur.execute(
+        "SELECT set_config('request.jwt.claims', %s, false)",
+        (_json.dumps({"sub": auth_user_id, "role": "authenticated"}),),
+    )
+
+
+def get_app_connection(config: dict):
+    """Return a profile-scoped handle per the config's connection.mode.
+
+    A2 -> (psycopg2 connection, "psycopg2"); already SET ROLE authenticated with the
+          profile's JWT claim applied — RLS active, DELETE/DDL denied at the grant level.
+    A1 -> (supabase Client, "supabase"); queries carry the user's JWT, RLS automatic.
+
+    The caller owns lifecycle. For A2, re-call _set_profile_claim() after any ROLE reset.
+    """
+    conn_cfg = config.get("connection", {})
+    mode = conn_cfg.get("mode")
+
+    if mode == "direct_role":
+        dr = conn_cfg["direct_role"]
+        conn = psycopg2.connect(dr["db_url"])          # healthspan_app credential
+        _set_profile_claim(conn, dr["auth_user_id"])    # scope to this profile
+        return conn, "psycopg2"
+
+    if mode == "supabase_client":
+        from supabase import create_client
+        sc = conn_cfg["supabase_client"]
+        client = create_client(sc["supabase_url"], sc["supabase_anon_key"])
+        # caller authenticates the session (password / stored refresh token) so the
+        # JWT carries auth.uid(); RLS then scopes every query automatically.
+        return client, "supabase"
+
+    raise ValueError(f"connection.mode must be 'direct_role' or 'supabase_client', got {mode!r}")

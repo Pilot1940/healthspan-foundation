@@ -19,3 +19,6 @@ backups/
 config/healthspan.config.json
 config/*.config.json
 !config/*.example.json
+
+# generated role secrets
+config/*.secret*
