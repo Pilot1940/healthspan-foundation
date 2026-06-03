@@ -1,7 +1,7 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migration 016). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-03 07:05 UTC.
+> Generated 2026-06-03 07:35 UTC.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -49,7 +49,7 @@ _WHOOP physiological day (wake-to-wake): one row per cycle. Recovery/HRV/RHR der
 |---|---|---|
 | `id` | uuid | PK (gen_random_uuid). |
 | `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id as the live key. |
-| `cycle_start` | timestamp with time zone | Start of the WHOOP physiological day (timestamptz, UTC). TRAP: this is the WHOOP cycle boundary = screenshot date MINUS 1 day; not the calendar date. |
+| `cycle_start` | timestamp with time zone | Start of the WHOOP physiological day (timestamptz, UTC). TRAP: this is the WHOOP cycle boundary = screenshot date MINUS 1 day; not the calendar date. JOIN TRAP: to join whoop_journal (CSV-sourced timestamps) join on cycle_start::date, NOT the exact timestamp — exact match returns 0 rows. |
 | `cycle_end` | timestamp with time zone | End of the WHOOP cycle (timestamptz). |
 | `timezone` | text | WHOOP timezone_offset string (e.g. +05:30) at cycle time. |
 | `recovery_score_pct` | numeric(5,2) | Recovery score 0-100. TRAP: NULL = NO SLEEP that cycle (strap off / nap-only) — EXCLUDE from averages/trends, NEVER treat as 0. |
