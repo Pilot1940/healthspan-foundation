@@ -171,7 +171,7 @@ class TestBadRowLogged:
             (0.7,),                   # confidence_min (called after resolve)
             (1,),                     # validate FK: profile_id
             (1,),                     # validate FK: metric_definition_id
-            (None, None, "HbA1c"),    # range check: no min/max → no out_of_range
+            (None, None, "HbA1c", 2.0, 20.0),  # clinical none; plausible 2-20 → 5.0 ok
         ]
         conn.cursor.return_value = cur
 
@@ -206,7 +206,7 @@ class TestBadRowLogged:
             (0.7,),                   # confidence_min
             (1,),                     # FK: profile
             (1,),                     # FK: metric_def
-            (None, None, "HbA1c"),    # range: no limits
+            (None, None, "HbA1c", 2.0, 20.0),  # plausible 2-20 → 3.0 ok
         ]
         conn1.cursor.return_value = cur1
 
@@ -225,7 +225,7 @@ class TestBadRowLogged:
             (0.7,),                       # confidence_min
             (1,),                         # FK: profile
             (1,),                         # FK: metric_def
-            (5.0, 10.0, "HbA1c"),         # range: value=7 is in [5, 10]
+            (5.0, 10.0, "HbA1c", 2.0, 20.0),  # clinical [5,10], plausible [2,20] → 7 ok
             (True,),                      # write: RETURNING (xmax=0) → inserted
         ]
         conn2.cursor.return_value = cur2
@@ -268,7 +268,7 @@ class TestOutOfRangeFlagged:
             (0.7,),                  # confidence_min
             (1,),                    # validate FK: profile
             (1,),                    # validate FK: metric_def
-            (4.0, 6.0, "HbA1c"),    # range: min=4, max=6; value=12 OUT
+            (4.0, 6.0, "HbA1c", 2.0, 20.0),  # clinical [4,6]; plausible [2,20] → 12 breaches clinical only
             (True,),                 # write INSERT … ON CONFLICT RETURNING (xmax=0 → inserted)
         ]
         conn.cursor.return_value = cur
@@ -309,7 +309,7 @@ class TestOutOfRangeFlagged:
             (0.7,),                  # confidence_min
             (1,),                    # FK profile
             (1,),                    # FK metric_def
-            (4.0, 6.0, "HbA1c"),    # range: value=5.2 is in [4, 6] → ok
+            (4.0, 6.0, "HbA1c", 2.0, 20.0),  # value 5.2 in clinical [4,6] + plausible [2,20]
             (True,),                 # write RETURNING (xmax=0) → inserted
         ]
         conn.cursor.return_value = cur
@@ -327,6 +327,175 @@ class TestOutOfRangeFlagged:
             conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
         )
         assert result["status"] == "inserted"
+
+
+# ===========================================================================
+# PROMPT 18 — implausibility BOUND (the gate), distinct from reference range
+# ===========================================================================
+
+
+class TestImplausibilityGate:
+    """plausible_min/max is a GATE: an impossible value is blocked from prod and
+    staged. It is checked BEFORE the confidence gate. A *reference-range* breach
+    is NOT gated — it still writes and flags abnormal (rule #8)."""
+
+    def test_implausibly_low_value_is_staged_not_written(self):
+        """testosterone 2.75 (ng/mL slip of a ng/dL value) < plausible_min 50 →
+        staged as IMPLAUSIBLE, at HIGH confidence — proving the gate fires ahead
+        of the confidence gate, and is NOT a low-confidence stage."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (METRIC_UUID, "ng/dL"),                            # resolve exact (id, unit)
+            (0.7,),                                            # confidence_min
+            (1,),                                              # FK profile
+            (1,),                                              # FK metric_def
+            (None, None, "testosterone_total", 50.0, 2000.0),  # clinical none; plausible 50-2000
+            (777,),                                            # stage INSERT … RETURNING id
+        ]
+        conn.cursor.return_value = cur
+
+        result = ingest_record(
+            conn, sync_log_id=18, kind="biomarker", table="biomarkers",
+            raw={"profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+                 "name": "testosterone_total", "measured_at": "2026-06-01 08:00+00",
+                 "value": 2.75, "unit": "ng/dL"},
+            conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
+        )
+        # gate, not confidence: staged for the IMPLAUSIBLE reason at conf 1.0
+        assert result["status"] == "staged"
+        assert result["reason"] == "implausible_value"
+        assert result["confidence"] == 1.0
+        assert any(e["code"] == "implausible" for e in result.get("range_flags", []))
+        # MUST route to staging, MUST NOT write to prod
+        assert any("stg_biomarker_review" in str(c) for c in cur.execute.call_args_list)
+        assert not any('INSERT INTO "biomarkers"' in str(c) for c in cur.execute.call_args_list)
+
+    def test_plausible_value_writes(self):
+        """testosterone 275 is inside plausible 50-2000 (no clinical range set) → writes."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (METRIC_UUID, "ng/dL"),                            # resolve exact
+            (0.7,),                                            # confidence_min
+            (1,),                                              # FK profile
+            (1,),                                              # FK metric_def
+            (None, None, "testosterone_total", 50.0, 2000.0),  # plausible 50-2000
+            (True,),                                           # write RETURNING (xmax=0)
+        ]
+        conn.cursor.return_value = cur
+
+        result = ingest_record(
+            conn, sync_log_id=18, kind="biomarker", table="biomarkers",
+            raw={"profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+                 "name": "testosterone_total", "measured_at": "2026-06-01 08:00+00",
+                 "value": 275, "unit": "ng/dL"},
+            conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
+        )
+        assert result["status"] == "inserted"
+        assert not result.get("abnormal")
+
+    def test_reference_breach_writes_and_flags_never_gated(self):
+        """android_gynoid_ratio 1.27 > CLINICAL max 1.0 but inside plausible 0-5 →
+        writes to prod + abnormal flag. Proves a reference breach is NOT gated."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (METRIC_UUID, "ratio"),                                # resolve exact
+            (0.7,),                                                # confidence_min
+            (1,),                                                  # FK profile
+            (1,),                                                  # FK metric_def
+            (None, 1.0, "android_gynoid_ratio", 0.0, 5.0),         # clinical max 1.0; plausible 0-5
+            (True,),                                               # write RETURNING
+        ]
+        conn.cursor.return_value = cur
+
+        result = ingest_record(
+            conn, sync_log_id=18, kind="biomarker", table="biomarkers",
+            raw={"profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+                 "name": "android_gynoid_ratio", "measured_at": "2026-06-01 08:00+00",
+                 "value": 1.27, "unit": "ratio"},
+            conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
+        )
+        assert result["status"] == "inserted"
+        assert result.get("abnormal") is True
+        assert any(e["code"] == "out_of_range" for e in result.get("range_flags", []))
+        # NOT staged
+        assert not any("stg_biomarker_review" in str(c) for c in cur.execute.call_args_list)
+
+    def test_comma_slipped_food_calories_caught_by_bound(self):
+        """A meal logged as 20 kcal (the '1,020' -> 20 comma-slip) < plausible_min
+        25 → validate() flags it implausible (food path then stages it)."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (1,),                 # FK profile (food_logs FK = profiles)
+            (25.0, 12000.0),      # food_energy_kcal plausible bounds
+        ]
+        conn.cursor.return_value = cur
+
+        ok, errors = validate(conn, "food_logs", {
+            "profile_id": PROFILE_UUID, "log_date": "2026-06-01", "calories": 20,
+        })
+        assert ok is False
+        assert any(e["code"] == "implausible" for e in errors)
+
+    def test_food_bound_missing_does_not_crash(self):
+        """If food_energy_kcal is absent from the catalog, food logging must NOT
+        fail — the plausibility check is simply skipped."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (1,),     # FK profile
+            None,     # food_energy_kcal not found → skip the check
+        ]
+        conn.cursor.return_value = cur
+
+        ok, errors = validate(conn, "food_logs", {
+            "profile_id": PROFILE_UUID, "log_date": "2026-06-01", "calories": 20,
+        })
+        assert ok is True
+        assert errors == []
+
+    def test_heuristic_rejects_when_no_bound_set(self):
+        """No plausible bound configured → 10x/0.1x heuristic vs prior history.
+        value 5000 > 10x prior max 100 → implausible."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (1,),                                       # FK profile
+            (1,),                                       # FK metric_def
+            (None, None, "creatinine", None, None),     # NO plausible bounds
+            (100.0, 50.0),                              # prior (max, min) for profile+metric
+        ]
+        conn.cursor.return_value = cur
+
+        ok, errors = validate(conn, "biomarkers", {
+            "profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+            "measured_at": "2026-06-01 08:00+00", "value": 5000,
+        })
+        assert ok is False
+        assert any(e["code"] == "implausible" and "10x prior" in e["message"]
+                   for e in errors)
+
+    def test_heuristic_accepts_when_no_prior_history(self):
+        """No bound AND no prior data → cannot judge → accept (first reading)."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (1,),                                       # FK profile
+            (1,),                                       # FK metric_def
+            (None, None, "creatinine", None, None),     # no plausible bounds
+            (None, None),                               # no prior history (empty max/min)
+        ]
+        conn.cursor.return_value = cur
+
+        ok, errors = validate(conn, "biomarkers", {
+            "profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+            "measured_at": "2026-06-01 08:00+00", "value": 5000,
+        })
+        assert ok is True
+        assert errors == []
 
 
 # ===========================================================================

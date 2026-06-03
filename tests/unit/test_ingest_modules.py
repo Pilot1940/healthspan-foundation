@@ -82,6 +82,8 @@ class TestKnownFoodClassifies:
               FK: profile_id check
               fetchone: (1,)           ← profile exists
               (no metric_def FK for food_logs)
+              calories=180 present → food_energy_kcal plausibility lookup
+              fetchone: (25.0, 12000.0)   ← 180 is inside the bound → no gate
 
           INSERT INTO food_logs ... RETURNING id
               fetchone: (FOOD_LOG_UUID,)
@@ -90,6 +92,7 @@ class TestKnownFoodClassifies:
             (GUIDANCE_UUID, "eggs", "green", "high protein", None),  # guidance hit
             (0.7,),                                                   # confidence_min
             (1,),                                                     # validate FK: profile_id
+            (25.0, 12000.0),                                         # food_energy_kcal plausible bound
             (FOOD_LOG_UUID,),                                         # INSERT food_logs RETURNING id
         ]
         conn, cur = _conn_single_cursor(fetchone_seq)

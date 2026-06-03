@@ -352,13 +352,24 @@ def _drop_none(d: dict) -> dict:
 
 
 def validate(conn, table: str, row: dict) -> tuple[bool, list]:
-    """Check types, FK existence, and numeric range. Returns ``(ok, errors)``.
+    """Check types, FK existence, and the TWO numeric ranges. Returns ``(ok, errors)``.
 
-    Never mutates ``row``. Range checks use metric_definitions.min_value/max_value,
-    which are CLINICAL REFERENCE ranges (for flagging), NOT plausibility bounds. An
-    out-of-range value is reported (code ``out_of_range``) but is NOT a write blocker:
-    the caller writes it to prod and surfaces it as abnormal. Only missing_required /
-    fk_not_found / bad_type are hard failures.
+    Never mutates ``row``. There are two distinct range concepts on
+    metric_definitions — do not conflate them:
+
+    * ``min_value`` / ``max_value`` = CLINICAL REFERENCE range. A breach is reported
+      as ``out_of_range`` but is NOT a write blocker — the caller writes it to prod
+      and surfaces it as *abnormal* (rule #8). High insulin / high android fat are
+      real data the app exists to track.
+    * ``plausible_min`` / ``plausible_max`` = PHYSIOLOGICALLY-POSSIBLE extremes (much
+      wider). A value outside these is reported as ``implausible`` and IS a gate —
+      the caller blocks the prod write and routes the row to staging for review
+      (almost always an OCR / unit / comma-slip error). Where no plausibility bound
+      is configured, fall back to a per-(profile, metric) heuristic: reject as
+      implausible if the value is >10x the prior max or <0.1x the prior min for that
+      profile+metric (and prior data exists). No prior data + no bound → accept.
+
+    Hard failures (missing_required / fk_not_found / bad_type) are unchanged.
     """
     errors: list[dict] = []
     cur = conn.cursor()
@@ -378,19 +389,20 @@ def validate(conn, table: str, row: dict) -> tuple[bool, list]:
                     {"code": "fk_not_found", "message": f"{col}={val!r} not in {ref}"}
                 )
 
-    # numeric range (biomarkers): value vs the metric's configured min/max
+    # biomarkers: clinical-range (flag) + plausibility (gate), both off metric_definitions
     if (
         table == "biomarkers"
         and row.get("metric_definition_id") is not None
         and row.get("value") is not None
     ):
         cur.execute(
-            "SELECT min_value, max_value, name FROM metric_definitions WHERE id = %s",
+            "SELECT min_value, max_value, name, plausible_min, plausible_max "
+            "FROM metric_definitions WHERE id = %s",
             (row["metric_definition_id"],),
         )
         md = cur.fetchone()
         if md:
-            lo, hi, nm = md
+            lo, hi, nm, plo, phi = md
             try:
                 v = float(row["value"])
             except (TypeError, ValueError):
@@ -398,6 +410,7 @@ def validate(conn, table: str, row: dict) -> tuple[bool, list]:
                     {"code": "bad_type", "message": f"value {row['value']!r} is not numeric"}
                 )
             else:
+                # clinical reference range → flag (out_of_range), never gate
                 if lo is not None and v < float(lo):
                     errors.append(
                         {"code": "out_of_range", "message": f"{nm} value {v} < min {lo}"}
@@ -406,8 +419,78 @@ def validate(conn, table: str, row: dict) -> tuple[bool, list]:
                     errors.append(
                         {"code": "out_of_range", "message": f"{nm} value {v} > max {hi}"}
                     )
+                # implausibility bound → gate (implausible) / staging
+                errors.extend(
+                    _implausible_errors(
+                        cur, v, nm, plo, phi,
+                        profile_id=row.get("profile_id"),
+                        metric_id=row["metric_definition_id"],
+                    )
+                )
+
+    # food_logs: gate calories against the food_energy_kcal plausibility bound
+    # (the root-cause backstop for the "1,020 kcal" -> 20 comma-slip). A missing
+    # catalog row must NOT take down food logging — guard and skip if absent.
+    if table == "food_logs" and row.get("calories") is not None:
+        cur.execute(
+            "SELECT plausible_min, plausible_max FROM metric_definitions "
+            "WHERE name = 'food_energy_kcal' AND is_active",
+        )
+        md = cur.fetchone()
+        if md is not None:
+            plo, phi = md
+            try:
+                v = float(row["calories"])
+            except (TypeError, ValueError):
+                errors.append(
+                    {"code": "bad_type", "message": f"calories {row['calories']!r} is not numeric"}
+                )
+            else:
+                errors.extend(
+                    _implausible_errors(cur, v, "food_energy_kcal", plo, phi)
+                )
 
     return (len(errors) == 0, errors)
+
+
+def _implausible_errors(cur, v: float, nm: str, plo, phi,
+                        profile_id=None, metric_id=None) -> list:
+    """Return [{'code':'implausible', ...}] if v is outside the plausibility bound.
+
+    If an explicit ``plausible_min``/``plausible_max`` is set, the value must fall
+    within it. If NEITHER bound is set, fall back to the per-(profile, metric) 10x/
+    0.1x heuristic against prior biomarker history (when profile_id + metric_id are
+    given and prior data exists). Returns [] when the value is plausible.
+    """
+    errs: list[dict] = []
+    if plo is not None and v < float(plo):
+        errs.append({"code": "implausible",
+                     "message": f"{nm} value {v} < plausible_min {plo}"})
+    if phi is not None and v > float(phi):
+        errs.append({"code": "implausible",
+                     "message": f"{nm} value {v} > plausible_max {phi}"})
+    if errs or plo is not None or phi is not None:
+        return errs  # an explicit bound governs; do not also run the heuristic
+
+    # No bound configured → heuristic vs this profile+metric's prior values.
+    if profile_id is None or metric_id is None:
+        return errs
+    cur.execute(
+        "SELECT max(value), min(value) FROM biomarkers "
+        "WHERE profile_id = %s AND metric_definition_id = %s AND value IS NOT NULL",
+        (profile_id, metric_id),
+    )
+    hist = cur.fetchone()
+    if not hist:
+        return errs
+    prior_max, prior_min = hist
+    if prior_max is not None and v > 10.0 * float(prior_max):
+        errs.append({"code": "implausible",
+                     "message": f"{nm} value {v} > 10x prior max {prior_max} (no bound set)"})
+    if prior_min is not None and float(prior_min) > 0 and v < 0.1 * float(prior_min):
+        errs.append({"code": "implausible",
+                     "message": f"{nm} value {v} < 0.1x prior min {prior_min} (no bound set)"})
+    return errs
 
 
 # ----------------------------------------------------------------------------
@@ -525,11 +608,15 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
     """Run one record through resolve → validate → write|stage → log.
 
     Wrapped in a SAVEPOINT so a failure rolls back ONLY this record (the run
-    continues). Routing:
+    continues). Gate order (PROMPT 18): parse → implausibility → confidence → write-or-stage:
+      * IMPLAUSIBLE value (outside plausible_min/max, or failing the 10x/0.1x
+        heuristic) → staging. This is the GATE: a physiologically-impossible value
+        is almost always an OCR/unit/comma error, so it is blocked from prod. It is
+        checked FIRST — ahead of the confidence gate.
       * unresolved (fk None) or confidence < system_config threshold → staging
-      * out-of-range numeric → idempotent upsert to prod, flagged abnormal (reference
-        range is for flagging, not gating; abnormal_labs derives LOW/HIGH at query time)
       * hard validation failure (missing_required/fk_not_found/bad_type) → wearable_sync_errors, status 'failed'
+      * out-of-range numeric (CLINICAL reference range) → idempotent upsert to prod,
+        flagged abnormal — NEVER gated; abnormal_labs derives LOW/HIGH at query time
       * otherwise → idempotent upsert to prod
 
     Returns ``{"status": "upserted"|"updated"|"skipped"|"staged"|"failed", ...}``.
@@ -545,27 +632,41 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
         normalised = r["normalised"]
         conf = r["confidence"]
         source = {**raw, **normalised}
+        threshold = confidence_min(conn)
 
-        # route low-confidence / unresolved to staging
-        if r["fk"] is None or conf < confidence_min(conn):
+        ok, errors = validate(conn, table, normalised)
+        # Split the validation findings by how each is routed:
+        implausible = [e for e in errors if e["code"] == "implausible"]
+        abnormal = [e for e in errors if e["code"] == "out_of_range"]
+        hard = [e for e in errors
+                if e["code"] not in ("implausible", "out_of_range")]
+
+        # GATE 1 — implausibility (checked before confidence). A value outside the
+        # physiologically-possible bound is blocked from prod and staged for review.
+        if implausible:
+            cur.execute("RELEASE SAVEPOINT hs_rec")
+            stage(conn, table, source, conf, raw_text=raw_text)
+            return {"status": "staged", "reason": "implausible_value",
+                    "confidence": conf, "range_flags": implausible}
+
+        # GATE 2 — confidence / unresolved. (Comes after implausibility; this also
+        # catches the fk-None case before the hard-error check below, so an
+        # unresolved metric is staged rather than failed.)
+        if r["fk"] is None or conf < threshold:
             cur.execute("RELEASE SAVEPOINT hs_rec")
             stage(conn, table, source, conf, raw_text=raw_text)
             return {"status": "staged", "reason": "low_confidence_or_unresolved",
                     "confidence": conf}
 
-        ok, errors = validate(conn, table, normalised)
+        # Hard failures block the write (and the run continues — logged below).
+        if hard:
+            raise ContractError(f"validation failed for {table}", hard)
+
         # `out_of_range` is NOT a write blocker: metric_definitions.min/max are CLINICAL
         # REFERENCE ranges (for flagging), not plausibility bounds. A confidently-read
         # value outside the reference range is REAL DATA and exactly what this app tracks
         # (high insulin, high android fat, low vitamin D). It writes to prod; the
-        # abnormal_labs view derives LOW/HIGH from min/max at query time. Routing it to
-        # staging would starve that view. (Extraction-confidence staging stays above.)
-        # Only HARD errors (missing_required / fk_not_found / bad_type) block the write.
-        abnormal = [e for e in errors if e["code"] == "out_of_range"]
-        hard = [e for e in errors if e["code"] != "out_of_range"]
-        if hard:
-            raise ContractError(f"validation failed for {table}", hard)
-
+        # abnormal_labs view derives LOW/HIGH from min/max at query time.
         result = write(conn, table, normalised, conflict_cols)
         cur.execute("RELEASE SAVEPOINT hs_rec")
         out = {"status": result}
