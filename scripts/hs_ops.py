@@ -118,11 +118,20 @@ def cmd_verify(_):
        WHERE schemaname='public' AND tablename=ANY(%s) AND qual='true'""", (SUBJECT,))
     leaks = [r for r in cur.fetchall() if 'service_role' not in (r[2] or '')]
     print("  LEAKS:", leaks or "NONE OK")
-    print("== profile_access policy coverage ==")
-    cur.execute("SELECT tablename FROM pg_policies WHERE policyname LIKE '%_profile_access'")
-    have = {r[0] for r in cur.fetchall()}
-    miss = [t for t in SUBJECT if t not in have]
-    print("  missing:", miss or f"NONE OK ({len(have & set(SUBJECT))}/{len(SUBJECT)})")
+    print("== RLS coverage (profile_access OR maintainer-only) ==")
+    # A table is covered if any policy scopes by has_profile_access (per-profile) OR by
+    # is_maintainer (the maintenance tables — migration 022, maintainer-only SELECT).
+    cur.execute("SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname='public'")
+    covered, maint = set(), set()
+    for tn, qual, wc in cur.fetchall():
+        blob = f"{qual or ''} {wc or ''}"
+        if "has_profile_access" in blob or "is_maintainer" in blob:
+            covered.add(tn)
+        if "is_maintainer" in blob:
+            maint.add(tn)
+    miss = [t for t in SUBJECT if t not in covered]
+    print("  missing:", miss or f"NONE OK ({len(covered & set(SUBJECT))}/{len(SUBJECT)})")
+    print("  maintainer-only tables:", sorted(maint) or "none")
     print("== live RLS read test under SET ROLE authenticated ==")
     cur.execute("SELECT id FROM profiles WHERE relationship='self' LIMIT 1")
     pc = cur.fetchone()
