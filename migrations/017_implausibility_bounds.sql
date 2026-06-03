@@ -16,7 +16,10 @@
 --
 -- Both new columns are NULLABLE. NULL plausible bound = "unknown" → lib/contract
 -- falls back to a per-(profile, metric) heuristic (reject if >10x prior max or
--- <0.1x prior min), so unseeded metrics are still protected from gross errors.
+-- <0.1x prior min). NOTE: that heuristic needs prior history — it is INACTIVE on a
+-- metric's FIRST reading (no prior rows → accept). So an unseeded metric is only
+-- protected ONCE IT HAS PRIOR HISTORY; a first-ever OCR error on an unseeded metric
+-- writes ungated. The 24 seeded metrics below are protected from the first reading.
 --
 -- Seeds are deliberately GENEROUS — a real but extreme value must still pass the
 -- bound (and merely flag abnormal via the clinical range). When unsure, widen.
