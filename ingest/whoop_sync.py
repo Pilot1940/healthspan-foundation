@@ -112,6 +112,52 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
     return f"Basic {encoded}"
 
 
+def _get_token_from_db(conn, profile_id: str, env: dict) -> str | None:
+    """Read access token from whoop_tokens; refresh if near-expiry. Returns token or None."""
+    import psycopg2.extras
+    from datetime import timezone as _tz
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute("SELECT * FROM whoop_tokens WHERE profile_id = %s", (profile_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    skew_sec = 120
+    expires_at = row["expires_at"]
+    now = datetime.now(_tz.utc)
+    if expires_at and (expires_at - now).total_seconds() > skew_sec:
+        print("  Using stored access token from whoop_tokens.")
+        return row["access_token"]
+    # Near-expiry or no expiry — refresh
+    refresh_token = row["refresh_token"]
+    if not refresh_token:
+        print("  No refresh token in whoop_tokens — re-consent needed.")
+        return None
+    print("  Refreshing token from whoop_tokens …")
+    client_id = env.get("WHOOP_CLIENT_ID") or os.environ.get("WHOOP_CLIENT_ID", "")
+    client_secret = env.get("WHOOP_CLIENT_SECRET") or os.environ.get("WHOOP_CLIENT_SECRET", "")
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode()
+    req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("User-Agent", _UA)
+    req.add_header("Accept", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+    new_access = data["access_token"]
+    new_refresh = data.get("refresh_token", refresh_token)
+    new_expires = datetime.now(_tz.utc) + timedelta(seconds=data.get("expires_in", 3600))
+    cur.execute("""UPDATE whoop_tokens SET access_token=%s, refresh_token=%s, expires_at=%s,
+                   updated_at=now() WHERE profile_id=%s""",
+                (new_access, new_refresh, new_expires, profile_id))
+    conn.commit()
+    print("  Token refreshed and stored in whoop_tokens.")
+    return new_access
+
+
 def _get_access_token(env: dict) -> tuple[str, str]:
     """Return (access_token, new_refresh_token) using stored refresh token.
 
@@ -574,17 +620,20 @@ def main() -> None:
 
     print(f"Sync window: {since_iso} → {to_iso}")
 
-    # Auth
-    print("Refreshing WHOOP access token …")
-    access_token, new_refresh = _get_access_token(env)
-    if new_refresh and new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
-        _write_env_key("WHOOP_REFRESH_TOKEN", new_refresh)
-        print("  Refresh token rotated — .env updated.")
-
-    # Connect
+    # Connect first (needed for DB token lookup)
     conn = get_conn()
     profile_id = resolve_profile(conn, args.profile)
     print(f"Profile: {args.profile} → {profile_id}")
+
+    # Auth — DB token takes priority (works for any profile); .env fallback for PC
+    print("Refreshing WHOOP access token …")
+    access_token = _get_token_from_db(conn, profile_id, env)
+    if not access_token:
+        print("  No token in whoop_tokens — falling back to .env …")
+        access_token, new_refresh = _get_access_token(env)
+        if new_refresh and new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
+            _write_env_key("WHOOP_REFRESH_TOKEN", new_refresh)
+            print("  Refresh token rotated — .env updated.")
 
     # Run syncs
     results = []
