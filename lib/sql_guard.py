@@ -194,3 +194,122 @@ def trace_numbers(answer: str, rows: list[dict], tol: float = 0.05) -> dict:
         hit = any(abs(val - d) <= max(tol, abs(d) * tol) for d in data_nums)
         (traceable if hit else untraceable).append(tok)
     return {"traceable": sorted(set(traceable)), "untraceable": sorted(set(untraceable))}
+
+
+# ===========================================================================
+# Quality layer (V3-6) — heuristics on AD-HOC (non-catalog) queries + audit log.
+# Catalog queries (lib/views) are pre-vetted and skip this entirely.
+# ===========================================================================
+
+# time-series tables: an aggregate over these without a date window is suspect
+_TIMESERIES = ("whoop_cycles", "whoop_sleeps", "whoop_workouts", "biomarkers",
+               "food_logs", "supplement_intake_logs", "daily_logs")
+# columns that are legitimately NULL a lot — averaging them silently is the recovery trap
+_NULLABLE_AGG_COLS = ("recovery_score_pct", "hrv_ms", "sleep_performance_pct",
+                      "sleep_debt_min", "calories")
+_AGG = re.compile(r"\b(avg|sum|count|min|max)\s*\(", re.IGNORECASE)
+_JOIN = re.compile(r"\bjoin\b", re.IGNORECASE)
+_ON_OR_USING = re.compile(r"\b(on|using)\b", re.IGNORECASE)
+_HAS_DATE_FILTER = re.compile(
+    r"(interval|current_date|now\(\)|>=|<=|between|::date|_start|measured_at|log_date|taken_at)",
+    re.IGNORECASE)
+_COMMA_JOIN = re.compile(r"\bfrom\s+[a-z_][\w]*\s*(?:\s+\w+)?\s*,\s*[a-z_]", re.IGNORECASE)
+
+
+def quality_check(sql: str, *, intent: str = "", rows: list | None = None,
+                  empty: bool | None = None) -> dict:
+    """Heuristic quality pass on an ad-hoc query. Returns {ok, flags:[{code,severity,note}], notes}.
+
+    Flags (severity high = likely-wrong result, blocks 'ok'; low = advisory):
+      * join_without_key / comma_join (fan-out / cartesian risk)            — high
+      * aggregate_over_nullable (avg/sum of a NULL-heavy col w/o FILTER)    — high
+      * empty_result (0 rows / all-NULL aggregate — the silent-empty trap)  — high
+      * no_profile_scope (no profile_id filter — usually RLS covers it)     — low
+      * aggregate_no_time_window (aggregate over a time-series table, no date)— low
+    """
+    body = _strip_sql_comments(sql or "")
+    low = body.lower()
+    flags: list[dict] = []
+
+    def add(code, sev, note):
+        flags.append({"code": code, "severity": sev, "note": note})
+
+    # fan-out: a JOIN with no ON/USING, or an old-style comma join in FROM
+    n_join = len(_JOIN.findall(body))
+    n_on = len(_ON_OR_USING.findall(body))
+    if n_join and n_on < n_join:
+        add("join_without_key", "high",
+            f"{n_join} JOIN(s) but only {n_on} ON/USING — a keyless join fans out rows "
+            f"and inflates aggregates.")
+    if _COMMA_JOIN.search(body):
+        add("comma_join", "high", "comma-style join in FROM (cartesian product risk).")
+
+    # aggregate over a known NULL-heavy column without FILTER (the recovery=0 trap)
+    if _AGG.search(body) and "filter" not in low:
+        hit = [c for c in _NULLABLE_AGG_COLS if re.search(rf"\b(avg|sum)\s*\(\s*{c}\b", low)]
+        if hit:
+            add("aggregate_over_nullable", "high",
+                f"aggregating NULL-heavy column(s) {hit} without FILTER (WHERE … IS NOT NULL) — "
+                f"NULLs distort the result (e.g. no-sleep cycles).")
+
+    # scoping advisories
+    if "profile_id" not in low:
+        add("no_profile_scope", "low",
+            "no profile_id filter — RLS still scopes, but be explicit for shared-table aggregates.")
+    refs = referenced_tables(body)
+    if _AGG.search(body) and any(t in refs for t in _TIMESERIES) and not _HAS_DATE_FILTER.search(body):
+        add("aggregate_no_time_window", "low",
+            "aggregate over a time-series table with no date window — likely unintended all-time scope.")
+
+    # empty / silent-empty result
+    if empty is None and rows is not None:
+        empty = (not rows) or (len(rows) == 1 and all(v is None for v in rows[0].values()))
+    if empty:
+        add("empty_result", "high",
+            "0 rows / all-NULL aggregate — EXPLAIN passed, so suspect a JOIN/FILTER trap, "
+            "not absent data. Re-check before answering 'no data'.")
+
+    high = [f for f in flags if f["severity"] == "high"]
+    return {"ok": not high, "flags": flags,
+            "notes": ("; ".join(f["note"] for f in high) if high else "clean")}
+
+
+def audit_query(conn, profile_id: str, *, intent: str, sql: str, plan, verdict: dict,
+                row_count: int) -> None:
+    """Append one ad-hoc query + its quality verdict to query_audit (no RETURNING;
+    maintainer-only SELECT applies — INSERT is owner-scoped). flagged = any high flag."""
+    import json
+    flagged = not verdict.get("ok", True)
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO query_audit (profile_id, intent, sql, plan, quality_verdict, row_count, flagged)
+           VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)""",
+        (profile_id, intent, sql, (plan or None), json.dumps(verdict), row_count, flagged),
+    )
+
+
+def run_adhoc_audited(conn, profile_id: str, sql: str, *, intent: str = "",
+                      limit: int = 500) -> dict:
+    """run_adhoc + quality_check + audit. The path for NON-catalog queries: every ad-hoc
+    query is quality-checked and logged to query_audit. Returns the run_adhoc result plus
+    a 'quality' verdict. (Catalog views bypass this — they're pre-vetted.)"""
+    res = run_adhoc(conn, sql, limit)
+    # quality-check the SAME query that actually ran (and gets audited), not the raw input
+    checked_sql = res.get("sql") or sql
+    verdict = quality_check(
+        checked_sql, intent=intent, rows=res.get("rows"),
+        empty=(res.get("warning") is not None) or (res["ok"] and not res.get("rows")),
+    )
+    if not res["ok"]:
+        # validation already failed (write/typo/multi-stmt); record that as the verdict
+        verdict = {"ok": False,
+                   "flags": [{"code": "invalid_sql", "severity": "high", "note": res["error"]}],
+                   "notes": res["error"]}
+    try:
+        audit_query(conn, profile_id, intent=intent, sql=res.get("sql") or sql,
+                    plan=None, verdict=verdict,
+                    row_count=len(res.get("rows") or []))
+    except Exception:
+        conn.rollback()  # auditing must never break the read path
+    res["quality"] = verdict
+    return res
