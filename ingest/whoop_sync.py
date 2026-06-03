@@ -297,6 +297,7 @@ def _map_cycle(cycle: dict, recovery: dict | None, sleep: dict | None,
 
     row: dict = {
         "profile_id": profile_id,
+        "whoop_id": cycle.get("id"),
         "cycle_start": cycle.get("start"),
         "cycle_end": cycle.get("end"),
         "timezone": cycle.get("timezone_offset"),
@@ -350,6 +351,7 @@ def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
 
     row: dict = {
         "profile_id": profile_id,
+        "whoop_id": sleep.get("id"),
         "cycle_start": cycle_start,          # derived from recovery → cycle.start
         "sleep_onset": sleep.get("start"),
         "wake_onset": sleep.get("end"),
@@ -377,8 +379,8 @@ def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _WORKOUT_CONFLICTS = ["profile_id", "whoop_id"]
-_CYCLE_CONFLICTS = ["profile_id", "cycle_start"]
-_SLEEP_CONFLICTS = ["profile_id", "cycle_start", "sleep_onset"]
+_CYCLE_CONFLICTS = ["profile_id", "whoop_id"]   # 008e: stable WHOOP UUID, re-scores overwrite cleanly
+_SLEEP_CONFLICTS = ["profile_id", "whoop_id"]   # 008e: was (cycle_start, sleep_onset) — fragile on re-score
 
 
 def _build_cycle_lookup(cycles: list) -> list:
