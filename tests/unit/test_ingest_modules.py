@@ -131,6 +131,42 @@ class TestKnownFoodClassifies:
         assert len(food_log_inserts) >= 1, "Must INSERT into food_logs"
         assert len(stg_inserts) == 0, "Must NOT stage a high-confidence entry"
 
+    def test_comma_slipped_calories_staged_through_real_path(self):
+        """End-to-end through ingest_food_row (NOT just validate()): a meal logged
+        as 20 kcal (the '1,020'->20 comma-slip) is below food_energy_kcal's
+        plausible_min 25 → validate() flags it implausible → ingest_food_row routes
+        it to stg_food_log_review, never to prod. High confidence (0.9) proves it is
+        the BOUND that catches it, not low extraction confidence."""
+        STG_UUID = str(uuid.uuid4())
+        fetchone_seq = [
+            (GUIDANCE_UUID, "eggs", "green", "high protein", None),  # guidance hit
+            (0.7,),                                                   # confidence_min (0.9 > 0.7)
+            (1,),                                                     # validate FK: profile_id
+            (25.0, 12000.0),                                          # food_energy_kcal bound → 20 < 25
+            (STG_UUID,),                                              # stage INSERT RETURNING id
+        ]
+        conn, cur = _conn_single_cursor(fetchone_seq)
+
+        llm_response = {
+            "verdict": "green", "confidence": 0.9,
+            "calories": 20,  # comma-slip: should have been 1,020
+            "protein_g": 14.0, "carbs_g": 1.0, "fat_g": 13.0, "fiber_g": 0.0,
+            "flags": ["high_protein"], "reasoning": "Eggs.",
+        }
+        payload = {"meal_type": "breakfast", "log_date": "2026-06-02", "items": ["eggs"]}
+
+        with patch("ingest.food.classify_food", return_value=llm_response):
+            from ingest.food import ingest_food_row
+            result = ingest_food_row(payload, conn, PROFILE_UUID)
+
+        assert result["status"] == "staged", f"expected staged, got {result}"
+        assert result["reason"] == "validation_failed"
+        assert any(e["code"] == "implausible" for e in result.get("errors", []))
+        # routed to staging, NOT to prod
+        executed = [str(c) for c in cur.execute.call_args_list]
+        assert any("stg_food_log_review" in s for s in executed), "must stage"
+        assert not any("food_logs" in s and "INSERT" in s for s in executed), "must NOT write prod"
+
 
 # ===========================================================================
 # Test 2 — Unknown biomarker marker stages to stg_biomarker_review
