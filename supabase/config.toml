@@ -1,0 +1,7 @@
+project_id = "dsnydskkjwziynwmzfkh"
+
+[functions.whoop-oauth]
+verify_jwt = false
+
+[functions.whoop-webhook]
+verify_jwt = false
