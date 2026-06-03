@@ -83,17 +83,74 @@ def validate_readonly_sql(conn, sql: str, limit: int = 500) -> dict:
         return {"ok": False, "error": str(e).splitlines()[0], "plan": None, "sql": wrapped}
 
 
+_REF_RE = re.compile(r"\b(?:from|join)\s+(?:public\.)?([a-z_][a-z0-9_]*)", re.IGNORECASE)
+
+
+def referenced_tables(sql: str) -> list[str]:
+    """Extract table/view names referenced after FROM/JOIN (best-effort)."""
+    return sorted({m.group(1).lower() for m in _REF_RE.finditer(_strip_sql_comments(sql))})
+
+
+def relevant_traps(conn, sql: str) -> dict:
+    """Return table + column COMMENTs (from pg_description) for every table the query
+    references that carry a TRAP/JOIN-TRAP marker. This puts the schema map's hazards
+    IN FRONT of the model at compose/validate time — the comments become active, not
+    passive docs. {table: {"table": <comment>, "columns": {col: comment, ...}}}."""
+    tables = referenced_tables(sql)
+    if not tables:
+        return {}
+    cur = conn.cursor()
+    out: dict = {}
+    for t in tables:
+        # table comment
+        try:
+            cur.execute("SELECT obj_description(('public.'||%s)::regclass)", (t,))
+            tc = (cur.fetchone() or [None])[0]
+        except Exception:
+            conn.rollback(); continue
+        # column comments that mention a TRAP
+        cur.execute("""
+            SELECT a.attname, col_description(a.attrelid, a.attnum)
+            FROM pg_attribute a
+            JOIN pg_class cl ON cl.oid=a.attrelid
+            JOIN pg_namespace n ON n.oid=cl.relnamespace
+            WHERE n.nspname='public' AND cl.relname=%s AND a.attnum>0 AND NOT a.attisdropped
+              AND col_description(a.attrelid,a.attnum) ILIKE '%%TRAP%%'
+        """, (t,))
+        cols = {name: c for name, c in cur.fetchall() if c}
+        if (tc and "TRAP" in tc.upper()) or cols:
+            out[t] = {"table": tc if (tc and "TRAP" in tc.upper()) else None, "columns": cols}
+    return out
+
+
 def run_adhoc(conn, sql: str, limit: int = 500) -> dict:
-    """Validate then execute a read-only ad-hoc query. Returns {ok, error, columns, rows, sql}."""
+    """Validate then execute a read-only ad-hoc query.
+
+    Returns {ok, error, columns, rows, sql, traps, warning}:
+      - traps: the TRAP column/table comments for every referenced table (active schema map).
+      - warning: set when 0 rows come back — a silent-empty result is the failure mode
+        EXPLAIN can't catch (e.g. a wrong join key). The skill must re-check the traps,
+        not report "no data".
+    """
+    traps = relevant_traps(conn, sql)
     v = validate_readonly_sql(conn, sql, limit)
     if not v["ok"]:
-        return {"ok": False, "error": v["error"], "columns": [], "rows": [], "sql": v["sql"]}
+        return {"ok": False, "error": v["error"], "columns": [], "rows": [], "sql": v["sql"], "traps": traps, "warning": None}
     import psycopg2.extras
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(v["sql"])
     rows = [dict(r) for r in cur.fetchall()]
     cols = list(rows[0].keys()) if rows else []
-    return {"ok": True, "error": None, "columns": cols, "rows": rows, "sql": v["sql"]}
+    # 0 rows OR a single all-NULL aggregate row = suspicious empty result
+    empty = (not rows) or (len(rows) == 1 and all(v is None for v in rows[0].values()))
+    warning = None
+    if empty and traps:
+        warning = ("0 rows / all-NULL aggregate. EXPLAIN passed, so this is likely a JOIN/FILTER "
+                   "trap, not absent data. Check the TRAP comments on: " + ", ".join(traps) +
+                   " (e.g. join whoop_journal↔whoop_cycles on cycle_start::date). Re-check before "
+                   "answering 'no data'.")
+    return {"ok": True, "error": None, "columns": cols, "rows": rows, "sql": v["sql"],
+            "traps": traps, "warning": warning}
 
 
 # ---------------------------------------------------------------------------

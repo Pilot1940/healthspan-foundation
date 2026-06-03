@@ -66,10 +66,16 @@ WHOOP freshness is automatic (Edge webhook + `whoop_tokens`). **The skill never 
 semantic ground truth incl. every trap) so you don't misread a column. Prefer a `lib/views.py` catalog
 query first; only go ad-hoc when no view fits.
 
-**Ad-hoc SQL MUST pass `lib.sql_guard.validate_readonly_sql(conn, sql)`** (or use `run_adhoc`):
+**Ad-hoc SQL MUST go through `lib.sql_guard.run_adhoc(conn, sql)`** (which calls validate_readonly_sql):
 it rejects anything but a single SELECT / WITH…SELECT, runs plain EXPLAIN on the scoped connection so a
-hallucinated column fails BEFORE returning data, and injects a LIMIT. Surface its `error` to self-correct,
-then show the user the SQL + raw rows, marked lower-confidence.
+hallucinated column fails BEFORE returning data, injects a LIMIT, and returns:
+  - `traps`: the TRAP column/table COMMENTs for every table the query references — **READ THESE; they
+    are the column comments made active.** Honour every trap (e.g. join whoop_journal↔whoop_cycles on
+    `cycle_start::date`, exclude NULL recovery, never recompute a printed derived value).
+  - `warning`: set when the result is 0 rows / an all-NULL aggregate. **A silent-empty result is NOT
+    "no data"** — it is almost always a join/filter trap EXPLAIN can't catch. When `warning` is set you
+    MUST re-check the surfaced traps and fix the query before answering; never report "you have no X".
+Surface `error` to self-correct; show the user the SQL + raw rows, marked lower-confidence.
 
 **CITE guard (BaySys A9 for health — the primary defence against a confidently-wrong number):**
 EVERY number in your answer comes from a query RESULT, never from memory or the schema. Cite each

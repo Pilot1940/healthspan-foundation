@@ -80,3 +80,30 @@ class TestCiteGuard:
         rows = [{"avg": 50.66}]
         out = trace_numbers("about 50.7", rows)  # within tolerance
         assert "50.7" in out["traceable"]
+
+
+class TestActiveTraps:
+    def test_referenced_tables(self):
+        from lib.sql_guard import referenced_tables
+        sql = "SELECT * FROM whoop_cycles c JOIN public.whoop_journal j ON j.cycle_start=c.cycle_start"
+        assert referenced_tables(sql) == ["whoop_cycles", "whoop_journal"]
+
+    def test_zero_row_warning_when_traps_exist(self):
+        # all-NULL aggregate + traps present → warning fires
+        from lib.sql_guard import run_adhoc
+        from unittest.mock import MagicMock
+        conn = MagicMock()
+        # cursor for relevant_traps: obj_description then column comments
+        cur = MagicMock()
+        cur.fetchone.side_effect = [("table comment with TRAP",)]
+        cur.fetchall.side_effect = [
+            [("cycle_start", "TRAP: join on ::date")],   # trap cols
+            [("Seq Scan",)],                              # EXPLAIN
+            [],                                            # (unused)
+        ]
+        # RealDictCursor path returns one all-NULL row
+        dcur = MagicMock()
+        dcur.fetchall.return_value = [{"avg": None}]
+        conn.cursor.side_effect = [cur, cur, dcur]
+        out = run_adhoc(conn, "SELECT avg(hrv_ms) FROM whoop_cycles")
+        assert out["ok"] and out["warning"] and "trap" in out["warning"].lower()
