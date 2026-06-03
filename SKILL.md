@@ -58,9 +58,24 @@ At session END: update the `current` note (supersede) and append one short `log`
 | **Interval / workout coaching** ("how was my 4×4?") | `analysis/interval_report.py` | zone readout + interval enrichment |
 | **Reporting / query** ("recovery trend", "what's abnormal?", "India vs travel") | `lib/views.py` catalog via `run_view()` → `export/report_md.py` | verified queries, RLS-safe |
 | **Dashboard / export** (xlsx / PDF / HTML) | `export/dashboard.py` · `export/export_file.py` | all consume `lib/views` |
-| **Novel question** not in the catalog | ad-hoc **read-only** SQL on the scoped conn | role can't write/DDL/delete — safe |
+| **Novel question** not in the catalog | ad-hoc **read-only** SQL on the scoped conn, via `lib/sql_guard` | role can't write/DDL/delete — safe |
 
 WHOOP freshness is automatic (Edge webhook + `whoop_tokens`). **The skill never touches WHOOP tokens.**
+
+**Before composing ANY ad-hoc SQL**: load `docs/SCHEMA-MAP.md` (generated from column COMMENTs — the
+semantic ground truth incl. every trap) so you don't misread a column. Prefer a `lib/views.py` catalog
+query first; only go ad-hoc when no view fits.
+
+**Ad-hoc SQL MUST pass `lib.sql_guard.validate_readonly_sql(conn, sql)`** (or use `run_adhoc`):
+it rejects anything but a single SELECT / WITH…SELECT, runs plain EXPLAIN on the scoped connection so a
+hallucinated column fails BEFORE returning data, and injects a LIMIT. Surface its `error` to self-correct,
+then show the user the SQL + raw rows, marked lower-confidence.
+
+**CITE guard (BaySys A9 for health — the primary defence against a confidently-wrong number):**
+EVERY number in your answer comes from a query RESULT, never from memory or the schema. Cite each
+figure's source: *"recovery 50.7% (whoop_cycles, 30-day avg, 24 scored days)"*. Before sending, run
+`lib.sql_guard.trace_numbers(answer, rows)` as a self-check; any **untraceable** figure must be
+re-queried or not stated ("not in the data") — never guessed.
 
 ---
 
