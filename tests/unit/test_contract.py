@@ -590,17 +590,21 @@ class TestImplausibilityGate:
 
 
 class TestSyncLog:
-    def test_open_returns_id(self):
+    def test_open_returns_client_uuid_no_returning(self):
+        # id is generated client-side (no RETURNING) so the maintainer-only SELECT
+        # policy on wearable_sync_log can't break a non-maintainer's insert.
         conn = MagicMock()
         cur = MagicMock()
-        cur.fetchone.return_value = (42,)
         conn.cursor.return_value = cur
 
         sid = open_sync_log(conn, "whoop", "api", profile_id=PROFILE_UUID)
-        assert sid == 42
-        sql = cur.execute.call_args[0][0]
+        uuid.UUID(sid)  # a valid UUID string
+        sql, params = cur.execute.call_args[0]
         assert "wearable_sync_log" in sql
         assert "'in_progress'" in sql
+        assert "RETURNING" not in sql.upper()
+        assert sid in params  # the client id is passed in, not read back
+        cur.fetchone.assert_not_called()
 
     def test_close_updates_status(self):
         conn = MagicMock()
@@ -611,7 +615,9 @@ class TestSyncLog:
                        records_in=10, records_upserted=8,
                        records_skipped=1, records_failed=1)
         sql = cur.execute.call_args[0][0]
-        assert "UPDATE wearable_sync_log" in sql
+        # routed through the SECURITY DEFINER finaliser (not a direct UPDATE), so a
+        # non-maintainer can close its own run under the maintainer-only SELECT policy
+        assert "hs_close_sync_log" in sql
         args = cur.execute.call_args[0][1]
         assert "success" in args
 

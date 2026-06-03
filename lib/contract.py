@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid as _uuid
 
 # ----------------------------------------------------------------------------
 # Errors
@@ -563,16 +564,18 @@ def stage(conn, table: str, source: dict, confidence, raw_text=None) -> "int|Non
         raise ValueError(f"no staging table mapped for {table!r}")
     stg_table, adapt = spec
     stg_row = _drop_none(adapt(source, confidence, raw_text))
+    # Client-side id (no RETURNING): stg_*_review SELECT is maintainer-only (migration
+    # 022), and INSERT … RETURNING would invoke that SELECT policy and fail for a
+    # non-maintainer who is otherwise allowed to stage her own row.
+    stg_id = str(_uuid.uuid4())
+    stg_row["id"] = stg_id
     cols = list(stg_row.keys())
     qcols = ", ".join(_ident(c) for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
-    sql = (
-        f"INSERT INTO {_ident(stg_table)} ({qcols}) VALUES ({placeholders}) RETURNING id"
-    )
+    sql = f"INSERT INTO {_ident(stg_table)} ({qcols}) VALUES ({placeholders})"
     cur = conn.cursor()
     cur.execute(sql, [stg_row[c] for c in cols])
-    res = cur.fetchone()
-    return res[0] if res else None
+    return stg_id
 
 
 # ----------------------------------------------------------------------------
@@ -581,30 +584,40 @@ def stage(conn, table: str, source: dict, confidence, raw_text=None) -> "int|Non
 
 
 def open_sync_log(conn, provider: str, method: str, *, profile_id=None,
-                  sync_type="ingest", source_path=None) -> "int":
-    """Open a wearable_sync_log run row (status='running') and return its id."""
+                  sync_type="ingest", source_path=None) -> str:
+    """Open a wearable_sync_log run row (status='in_progress') and return its id.
+
+    The id is generated CLIENT-SIDE (not via RETURNING). Under the maintainer-only
+    SELECT policy on wearable_sync_log (migration 022), INSERT … RETURNING would
+    invoke the SELECT policy and fail for a non-maintainer (e.g. Dea) — even though
+    she is allowed to insert. A client UUID avoids the read-back entirely.
+    """
+    sync_id = str(_uuid.uuid4())
     cur = conn.cursor()
     cur.execute(
         """INSERT INTO wearable_sync_log
-             (provider, method, sync_type, status, profile_id, source_path,
+             (id, provider, method, sync_type, status, profile_id, source_path,
               records_in, records_upserted, records_skipped, records_failed, started_at)
-           VALUES (%s, %s, %s, 'in_progress', %s, %s, 0, 0, 0, 0, now())
-           RETURNING id""",
-        (provider, method, sync_type, profile_id, source_path),
+           VALUES (%s, %s, %s, %s, 'in_progress', %s, %s, 0, 0, 0, 0, now())""",
+        (sync_id, provider, method, sync_type, profile_id, source_path),
     )
-    return cur.fetchone()[0]
+    return sync_id
 
 
 def close_sync_log(conn, sync_log_id, *, status="success", records_in=0,
                    records_upserted=0, records_skipped=0, records_failed=0) -> None:
-    """Finalise a run row with counters + completed_at."""
+    """Finalise a run row with counters + completed_at.
+
+    Goes through the SECURITY DEFINER hs_close_sync_log() rather than a direct UPDATE:
+    wearable_sync_log SELECT is maintainer-only (migration 022), and a plain
+    UPDATE … WHERE id=… reads the row to locate it → a non-maintainer (e.g. Dea)
+    would match 0 rows and never finalise her own run. The definer updates by id as
+    owner (bypasses RLS); the caller legitimately holds the id from open_sync_log.
+    """
     cur = conn.cursor()
     cur.execute(
-        """UPDATE wearable_sync_log
-              SET status = %s, records_in = %s, records_upserted = %s,
-                  records_skipped = %s, records_failed = %s, completed_at = now()
-            WHERE id = %s""",
-        (status, records_in, records_upserted, records_skipped, records_failed, sync_log_id),
+        "SELECT public.hs_close_sync_log(%s, %s, %s, %s, %s, %s)",
+        (sync_log_id, status, records_in, records_upserted, records_skipped, records_failed),
     )
 
 
