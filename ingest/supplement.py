@@ -71,12 +71,12 @@ def ingest_supplement_row(payload: dict, conn, profile_id: str) -> dict:
         taken_on    : str   ISO date (defaults to today, derived from taken_at)
         dose_amount : float
         dose_unit   : str
-        source      : str   defaults to 'manual_skill'
+        source      : str   defaults to 'skill' (allowed: manual/journal/skill/csv)
         notes       : str
 
     Returns {"status": "inserted"|"updated"|"staged"|"failed", ...}
     """
-    source = payload.get("source", "manual_skill")
+    source = payload.get("source", "skill")   # DB CHECK: manual|journal|skill|csv
     taken_at_raw = payload.get("taken_at") or datetime.now(timezone.utc).isoformat()
     taken_on_raw = payload.get("taken_on")
     if not taken_on_raw:

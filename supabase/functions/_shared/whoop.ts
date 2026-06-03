@@ -46,7 +46,7 @@ export async function refreshTokens(refresh_token: string) {
   return await tokenPost({
     grant_type: "refresh_token",
     refresh_token,
-    scope: "offline",
+    scope: SCOPES,   // pass full scopes on refresh to prevent silent scope loss
     client_id: Deno.env.get("WHOOP_CLIENT_ID")!,
     client_secret: Deno.env.get("WHOOP_CLIENT_SECRET")!,
   });
