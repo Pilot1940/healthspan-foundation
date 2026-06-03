@@ -143,6 +143,9 @@ non-owner instance FLAGS an unknown item for the owner, never writes the catalog
   without a true clinical range (Mentzer, spot HR) are weak flags; note recency, don't over-alarm.
 - **Goals**: progress is direction-aware (raising VO2max and lowering ApoB both read as % toward target);
   `None` progress (no baseline/metric/reading) → report current-vs-target qualitatively, don't invent a %.
+- **VO2max is method-keyed**: `vo2max_lab`+`vo2max_relative` = measured/lab (authoritative); `vo2max_estimated`
+  = WHOOP (context). Never trend across methods; lead with the measured value. Generalises to any metric
+  measured by >1 method.
 
 ---
 

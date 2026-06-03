@@ -181,19 +181,21 @@ VIEWS: dict[str, dict] = {
     },
 
     "vo2_status": {
-        "description": "VO2 max trend (estimated + lab) plus high-intensity volume last 21 days — "
-                       "are we building the aerobic base for the VO2 goal?",
+        "description": "VO2max by METHOD as separate series — measured/lab (vo2max_lab+relative, "
+                       "ml/kg/min) is authoritative; estimated (WHOOP) is context. Never blended.",
         "params": {},
-        "chart_hint": "line",
-        "default_columns": ["measured_at", "marker", "value", "unit", "lab_name"],
+        # one line PER method (measured vs estimated) — never a single blended line
+        "chart_hint": "multi_line",
+        "default_columns": ["method", "series", "measured_at", "value", "unit"],
         "sql": """
-            SELECT b.measured_at::date AS measured_at, m.name AS marker,
-                   b.value, b.unit, b.lab_name
-            FROM biomarkers b
-            JOIN metric_definitions m ON m.id = b.metric_definition_id
+            SELECT
+              CASE WHEN m.name IN ('vo2max_lab','vo2max_relative') THEN 'measured'
+                   WHEN m.name = 'vo2max_estimated' THEN 'estimated' END AS method,
+              m.name AS series, b.measured_at::date AS measured_at, b.value, b.unit, b.source
+            FROM biomarkers b JOIN metric_definitions m ON m.id = b.metric_definition_id
             WHERE b.profile_id = %(profile_id)s
-              AND m.name IN ('vo2max_estimated','vo2max_lab')
-            ORDER BY b.measured_at
+              AND m.name IN ('vo2max_lab','vo2max_relative','vo2max_estimated')
+            ORDER BY method, series, measured_at
         """,
         "summary_sql": """
             SELECT round(sum(COALESCE(hr_zone4_sec,0)+COALESCE(hr_zone5_sec,0))/60.0, 1) AS hi_intensity_min_21d,

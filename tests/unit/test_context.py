@@ -85,9 +85,11 @@ class TestParser:
 class TestRealContextFiles:
     """The shipped context files encode the headline blueprint invariant."""
 
-    def test_pc_calorie_target_is_2000(self):
+    def test_pc_calorie_target_from_context_not_a_default(self):
+        # PC's target is his measured min energy need (uVida Jun-3: 2514), read from the
+        # context MD — distinct from Dea's 2400, proving per-person targets (not a default).
         ctx = load_context("pc")
-        assert get_target(ctx, "daily_calories") == 2000
+        assert get_target(ctx, "daily_calories") == 2514
         assert ctx["is_minor"] is False
 
     def test_dea_calorie_target_is_2400_and_minor(self):
