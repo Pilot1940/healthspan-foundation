@@ -94,20 +94,26 @@ after2 = count_biomarkers(mid, DOC_DATE)
 print(f"     2nd ingest -> status={r2['status']}   prod rows for key: {after1} -> {after2}   NEW ROWS: {after2-after1}\n")
 
 # -------------------------------------------------------------------------
-print("F. Out-of-range prevention — android_gynoid_ratio 1.27 (ref max 1.0)")
+print("F. Abnormal-but-real value — android_gynoid_ratio 1.27 (ref max 1.0)  [#1 fix]")
 cur.execute("SELECT id,min_value,max_value FROM metric_definitions WHERE name='android_gynoid_ratio'")
 ag = cur.fetchone()
 print(f"     metric ref=[{ag[1]},{ag[2]}]  test value 1.27 (real DEXA, above clinical normal)")
 stg_before = stg_count()
+prod_before = count_biomarkers(ag[0], DOC_DATE)
 r3 = ingest_biomarker_row(
     {"name": "android_gynoid_ratio", "value": 1.27, "unit": "ratio",
      "measured_at": DOC_DATE, "source": "manual", "lab_name": "Case3-DryRun-Lab"},
     conn, PROFILE)
 stg_after = stg_count()
-prod_check = count_biomarkers(ag[0], DOC_DATE)
-print(f"     ingest -> status={r3['status']}  reason={r3.get('reason')}")
-print(f"     staging rows: {stg_before} -> {stg_after} (+{stg_after-stg_before})   prod rows for key: {prod_check}")
-print(f"     => abnormal-but-real value did NOT silently hit prod; routed to review.\n")
+prod_after = count_biomarkers(ag[0], DOC_DATE)
+print(f"     ingest -> status={r3['status']}  abnormal={r3.get('abnormal')}  range_flags={r3.get('range_flags')}")
+print(f"     prod rows for key: {prod_before} -> {prod_after} (+{prod_after-prod_before})   staging: {stg_before} -> {stg_after} (+{stg_after-stg_before})")
+# confirm abnormal_labs (query-time derivation) surfaces it from PROD
+from lib.views import run_view
+abn = run_view(conn, "abnormal_labs", PROFILE)["rows"]
+hit = [r for r in abn if r.get("value") is not None and abs(float(r["value"]) - 1.27) < 0.001]
+print(f"     abnormal_labs surfaces it from prod: {bool(hit)}  -> {hit[0] if hit else None}")
+print(f"     => abnormal-but-real value WRITES TO PROD and is flagged HIGH (not buried in staging).\n")
 
 # -------------------------------------------------------------------------
 conn.rollback()   # DRY RUN: discard everything

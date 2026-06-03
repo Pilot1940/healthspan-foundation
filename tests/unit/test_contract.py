@@ -245,7 +245,7 @@ class TestBadRowLogged:
 # ===========================================================================
 
 
-class TestOutOfRangeStaged:
+class TestOutOfRangeFlagged:
     """A biomarker value outside metric_definitions.min/max must land in
     stg_biomarker_review — never silently coerced, never dropped."""
 
@@ -258,7 +258,9 @@ class TestOutOfRangeStaged:
     #   6. [if staged] stg INSERT    → (stg_id,)
     #   6. [if prod]   write INSERT  → (True/False,)  [xmax=0 for insert]
 
-    def test_out_of_range_routes_to_staging(self):
+    def test_out_of_range_writes_to_prod_flagged(self):
+        # Reference range is for FLAGGING, not gating: a confidently-read out-of-range
+        # value is real data → writes to PROD with abnormal=True (NOT staged).
         conn = MagicMock()
         cur = MagicMock()
         cur.fetchone.side_effect = [
@@ -267,7 +269,7 @@ class TestOutOfRangeStaged:
             (1,),                    # validate FK: profile
             (1,),                    # validate FK: metric_def
             (4.0, 6.0, "HbA1c"),    # range: min=4, max=6; value=12 OUT
-            (999,),                  # stage INSERT → stg_biomarker_review RETURNING id
+            (True,),                 # write INSERT … ON CONFLICT RETURNING (xmax=0 → inserted)
         ]
         conn.cursor.return_value = cur
 
@@ -278,27 +280,26 @@ class TestOutOfRangeStaged:
                 "metric_definition_id": METRIC_UUID,
                 "name": "HbA1c",
                 "measured_at": "2026-06-01 08:00+00",
-                "value": 12.0,  # above max 6 → out_of_range
+                "value": 12.0,  # above max 6 → out_of_range, but still real
                 "unit": "%",
             },
             conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
         )
-        assert result["status"] == "staged"
-        assert result.get("reason") == "out_of_range"
+        assert result["status"] == "inserted"
+        assert result.get("abnormal") is True
+        assert any(e["code"] == "out_of_range" for e in result.get("range_flags", []))
 
-        # must NOT have attempted INSERT into biomarkers prod table
+        # MUST write to prod, and MUST NOT route to the staging table
         inserts_to_prod = [
             c for c in cur.execute.call_args_list
             if 'INSERT INTO "biomarkers"' in str(c)
         ]
-        assert len(inserts_to_prod) == 0
-
-        # must have INSERT into stg_biomarker_review
-        inserts_to_stg = [
+        assert len(inserts_to_prod) == 1
+        stage_inserts = [
             c for c in cur.execute.call_args_list
             if "stg_biomarker_review" in str(c)
         ]
-        assert len(inserts_to_stg) >= 1
+        assert len(stage_inserts) == 0
 
     def test_value_in_range_writes_to_prod(self):
         conn = MagicMock()

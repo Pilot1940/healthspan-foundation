@@ -354,9 +354,11 @@ def _drop_none(d: dict) -> dict:
 def validate(conn, table: str, row: dict) -> tuple[bool, list]:
     """Check types, FK existence, and numeric range. Returns ``(ok, errors)``.
 
-    Never mutates ``row``. Range checks use metric_definitions.min_value/max_value.
-    An out-of-range value is reported (code ``out_of_range``) but not discarded —
-    the caller routes it to staging.
+    Never mutates ``row``. Range checks use metric_definitions.min_value/max_value,
+    which are CLINICAL REFERENCE ranges (for flagging), NOT plausibility bounds. An
+    out-of-range value is reported (code ``out_of_range``) but is NOT a write blocker:
+    the caller writes it to prod and surfaces it as abnormal. Only missing_required /
+    fk_not_found / bad_type are hard failures.
     """
     errors: list[dict] = []
     cur = conn.cursor()
@@ -525,8 +527,9 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
     Wrapped in a SAVEPOINT so a failure rolls back ONLY this record (the run
     continues). Routing:
       * unresolved (fk None) or confidence < system_config threshold → staging
-      * out-of-range numeric → staging (never coerced)
-      * other validation failure → logged to wearable_sync_errors, status 'failed'
+      * out-of-range numeric → idempotent upsert to prod, flagged abnormal (reference
+        range is for flagging, not gating; abnormal_labs derives LOW/HIGH at query time)
+      * hard validation failure (missing_required/fk_not_found/bad_type) → wearable_sync_errors, status 'failed'
       * otherwise → idempotent upsert to prod
 
     Returns ``{"status": "upserted"|"updated"|"skipped"|"staged"|"failed", ...}``.
@@ -551,18 +554,27 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
                     "confidence": conf}
 
         ok, errors = validate(conn, table, normalised)
-        if not ok:
-            # out-of-range is recoverable → stage it (never discard, never coerce)
-            if any(e["code"] == "out_of_range" for e in errors):
-                cur.execute("RELEASE SAVEPOINT hs_rec")
-                stage(conn, table, source, conf, raw_text=raw_text)
-                return {"status": "staged", "reason": "out_of_range", "errors": errors}
-            # anything else is a hard validation failure for this record
-            raise ContractError(f"validation failed for {table}", errors)
+        # `out_of_range` is NOT a write blocker: metric_definitions.min/max are CLINICAL
+        # REFERENCE ranges (for flagging), not plausibility bounds. A confidently-read
+        # value outside the reference range is REAL DATA and exactly what this app tracks
+        # (high insulin, high android fat, low vitamin D). It writes to prod; the
+        # abnormal_labs view derives LOW/HIGH from min/max at query time. Routing it to
+        # staging would starve that view. (Extraction-confidence staging stays above.)
+        # Only HARD errors (missing_required / fk_not_found / bad_type) block the write.
+        abnormal = [e for e in errors if e["code"] == "out_of_range"]
+        hard = [e for e in errors if e["code"] != "out_of_range"]
+        if hard:
+            raise ContractError(f"validation failed for {table}", hard)
 
         result = write(conn, table, normalised, conflict_cols)
         cur.execute("RELEASE SAVEPOINT hs_rec")
-        return {"status": result}
+        out = {"status": result}
+        if abnormal:
+            # surface so the skill can flag it to the user at ingest time (the value is
+            # stored verbatim; abnormal_labs shows the LOW/HIGH derivation)
+            out["abnormal"] = True
+            out["range_flags"] = abnormal
+        return out
 
     except Exception as e:  # atomic per record: isolate, log, keep the run alive
         try:
