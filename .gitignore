@@ -22,3 +22,6 @@ config/*.config.json
 
 # generated role secrets
 config/*.secret*
+
+# Supabase CLI temp files
+supabase/.temp/
