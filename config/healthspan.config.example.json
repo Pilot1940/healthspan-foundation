@@ -4,6 +4,10 @@
   "profile_id": "<uuid of this person's profiles.id>",
   "display_name": "PC | Dea",
   "is_owner": true,
+  "is_minor": false,
+  "_is_minor_note": "true for a minor (e.g. Dea). Minor-safety also lives in the context MD; this is defence-in-depth for the safety gate. The skill treats the profile as a minor if EITHER this OR the context MD's is_minor is true.",
+  "_context_note": "targets/norms/voice/safety come from context/<display_name lowercased>.context.md (or set context_slug). The skill reads ALL targets from there, never a default.",
+  "_auth_user_id_note": "auth_user_id below must be a family_memberships.auth_user_id for this profile (is_maintainer() and has_profile_access() resolve through family_memberships, NOT profiles.auth_user_id — a profile may have several memberships).",
 
   "_access_model": "A — per-person Supabase auth user + RLS (has_profile_access) + restricted grants (no DELETE/TRUNCATE; catalogs SELECT-only). Two connection modes supported; pick per instance:",
 
