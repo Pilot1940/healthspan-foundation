@@ -107,7 +107,7 @@ def ingest_biomarker_row(payload: dict, conn, profile_id: str) -> dict:
                 raw["name"] = md_row[0]
 
     sync_log_id = open_sync_log(
-        conn, provider="manual", method="biomarker_ingest",
+        conn, provider="manual", method="manual",
         profile_id=profile_id, sync_type="ingest",
     )
     try:

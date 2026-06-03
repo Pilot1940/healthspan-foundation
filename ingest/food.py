@@ -268,7 +268,7 @@ def run_interactive(conn, profile_id: str) -> None:
     }
 
     sync_log_id = open_sync_log(
-        conn, provider="manual_skill", method="interactive",
+        conn, provider="manual", method="manual",
         profile_id=profile_id, sync_type="ingest",
     )
     try:
