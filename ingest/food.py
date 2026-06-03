@@ -140,8 +140,16 @@ def _lookup_guidance(conn, items: list[str]) -> tuple[list[dict], list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-def ingest_food_row(payload: dict, conn, profile_id: str) -> dict:
+_VALID_METHODS = {"csv", "screenshot", "photo", "manual", "api"}
+
+
+def ingest_food_row(payload: dict, conn, profile_id: str,
+                    method: str = "manual") -> dict:
     """Ingest one food log entry through the full contract.
+
+    `method` records the ingestion modality on the sync-log run: 'manual' for typed
+    entry (default), 'photo' when parsed from a meal photo. Must be one of
+    wearable_sync_log's allowed methods.
 
     payload keys (all optional except profile_id in the call signature):
         meal_type   : str   e.g. "breakfast"
@@ -267,8 +275,10 @@ def run_interactive(conn, profile_id: str) -> None:
         "notes": notes or None,
     }
 
+    if method not in _VALID_METHODS:
+        raise ValueError(f"method {method!r} not in {sorted(_VALID_METHODS)}")
     sync_log_id = open_sync_log(
-        conn, provider="manual", method="manual",
+        conn, provider="manual", method=method,
         profile_id=profile_id, sync_type="ingest",
     )
     try:

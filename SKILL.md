@@ -52,8 +52,8 @@ At session END: update the `current` note (supersede) and append one short `log`
 
 | Intent | Route to | Notes |
 |---|---|---|
-| Drop a **food photo / lab report / DEXA / workout screenshot** | Claude-vision-OCR → `lib/contract` (resolve→validate→write→log) | CONFIRM parsed rows before writing |
-| **Log food / supplement / biomarker** by text | `ingest/food.py` · `ingest/supplement.py` · `ingest/biomarker.py` | each uses `lib.contract` |
+| Drop a **food photo / lab report / DEXA / workout screenshot** | Claude-vision-OCR → `ingest/biomarker.py` / `ingest/food.py` with **`method="photo"`** (or `lib/contract` directly) | CONFIRM parsed rows before writing; the run is logged as `photo`, not `manual` |
+| **Log food / supplement / biomarker** by text | `ingest/food.py` · `ingest/supplement.py` · `ingest/biomarker.py` (default `method="manual"`) | each uses `lib.contract` |
 | **WHOOP HR-curve / interval** from a screenshot | `ingest/whoop_screenshot.py` | additive → workout_intervals / hr_samples |
 | **Interval / workout coaching** ("how was my 4×4?") | `analysis/interval_report.py` | zone readout + interval enrichment |
 | **Reporting / query** ("recovery trend", "what's abnormal?", "India vs travel") | `lib/views.py` catalog via `run_view()` → `export/report_md.py` | verified queries, RLS-safe |

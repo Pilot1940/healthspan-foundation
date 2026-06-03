@@ -62,8 +62,16 @@ def _resolve_via_loinc(conn, loinc_code: str) -> "str | None":
 # ---------------------------------------------------------------------------
 
 
-def ingest_biomarker_row(payload: dict, conn, profile_id: str) -> dict:
+_VALID_METHODS = {"csv", "screenshot", "photo", "manual", "api"}
+
+
+def ingest_biomarker_row(payload: dict, conn, profile_id: str,
+                         method: str = "manual") -> dict:
     """Ingest one biomarker through the full contract pipeline.
+
+    `method` records the ingestion modality on the sync-log run: 'manual' for typed
+    entry (default), 'photo' when the row was OCR'd from a lab-report/DEXA image,
+    'csv' for a file import. Must be one of wearable_sync_log's allowed methods.
 
     payload keys:
         name / metric : str   metric name or display_name
@@ -106,8 +114,10 @@ def ingest_biomarker_row(payload: dict, conn, profile_id: str) -> dict:
             if md_row:
                 raw["name"] = md_row[0]
 
+    if method not in _VALID_METHODS:
+        raise ValueError(f"method {method!r} not in {sorted(_VALID_METHODS)}")
     sync_log_id = open_sync_log(
-        conn, provider="manual", method="manual",
+        conn, provider="manual", method=method,
         profile_id=profile_id, sync_type="ingest",
     )
     try:
