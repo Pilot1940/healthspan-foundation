@@ -351,8 +351,12 @@ def _drop_none(d: dict) -> dict:
 # ----------------------------------------------------------------------------
 
 
-def validate(conn, table: str, row: dict) -> tuple[bool, list]:
+def validate(conn, table: str, row: dict, attended: bool = True) -> tuple[bool, list]:
     """Check types, FK existence, and the TWO numeric ranges. Returns ``(ok, errors)``.
+
+    ``attended`` (default True = a human confirms before write, e.g. the skill) only
+    affects the unverifiable case — no plausible bound AND no prior history. Attended
+    accepts it; unattended flags it ``unverified`` so the caller stages it.
 
     Never mutates ``row``. There are two distinct range concepts on
     metric_definitions — do not conflate them:
@@ -425,6 +429,7 @@ def validate(conn, table: str, row: dict) -> tuple[bool, list]:
                         cur, v, nm, plo, phi,
                         profile_id=row.get("profile_id"),
                         metric_id=row["metric_definition_id"],
+                        attended=attended,
                     )
                 )
 
@@ -454,13 +459,21 @@ def validate(conn, table: str, row: dict) -> tuple[bool, list]:
 
 
 def _implausible_errors(cur, v: float, nm: str, plo, phi,
-                        profile_id=None, metric_id=None) -> list:
-    """Return [{'code':'implausible', ...}] if v is outside the plausibility bound.
+                        profile_id=None, metric_id=None, attended: bool = True) -> list:
+    """Return gating errors if v cannot be trusted. Codes: ``implausible`` (outside
+    an explicit bound or failing the heuristic) / ``unverified`` (unattended fail-safe).
 
-    If an explicit ``plausible_min``/``plausible_max`` is set, the value must fall
-    within it. If NEITHER bound is set, fall back to the per-(profile, metric) 10x/
-    0.1x heuristic against prior biomarker history (when profile_id + metric_id are
-    given and prior data exists). Returns [] when the value is plausible.
+    Resolution order:
+      1. Explicit ``plausible_min``/``plausible_max`` set → value must fall within →
+         else ``implausible``.
+      2. No bound, but prior (profile, metric) history exists → 10x/0.1x heuristic →
+         a gross outlier is ``implausible``.
+      3. No bound AND no history → the value cannot be verified at all. ``attended``
+         ingest (a human confirms before write — the skill) ACCEPTS it (returns []).
+         UNATTENDED ingest must NOT silently accept an unverifiable value → it is
+         flagged ``unverified`` so the caller stages it for review. This is the
+         fail-safe: an automated path with no bound and no history has nothing
+         catching an OCR/unit slip, so a human must look.
     """
     errs: list[dict] = []
     if plo is not None and v < float(plo):
@@ -472,19 +485,27 @@ def _implausible_errors(cur, v: float, nm: str, plo, phi,
     if errs or plo is not None or phi is not None:
         return errs  # an explicit bound governs; do not also run the heuristic
 
-    # No bound configured → heuristic vs this profile+metric's prior values.
-    if profile_id is None or metric_id is None:
+    # No explicit bound → fall back to the per-(profile, metric) heuristic.
+    prior_max = prior_min = None
+    if profile_id is not None and metric_id is not None:
+        cur.execute(
+            "SELECT max(value), min(value) FROM biomarkers "
+            "WHERE profile_id = %s AND metric_definition_id = %s AND value IS NOT NULL",
+            (profile_id, metric_id),
+        )
+        hist = cur.fetchone()
+        if hist:
+            prior_max, prior_min = hist
+
+    if prior_max is None:
+        # No bound AND no usable history — unverifiable.
+        if not attended:
+            errs.append({"code": "unverified",
+                         "message": f"{nm} value {v}: no plausible bound and no prior "
+                                    f"history; unattended ingest → staged for review"})
         return errs
-    cur.execute(
-        "SELECT max(value), min(value) FROM biomarkers "
-        "WHERE profile_id = %s AND metric_definition_id = %s AND value IS NOT NULL",
-        (profile_id, metric_id),
-    )
-    hist = cur.fetchone()
-    if not hist:
-        return errs
-    prior_max, prior_min = hist
-    if prior_max is not None and v > 10.0 * float(prior_max):
+
+    if v > 10.0 * float(prior_max):
         errs.append({"code": "implausible",
                      "message": f"{nm} value {v} > 10x prior max {prior_max} (no bound set)"})
     if prior_min is not None and float(prior_min) > 0 and v < 0.1 * float(prior_min):
@@ -604,7 +625,7 @@ def log_error(conn, sync_log_id, record_ref, code, msg, raw=None) -> None:
 
 
 def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
-                  record_ref=None) -> dict:
+                  record_ref=None, attended: bool = True) -> dict:
     """Run one record through resolve → validate → write|stage → log.
 
     Wrapped in a SAVEPOINT so a failure rolls back ONLY this record (the run
@@ -613,11 +634,17 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
         heuristic) → staging. This is the GATE: a physiologically-impossible value
         is almost always an OCR/unit/comma error, so it is blocked from prod. It is
         checked FIRST — ahead of the confidence gate.
+      * UNVERIFIED value (no bound AND no history) on an UNATTENDED run → staging.
+        Same gate: an automated path with nothing to check the value against must
+        not silently accept it. (Attended runs accept — a human confirms the write.)
       * unresolved (fk None) or confidence < system_config threshold → staging
       * hard validation failure (missing_required/fk_not_found/bad_type) → wearable_sync_errors, status 'failed'
       * out-of-range numeric (CLINICAL reference range) → idempotent upsert to prod,
         flagged abnormal — NEVER gated; abnormal_labs derives LOW/HIGH at query time
       * otherwise → idempotent upsert to prod
+
+    ``attended`` defaults True (the skill confirms before write). An automated /
+    webhook caller passes attended=False to arm the unverified fail-safe.
 
     Returns ``{"status": "upserted"|"updated"|"skipped"|"staged"|"failed", ...}``.
     """
@@ -634,20 +661,24 @@ def ingest_record(conn, sync_log_id, kind, table, raw, conflict_cols,
         source = {**raw, **normalised}
         threshold = confidence_min(conn)
 
-        ok, errors = validate(conn, table, normalised)
+        ok, errors = validate(conn, table, normalised, attended=attended)
         # Split the validation findings by how each is routed:
-        implausible = [e for e in errors if e["code"] == "implausible"]
+        gated = [e for e in errors if e["code"] in ("implausible", "unverified")]
         abnormal = [e for e in errors if e["code"] == "out_of_range"]
         hard = [e for e in errors
-                if e["code"] not in ("implausible", "out_of_range")]
+                if e["code"] not in ("implausible", "unverified", "out_of_range")]
 
-        # GATE 1 — implausibility (checked before confidence). A value outside the
-        # physiologically-possible bound is blocked from prod and staged for review.
-        if implausible:
+        # GATE 1 — implausibility / unverified (checked before confidence). A value
+        # outside the plausibility bound, or unverifiable on an unattended run, is
+        # blocked from prod and staged for review.
+        if gated:
             cur.execute("RELEASE SAVEPOINT hs_rec")
             stage(conn, table, source, conf, raw_text=raw_text)
-            return {"status": "staged", "reason": "implausible_value",
-                    "confidence": conf, "range_flags": implausible}
+            reason = ("implausible_value"
+                      if any(e["code"] == "implausible" for e in gated)
+                      else "unverified_unattended")
+            return {"status": "staged", "reason": reason,
+                    "confidence": conf, "range_flags": gated}
 
         # GATE 2 — confidence / unresolved. (Comes after implausibility; this also
         # catches the fk-None case before the hard-error check below, so an

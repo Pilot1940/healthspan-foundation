@@ -497,6 +497,92 @@ class TestImplausibilityGate:
         assert ok is True
         assert errors == []
 
+    # --- unattended fail-safe: no bound AND no history -----------------------
+    def _no_bound_no_history_cursor(self):
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (1,),                                     # FK profile
+            (1,),                                     # FK metric_def
+            (None, None, "novel_marker", None, None),  # NO plausible bound
+            (None, None),                             # NO prior history
+        ]
+        conn = MagicMock()
+        conn.cursor.return_value = cur
+        return conn
+
+    _UNVERIFIABLE_ROW = {
+        "profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+        "measured_at": "2026-06-01 08:00+00", "value": 42,
+    }
+
+    def test_unattended_unverifiable_is_flagged_unverified(self):
+        """UNATTENDED + no bound + no history → cannot verify → 'unverified' (stage)."""
+        ok, errors = validate(self._no_bound_no_history_cursor(), "biomarkers",
+                              dict(self._UNVERIFIABLE_ROW), attended=False)
+        assert ok is False
+        assert any(e["code"] == "unverified" for e in errors)
+
+    def test_attended_unverifiable_is_accepted(self):
+        """ATTENDED (a human confirms before write) accepts the same row."""
+        ok, errors = validate(self._no_bound_no_history_cursor(), "biomarkers",
+                              dict(self._UNVERIFIABLE_ROW), attended=True)
+        assert ok is True
+        assert errors == []
+
+    def test_ingest_record_unattended_routes_unverifiable_to_staging(self):
+        """End-to-end: an unattended run stages the unverifiable value (reason
+        unverified_unattended) and does NOT write to prod."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (METRIC_UUID, "ng/mL"),                    # resolve exact
+            (0.7,),                                    # confidence_min
+            (1,),                                      # FK profile
+            (1,),                                      # FK metric_def
+            (None, None, "novel_marker", None, None),  # NO bound
+            (None, None),                              # NO history
+            (555,),                                    # stage INSERT … RETURNING id
+        ]
+        conn.cursor.return_value = cur
+
+        result = ingest_record(
+            conn, sync_log_id=18, kind="biomarker", table="biomarkers",
+            raw={"profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+                 "name": "novel_marker", "measured_at": "2026-06-01 08:00+00",
+                 "value": 42, "unit": "ng/mL"},
+            conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
+            attended=False,
+        )
+        assert result["status"] == "staged"
+        assert result["reason"] == "unverified_unattended"
+        assert any("stg_biomarker_review" in str(c) for c in cur.execute.call_args_list)
+        assert not any('INSERT INTO "biomarkers"' in str(c) for c in cur.execute.call_args_list)
+
+    def test_ingest_record_attended_writes_unverifiable(self):
+        """The same value on an ATTENDED run writes to prod (default behaviour)."""
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.side_effect = [
+            (METRIC_UUID, "ng/mL"),                    # resolve exact
+            (0.7,),                                    # confidence_min
+            (1,),                                      # FK profile
+            (1,),                                      # FK metric_def
+            (None, None, "novel_marker", None, None),  # NO bound
+            (None, None),                              # NO history → attended accepts
+            (True,),                                   # write RETURNING (xmax=0)
+        ]
+        conn.cursor.return_value = cur
+
+        result = ingest_record(
+            conn, sync_log_id=18, kind="biomarker", table="biomarkers",
+            raw={"profile_id": PROFILE_UUID, "metric_definition_id": METRIC_UUID,
+                 "name": "novel_marker", "measured_at": "2026-06-01 08:00+00",
+                 "value": 42, "unit": "ng/mL"},
+            conflict_cols=["profile_id", "metric_definition_id", "measured_at"],
+            attended=True,
+        )
+        assert result["status"] == "inserted"
+
 
 # ===========================================================================
 # open/close/log_error — sync log lifecycle

@@ -66,12 +66,17 @@ _VALID_METHODS = {"csv", "screenshot", "photo", "manual", "api"}
 
 
 def ingest_biomarker_row(payload: dict, conn, profile_id: str,
-                         method: str = "manual") -> dict:
+                         method: str = "manual", attended: bool = True) -> dict:
     """Ingest one biomarker through the full contract pipeline.
 
     `method` records the ingestion modality on the sync-log run: 'manual' for typed
     entry (default), 'photo' when the row was OCR'd from a lab-report/DEXA image,
     'csv' for a file import. Must be one of wearable_sync_log's allowed methods.
+
+    `attended` (default True) marks whether a human confirms before the write — the
+    skill is attended. An automated / webhook caller passes attended=False so that a
+    value with no plausibility bound AND no prior history is staged for review rather
+    than silently accepted (the unverified fail-safe).
 
     payload keys:
         name / metric : str   metric name or display_name
@@ -128,6 +133,7 @@ def ingest_biomarker_row(payload: dict, conn, profile_id: str,
             table="biomarkers",
             raw=raw,
             conflict_cols=_CONFLICT_COLS,
+            attended=attended,
         )
         return result
     finally:
