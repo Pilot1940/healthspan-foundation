@@ -1,4 +1,7 @@
 # PC — HealthSpan Context
+<!-- v2.1 — 2026-06-04 — Rolled in reviewed 300-Day Plan v3.1: weight target 83 (stretch 80),
+     day-type calorie split + taper rule, VO2 45 long-term / 48 Mera stretch, peptides guardrail,
+     active-PF + bone-stress watch, lean +6kg flagged STRETCH. Supplements HELD for Jun-5 panel. -->
 <!-- v2.0 — 2026-06-03 — Updated with DEXA (Jun 2), uVida VO2max + Food (Jun 3) lab results -->
 profile_id: 21f69003-46f8-4e1c-a928-b1f694ce4aff   age: 45   sex: M   is_minor: false
 
@@ -45,17 +48,24 @@ Active 300-day plan (Jun 2026 → Apr 2027) targeting Mera Peak 6,476M summit.
 
 ## Targets / norms
 - maintenance_kcal: 2514        # uVida TDEE — reference only (BMR 1935 + Work 416 + Sports 163)
-- daily_calories: 2100          # TARGET = deliberate deficit for fat loss (~414 below TDEE)
+- daily_calories: 2100          # WEEKLY-AVG target (deliberate deficit ~414 below TDEE)
+- daily_calories_hard: 2250 ; daily_calories_z2: 2050 ; daily_calories_rest: 1950
+  # calorie split by DAY-TYPE: 2250 hard/strength · 2050 Zone-2 · 1950 rest → avg ~2100
   # food deficit: ~414 kcal/day = ~2,900/week → ~0.38 kg/week from diet alone
   # training: 4× ~600 kcal sessions/week = ~2,400/week + walking/NEAT
   # combined realistic weekly deficit: ~5,300–5,800 kcal → ~0.55–0.6 kg/week
   # expect ~0.5 kg/week blended (training weeks higher, rest/travel weeks lower)
+  # TAPER: move to MAINTENANCE (~2514) for the ~3-4 weeks pre-expedition AND through the trek —
+  #        never trek in a deficit (see Safety constraints).
 - calorie_floor: 1935           # BMR — never sustain below
 - protein_g: 180 ; sleep_target_h: 8 ; resting_hr_ceiling: 62
-- weight_target_kg: 80 ; body_fat_target_pct: 20 ; lean_mass_target_kg: 65
+- weight_target_kg: 83 ; body_fat_target_pct: 20 ; lean_mass_target_kg: 65
+  # weight 83 = realistic 44-week / expedition endpoint; 80 = long-term STRETCH (was 80)
+  # lean_mass 65 is a STRETCH: +6kg lean during a continuous deficit → expect preserve→slight gain, NOT assumed
 - android_fat_target_pct: 40 ; ag_ratio_target: 1.0
 - vo2max_target_jan2027: 40     # Mera go/no-go checkpoint — realistic with weight loss + training
-- vo2max_target_longterm: 45    # 2+ year horizon; 50 is aspirational, not a coaching benchmark
+- vo2max_target_longterm: 45    # 2+ year horizon
+- vo2max_mera_stretch: 48       # Mera-summit stretch; 50 is aspirational, not a coaching benchmark
 - training_focus: VO2max + Zone2 + metabolic_flexibility
 - weekly_z4z5_min_target: 12   # AT zone: 168-176 bpm (lab-calibrated)
 - weekly_zone2_min_target: 180 # ET1: 110-147 bpm (up to VT1)
@@ -77,8 +87,9 @@ Active 300-day plan (Jun 2026 → Apr 2027) targeting Mera Peak 6,476M summit.
 - insulin_resistance: fasting insulin 37.7 µIU/mL (Mar 2026) — on Berberine 1500mg/day
 - l4l5_facet_injury: Mar 2026 — Phase 1 recovery, no spinal loading
 - shin_pain_peroneal: right outer shin, gradual onset at 9+ km/h treadmill (Jun 3)
-- plantar_fasciitis: intermittent, worse after sitting — from XERO minimalist shoes
-- footwear: switching XERO → Altra Torin 7 (wide toe + cushion); no treadmill running until resolved
+- plantar_fasciitis: ACTIVE — daily calf-eccentric + windlass stretch; physio review; PF must trend down within ~4 weeks or CUT XERO volume
+- footwear: XERO + Superfeet Green arch insole for walking; Altra Torin 8 for training deload; no treadmill running until shin pain resolved
+- bone_stress_watch: shin pain + Vit D 25 ng/mL + femur-neck T -1.3/-1.4 + loaded hiking = elevated bone-stress risk — do NOT progress pack weight through shin pain
 - vitamin_d_insufficient: 25 ng/mL (Mar 2026) — on D3 6200 IU/day
 - altitude_profile: slow acclimatiser, AMS at 4070M (May 2026), SpO2 85% at altitude
 
@@ -91,4 +102,7 @@ Active 300-day plan (Jun 2026 → Apr 2027) targeting Mera Peak 6,476M summit.
 - Adult protocols permitted (supplements, fasting, hormone optimisation) — PC directs his own.
 - Escalate, don't diagnose, on red-flag symptoms (chest pain, syncope, neuro deficit).
 - Caloric floor: never recommend eating below BMR 1935 kcal consistently.
+- Never program a caloric deficit during the pre-expedition taper (~3-4 weeks out) or the trek — taper to MAINTENANCE (~2514); never trek in a deficit.
+- peptides: PHYSICIAN-ONLY — unapproved (FDA safety-concern), no human RCTs, WADA-banned; never self-source or inject. Coach role: redirect to a doctor, never advise dosing.
+- Supplement protocol changes are HELD until the Jun-5 panel (plan gates this) — do not add or adjust supplements before then.
 - Running contraindicated until shin pain resolved — substitute cycling/swimming for VO2max intervals.
