@@ -1,6 +1,5 @@
 -- =============================================================
--- 026_drop_dead_saas_tables.sql  ⚠️ PROPOSED — DO NOT APPLY WITHOUT PC SIGN-OFF
--- (filename ends .PROPOSED so hs_ops/CI never picks it up by glob.)
+-- 026_drop_dead_saas_tables.sql  (CLEANUP — PC signed off 2026-06-04)
 --
 -- Eight empty tables that are fossils of the abandoned multi-tenant SaaS schema the
 -- project was forked from. None carry data, none are referenced by any live code path

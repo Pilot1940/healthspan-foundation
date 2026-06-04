@@ -22,10 +22,10 @@
 
 ## Current State (2026-06-04)
 
-- **Migrations HEAD: 027 applied** (024 drop-backup, 025 query_audit reshape, 027
-  supplement source vocab +photo). 026 authored as `*.PROPOSED` (drop 8 dead SaaS-fossil
-  tables) — NOT applied, awaiting PC sign-off. No `schema_migrations` table: applied DB
-  state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
+- **Migrations 024–027 all applied** (024 drop-backup, 025 query_audit reshape, 026 drop 8
+  dead SaaS-fossil tables [PC signed off 2026-06-04], 027 supplement source vocab +photo).
+  **58 public tables** now. No `schema_migrations` table: applied DB state is the source of
+  truth; apply via `python scripts/hs_ops.py apply <file>`.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
   webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
   `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
