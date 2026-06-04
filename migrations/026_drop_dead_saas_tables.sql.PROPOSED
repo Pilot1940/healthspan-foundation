@@ -1,0 +1,61 @@
+-- =============================================================
+-- 026_drop_dead_saas_tables.sql  ⚠️ PROPOSED — DO NOT APPLY WITHOUT PC SIGN-OFF
+-- (filename ends .PROPOSED so hs_ops/CI never picks it up by glob.)
+--
+-- Eight empty tables that are fossils of the abandoned multi-tenant SaaS schema the
+-- project was forked from. None carry data, none are referenced by any live code path
+-- (lib/, ingest/, monitor/, export/, scripts/), and the v3 maintainer model has no use
+-- for them. Classified DEAD in docs/HEALTH-CHECK-2026-06-03.md.
+--
+--   user_invites              — old email-invite flow (replaced by ingestion_tokens)
+--   user_invite_tokens        — child of user_invites
+--   user_tier_history         — SaaS billing tiers (no billing in this product)
+--   user_locations            — per-user location prefs (travel_log is the live model)
+--   user_log_type_prefs       — per-user log-type toggles (log_type_config unused)
+--   user_preference_history   — generic preference audit (never written)
+--   brain_conversations       — old "AI brain" chat store (the skill IS the brain now)
+--   brain_messages            — child of brain_conversations
+--
+-- FK-safety: the only inbound FKs are intra-set (brain_messages->brain_conversations,
+-- user_invite_tokens->user_invites). A single DROP TABLE listing all eight resolves the
+-- order internally; no table OUTSIDE the set references any of them, so no CASCADE and
+-- no collateral drops. (Their own outbound FKs to auth.users/locations/log_type_config
+-- are removed with the child tables and leave the parents untouched.)
+--
+-- NOT proposed for drop (left in UNCERTAIN, see health-check doc): user_telegram_links
+-- (Telegram is in the stated stack), audit_log, canonical_aliases, locations,
+-- log_type_config, source_priority_config — these need a PC ruling first.
+-- =============================================================
+BEGIN;
+
+DO $$
+DECLARE n int;
+BEGIN
+  SELECT count(*) INTO n FROM (
+    SELECT 1 FROM user_invites
+    UNION ALL SELECT 1 FROM user_invite_tokens
+    UNION ALL SELECT 1 FROM user_tier_history
+    UNION ALL SELECT 1 FROM user_locations
+    UNION ALL SELECT 1 FROM user_log_type_prefs
+    UNION ALL SELECT 1 FROM user_preference_history
+    UNION ALL SELECT 1 FROM brain_conversations
+    UNION ALL SELECT 1 FROM brain_messages
+  ) s;
+  IF n > 0 THEN
+    RAISE EXCEPTION '026: one of the DEAD tables is non-empty (% rows) — re-review before dropping', n;
+  END IF;
+END $$;
+
+DROP TABLE
+  public.brain_messages,
+  public.brain_conversations,
+  public.user_invite_tokens,
+  public.user_invites,
+  public.user_tier_history,
+  public.user_locations,
+  public.user_log_type_prefs,
+  public.user_preference_history;
+
+DO $$ BEGIN RAISE NOTICE '026: dropped 8 dead SaaS-fossil tables'; END $$;
+
+COMMIT;

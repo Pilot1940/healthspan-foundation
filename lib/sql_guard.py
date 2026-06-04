@@ -274,18 +274,43 @@ def quality_check(sql: str, *, intent: str = "", rows: list | None = None,
             "notes": ("; ".join(f["note"] for f in high) if high else "clean")}
 
 
-def audit_query(conn, profile_id: str, *, intent: str, sql: str, plan, verdict: dict,
-                row_count: int) -> None:
-    """Append one ad-hoc query + its quality verdict to query_audit (no RETURNING;
-    maintainer-only SELECT applies — INSERT is owner-scoped). flagged = any high flag."""
+def log_query(conn, profile_id: str, *, kind: str, name_or_sql: str,
+              params: dict | None = None, quality_verdict: dict | None = None,
+              row_count: int | None = None) -> None:
+    """Append ONE query to query_audit — used for BOTH catalog and ad-hoc reads (migration
+    025). Non-blocking: wrapped in a SAVEPOINT so an audit failure (e.g. a read-only
+    connection, or a non-maintainer's RLS) NEVER breaks the read path. No RETURNING —
+    maintainer-only SELECT applies; INSERT is owner-scoped.
+
+      kind='catalog' → name_or_sql=view name, params=view params, quality_verdict=NULL.
+      kind='adhoc'   → name_or_sql=the SQL, params={"intent": ...}, quality_verdict=verdict.
+
+    flagged is derived from the verdict (any high flag → True); catalog views are pre-vetted
+    so they are never flagged.
+    """
     import json
-    flagged = not verdict.get("ok", True)
+    flagged = bool(quality_verdict is not None and not quality_verdict.get("ok", True))
     cur = conn.cursor()
-    cur.execute(
-        """INSERT INTO query_audit (profile_id, intent, sql, plan, quality_verdict, row_count, flagged)
-           VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)""",
-        (profile_id, intent, sql, (plan or None), json.dumps(verdict), row_count, flagged),
-    )
+    try:
+        cur.execute("SAVEPOINT _audit")
+        cur.execute(
+            """INSERT INTO query_audit
+                 (profile_id, kind, name_or_sql, params, quality_verdict, row_count, flagged)
+               VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)""",
+            (profile_id, kind, name_or_sql, json.dumps(params or {}),
+             (json.dumps(quality_verdict) if quality_verdict is not None else None),
+             row_count, flagged),
+        )
+        cur.execute("RELEASE SAVEPOINT _audit")
+    except Exception:
+        # audit is best-effort: roll back only the failed INSERT, leave the read intact.
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT _audit")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
 
 def run_adhoc_audited(conn, profile_id: str, sql: str, *, intent: str = "",
@@ -305,11 +330,9 @@ def run_adhoc_audited(conn, profile_id: str, sql: str, *, intent: str = "",
         verdict = {"ok": False,
                    "flags": [{"code": "invalid_sql", "severity": "high", "note": res["error"]}],
                    "notes": res["error"]}
-    try:
-        audit_query(conn, profile_id, intent=intent, sql=res.get("sql") or sql,
-                    plan=None, verdict=verdict,
-                    row_count=len(res.get("rows") or []))
-    except Exception:
-        conn.rollback()  # auditing must never break the read path
+    # log_query is itself non-blocking (savepoint); auditing never breaks the read path.
+    log_query(conn, profile_id, kind="adhoc", name_or_sql=res.get("sql") or sql,
+              params={"intent": intent}, quality_verdict=verdict,
+              row_count=len(res.get("rows") or []))
     res["quality"] = verdict
     return res

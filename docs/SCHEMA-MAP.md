@@ -1,7 +1,7 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migration 016). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-03 07:35 UTC.
+> Generated 2026-06-04 03:08 UTC.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -19,6 +19,7 @@ _One row per tracked person. auth_user_id nullable (children with no login). Hea
 | `is_active` | boolean | Whether the profile is active. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update. |
+| `is_maintainer` | boolean |  |
 
 ## `families`
 _Household grouping for multi-tenant access._
@@ -249,6 +250,8 @@ _Catalog of measurable markers (149 rows). SELECT-only for the skill role; INSER
 | `is_active` | boolean | Whether this definition is in use. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update time. |
+| `plausible_min` | numeric | Physiologically POSSIBLE lower extreme (NOT the clinical reference min_value). A value BELOW this is gated → staging (likely OCR/unit/comma error). NULL = unknown → contract uses the per-(profile,metric) 10x/0.1x heuristic. Much wider than min_value. |
+| `plausible_max` | numeric | Physiologically POSSIBLE upper extreme (NOT the clinical reference max_value). A value ABOVE this is gated → staging (likely OCR/unit/comma error). NULL = unknown → contract uses the per-(profile,metric) 10x/0.1x heuristic. Much wider than max_value. |
 
 ## `food_logs`
 _Meal entries (macros, verdict, Viome flags). is_day_summary rows hold a day total, not a meal._

@@ -102,3 +102,39 @@ class TestIngestHealthMaintainerGate:
         assert "staging" in kinds and "sync_failure" in kinds and "errors" in kinds
         staging = [i for i in out["items"] if i["kind"] == "staging"]
         assert len(staging) == 1 and staging[0]["count"] == 3   # only the non-zero queue
+
+
+from monitor import query_log as ql
+
+
+class TestQueryLogMaintainerGate:
+    def test_non_maintainer_short_circuits(self):
+        conn = MagicMock()
+        cur = MagicMock()
+        cur.fetchone.return_value = (False,)   # is_maintainer() = false
+        conn.cursor.return_value = cur
+        out = ql.check(conn)
+        assert out == {"maintainer": False, "summary": {}, "flagged": [], "top_views": []}
+
+    def test_maintainer_summarises_and_surfaces_flagged(self):
+        conn = MagicMock()
+        gate = MagicMock(); gate.fetchone.return_value = (True,)          # is_maintainer()
+        dc = MagicMock()
+        dc.fetchone.return_value = {"total": 9, "catalog": 7, "adhoc": 2,
+                                    "flagged": 1, "last_query_at": "2026-06-03"}
+        dc.fetchall.side_effect = [
+            [{"ts": "2026-06-03", "profile_id": PROFILE, "name_or_sql": "SELECT ...",
+              "params": {"intent": "x"},
+              "quality_verdict": {"ok": False, "notes": "keyless join fans out"}}],  # flagged
+            [{"view": "v_recovery_30d", "runs": 5, "last_run": "2026-06-03"}],         # top views
+        ]
+        conn.cursor.side_effect = [gate, dc]
+        out = ql.check(conn)
+        assert out["maintainer"] is True
+        assert out["summary"]["total"] == 9 and out["summary"]["recent_days"] == 7
+        assert len(out["flagged"]) == 1 and out["top_views"][0]["view"] == "v_recovery_30d"
+        digest = ql.format_digest(out)
+        assert "9 queries" in digest and "1 flagged" in digest
+
+    def test_format_digest_empty_for_non_maintainer(self):
+        assert ql.format_digest({"maintainer": False}) == ""

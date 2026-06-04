@@ -278,4 +278,12 @@ def run_view(conn, name: str, profile_id: str, **params) -> dict:
         cur.execute(spec["summary_sql"], bind)
         srow = cur.fetchone()
         out["summary"] = dict(srow) if srow else {}
+
+    # Observability (migration 025): log every catalog run for the maintainer. Catalog
+    # views are pre-vetted, so no quality verdict / never flagged. Non-blocking — a
+    # read-only connection or a non-maintainer's RLS just no-ops the audit (savepoint).
+    from lib.sql_guard import log_query
+    log_query(conn, profile_id, kind="catalog", name_or_sql=name,
+              params={k: v for k, v in bind.items() if k != "profile_id"},
+              row_count=len(rows))
     return out

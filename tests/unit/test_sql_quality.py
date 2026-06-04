@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
-from lib.sql_guard import quality_check, audit_query, run_adhoc_audited
+from lib.sql_guard import quality_check, log_query, run_adhoc_audited
 
 PROFILE = str(uuid.uuid4())
 
@@ -56,27 +56,63 @@ class TestQualityCheck:
                    for f in v["flags"])
 
 
-class TestAuditQuery:
-    def test_audit_inserts_no_returning(self):
+def _insert_call(cur):
+    """Find the INSERT execute() among the savepoint wrapper calls."""
+    for call in cur.execute.call_args_list:
+        if "INSERT INTO query_audit" in call[0][0]:
+            return call
+    raise AssertionError("no INSERT INTO query_audit was executed")
+
+
+class TestLogQuery:
+    def test_adhoc_insert_no_returning_and_kind(self):
         conn = MagicMock(); cur = MagicMock(); conn.cursor.return_value = cur
-        audit_query(conn, PROFILE, intent="recovery trend",
-                    sql="SELECT 1", plan=None,
-                    verdict={"ok": True, "flags": [], "notes": "clean"}, row_count=5)
-        sql = cur.execute.call_args[0][0]
+        log_query(conn, PROFILE, kind="adhoc", name_or_sql="SELECT 1",
+                  params={"intent": "recovery trend"},
+                  quality_verdict={"ok": True, "flags": [], "notes": "clean"}, row_count=5)
+        call = _insert_call(cur)
+        sql, params = call[0][0], call[0][1]
         assert "INSERT INTO query_audit" in sql and "RETURNING" not in sql.upper()
-        params = cur.execute.call_args[0][1]
-        assert params[-1] is False   # flagged = not ok
+        assert params[1] == "adhoc"        # kind
+        assert params[-1] is False         # flagged = verdict not-ok
+        # savepoint discipline: INSERT is wrapped so audit never breaks the read path
+        executed = [c[0][0] for c in cur.execute.call_args_list]
+        assert any("SAVEPOINT _audit" in e for e in executed)
+
+    def test_catalog_has_no_verdict_and_never_flagged(self):
+        conn = MagicMock(); cur = MagicMock(); conn.cursor.return_value = cur
+        log_query(conn, PROFILE, kind="catalog", name_or_sql="v_recovery_30d",
+                  params={"days": 30}, row_count=12)
+        params = _insert_call(cur)[0][1]
+        assert params[1] == "catalog"
+        assert params[4] is None           # quality_verdict NULL for catalog
+        assert params[-1] is False         # never flagged
 
     def test_flagged_true_when_high_flag(self):
         conn = MagicMock(); cur = MagicMock(); conn.cursor.return_value = cur
-        audit_query(conn, PROFILE, intent="x", sql="SELECT 1", plan=None,
-                    verdict={"ok": False, "flags": [{"severity": "high"}], "notes": "bad"},
-                    row_count=0)
-        assert cur.execute.call_args[0][1][-1] is True
+        log_query(conn, PROFILE, kind="adhoc", name_or_sql="SELECT 1",
+                  params={"intent": "x"},
+                  quality_verdict={"ok": False, "flags": [{"severity": "high"}], "notes": "bad"},
+                  row_count=0)
+        assert _insert_call(cur)[0][1][-1] is True
+
+    def test_insert_failure_rolls_back_to_savepoint_not_raise(self):
+        # a read-only connection raises on INSERT; audit must swallow + savepoint-rollback
+        conn = MagicMock(); cur = MagicMock(); conn.cursor.return_value = cur
+
+        def fail_on_insert(sql, *a, **k):
+            if "INSERT INTO query_audit" in sql:
+                raise RuntimeError("cannot execute INSERT in a read-only transaction")
+        cur.execute.side_effect = fail_on_insert
+        # must not raise
+        log_query(conn, PROFILE, kind="catalog", name_or_sql="v_recovery_30d",
+                  params={"days": 30}, row_count=0)
+        executed = [c[0][0] for c in cur.execute.call_args_list]
+        assert any("ROLLBACK TO SAVEPOINT _audit" in e for e in executed)
 
 
 class TestRunAdhocAudited:
-    def test_clean_query_passes_and_is_audited(self):
+    def test_clean_query_passes_and_lands_adhoc_row(self):
         conn = MagicMock()
         with patch("lib.sql_guard.run_adhoc", return_value={
                 "ok": True, "error": None,
@@ -84,10 +120,10 @@ class TestRunAdhocAudited:
                 "sql": "SELECT recovery_score_pct FROM whoop_cycles WHERE profile_id=%(profile_id)s "
                        "AND cycle_start >= current_date - interval '7 days'",
                 "traps": {}, "warning": None}), \
-             patch("lib.sql_guard.audit_query") as audit:
+             patch("lib.sql_guard.log_query") as logq:
             res = run_adhoc_audited(conn, PROFILE, "SELECT ...", intent="recovery")
         assert res["quality"]["ok"] is True
-        assert audit.called   # every ad-hoc query is logged
+        assert logq.called and logq.call_args.kwargs["kind"] == "adhoc"   # one ad-hoc row lands
 
     def test_fanout_query_flagged_and_audited(self):
         conn = MagicMock()
@@ -96,8 +132,28 @@ class TestRunAdhocAudited:
                 "sql": "SELECT count(*) FROM whoop_cycles c JOIN whoop_workouts w "
                        "WHERE c.profile_id=%(profile_id)s",
                 "traps": {}, "warning": None}), \
-             patch("lib.sql_guard.audit_query") as audit:
+             patch("lib.sql_guard.log_query") as logq:
             res = run_adhoc_audited(conn, PROFILE, "SELECT ...", intent="count")
         assert res["quality"]["ok"] is False
         assert any(f["code"] == "join_without_key" for f in res["quality"]["flags"])
-        assert audit.called
+        assert logq.called
+        assert logq.call_args.kwargs["quality_verdict"]["ok"] is False   # verdict logged
+
+
+class TestCatalogRunLands:
+    """A catalog run (lib/views.run_view) must land exactly one kind='catalog' row."""
+
+    def test_run_view_logs_catalog_row(self):
+        from lib import views
+        conn = MagicMock(); cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.fetchall.return_value = [{"date": "2026-06-01", "asleep_duration_min": 420}]
+        with patch("lib.sql_guard.log_query") as logq:
+            out = views.run_view(conn, "v_sleep_debt_30d", PROFILE, days=30)  # no summary_sql
+        assert out["name"] == "v_sleep_debt_30d"
+        assert logq.called
+        kw = logq.call_args.kwargs
+        assert kw["kind"] == "catalog"
+        assert kw["name_or_sql"] == "v_sleep_debt_30d"
+        assert kw["params"] == {"days": 30}            # profile_id stripped from params
+        assert "quality_verdict" not in kw or kw.get("quality_verdict") is None
