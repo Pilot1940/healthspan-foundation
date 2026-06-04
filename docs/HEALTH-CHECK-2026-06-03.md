@@ -6,6 +6,12 @@
 >
 > **End state after this pass:** migrations **025** applied (024 drop + 025 query_audit
 > reshape); **026 proposed but NOT applied** (dead-table drop — awaiting PC sign-off).
+>
+> **Update 2026-06-04:** PC signed off. Migration **026 applied** (dropped the 8 DEAD
+> tables) and **028 applied** (dropped 4 of the 6 UNCERTAIN — see §6). Migration 027 also
+> applied (supplement source vocab). **Public tables now 54** (was 66 at the 06-03 snapshot).
+> whoop-webhook deployed with the `sleep.*`→prior-cycle strain refresh. query_audit + a
+> photo-sourced supplement intake confirmed persisting committed rows.
 
 ## 1. Headline
 
@@ -118,15 +124,23 @@ maintainer/family model has no use for them. Only inbound FKs are intra-set
 > dry-run (`BEGIN … ROLLBACK`): all 8 drop cleanly, `locations`/`log_type_config`/
 > `user_telegram_links`/`audit_log` are untouched. **Left unapplied for PC sign-off.**
 
-### UNCERTAIN (6) — need a PC ruling before classifying
-| Table | Question |
+### UNCERTAIN (6) — RESOLVED by PC ruling 2026-06-04
+**Dropped (migration 028):**
+| Table | Ruling |
 |---|---|
-| `user_telegram_links` | Telegram Bot is in the stated stack — is this the live link table or a fossil? Kept out of DEAD deliberately. |
-| `audit_log` | Generic `user_id`-keyed audit (SaaS-era). Superseded by `query_audit` + `wearable_sync_log`? |
-| `canonical_aliases` | Empty alias table — superseded by the populated `supplement_aliases` / `journal_behavior_aliases`? |
-| `locations` | Shared-reference locations — is the travel model (`travel_log`) the replacement? |
-| `log_type_config` | Config for a logging-types feature that may or may not ship. |
-| `source_priority_config` | Source-priority/ranking config — planned or abandoned? |
+| `user_telegram_links` | DEAD. Telegram is **NOT** in the stack — push is **Google Chat** via webhook URLs in Supabase secrets. This is an abandoned-vision fossil. |
+| `locations` | DEAD. `travel_log` is the live location model. |
+| `log_type_config` | DEAD. The logging-types feature never shipped. |
+| `source_priority_config` | DEAD. Source-ranking config never built out. |
+
+**Kept (live):**
+| Table | Ruling |
+|---|---|
+| `audit_log` | KEEP — reserved for a future write-mutation audit (maintainer corrections/promotions); `query_audit` covers reads only. |
+| `canonical_aliases` | KEEP — lab-name/marker alias mapping (SGPT→ALT, etc.); serves rule #3 as more labs flow in. |
+
+> Correction to §3: the earlier "Telegram Bot is in the stack" note was wrong. The product's
+> push channel is Google Chat (webhook URLs in Supabase secrets), not Telegram.
 
 ## 7. Query logging (observability) — migration 025 + code
 

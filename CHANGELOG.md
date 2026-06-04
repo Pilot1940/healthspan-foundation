@@ -1,5 +1,17 @@
 # HealthSpan Skill — Changelog
 
+## v3 — fossil cleanup round 2 + deploy + persistence proof (2026-06-04)
+- **Migration 028**: dropped 4 more empty fossils — `user_telegram_links` (push is Google
+  Chat via webhook, NOT Telegram — Telegram was never in the stack), `locations`,
+  `log_type_config`, `source_priority_config`. KEPT `audit_log` (future write-mutation
+  audit) + `canonical_aliases` (lab alias map, SGPT→ALT). Public tables 58 → **54**.
+- **whoop-webhook DEPLOYED** (project `dsnydskkjwziynwmzfkh`, `--no-verify-jwt`) — the
+  `sleep.*`→prior-cycle strain refresh is now live.
+- **Persistence verified (committed evidence rows left in place):** a real catalog
+  (`run_view`) + ad-hoc (`run_adhoc_audited`) run land committed `query_audit` rows; a real
+  `source='photo'` supplement intake commits and persists.
+- CLAUDE.md stack corrected: Messaging is Google Chat, not Telegram.
+
 ## v3-8 — WHOOP strain refresh + supplement source vocab (2026-06-04)
 - **Stale-cycle strain fix.** WHOOP emits no `cycle.updated` webhook, so a cycle written at
   recovery-time keeps its ~0 day_strain until re-pulled. Two fixes:
