@@ -1,6 +1,14 @@
 # HealthSpan Skill — Changelog
 
 ## v3.1 — person-agnostic repackage (2026-06-04)
+- **`scripts/self_test.py`** — first-class read-only self-test (never writes; no `query_audit`
+  rows). Prints **STEP 0 "WHERE AM I RUNNING" first** — connection mode *with meaning*
+  (direct_role = local Cowork/Code, does NOT prove App egress; supabase_client = App egress
+  PROVEN), runtime signals (config source, `.git` up-tree, cwd, context source) → one-line
+  `RUNTIME:`. Then 8 steps (version, identity, connection + RLS-scope proof, context targets,
+  maintainer, freshness, capabilities, verdict). **VERDICT embeds runtime** —
+  `READY (Cowork · direct_role)` vs `READY (App · supabase_client)`. Triggers in SKILL.md
+  ("run a self-test", "verify the install", "what can you do").
 - **`package_skill.py` excludes `context/`** (same as `config/`) — the bundle is now
   person-agnostic; per-person context is delivered separately (repo folder on Cowork/Code,
   Project knowledge on claude.ai). The stale v3 artifact over-shipped `pc/dea.context.md`.

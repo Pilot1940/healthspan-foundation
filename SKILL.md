@@ -87,8 +87,21 @@ numbers). Prune to stay short.
 | "**what's abnormal**" | `run_view(conn, "abnormal_labs", profile_id)` | DB reference ranges; surface DATE |
 | **Novel question** not in the catalog | ad-hoc read-only SQL via **`lib.sql_guard.run_adhoc_audited(conn, profile_id, sql, intent=…)`** | quality-checked + logged to `query_audit` |
 | Reports / dashboard / export | `export/` (consume `lib/views`) | xlsx / PDF / HTML |
+| "**run a self-test** / verify the install / what can you do" | `python scripts/self_test.py` → render its readout | see SELF-TEST below; read-only, never writes |
 
 WHOOP freshness is automatic (Edge webhook + `whoop_tokens`). **The skill never touches WHOOP tokens.**
+
+### SELF-TEST  (triggers: "run a self-test", "verify the install", "what can you do")
+Run **`python scripts/self_test.py`** and render its readout verbatim (or lightly formatted). It is
+**read-only and never writes** (only SELECTs; no `run_view`/`run_adhoc_audited`, so nothing lands in
+`query_audit`). It prints **STEP 0 — WHERE AM I RUNNING first**: the connection mode *with its meaning*
+(`direct_role` = psycopg2/local Cowork/Code, does NOT prove App egress; `supabase_client` = HTTPS/PostgREST,
+if it connects App egress is PROVEN), plus runtime signals (config source, `.git` up-tree, cwd, context
+source) → a one-line `RUNTIME:`. Then the 8 steps: version, identity (from the baked config), connection +
+**RLS-scope proof** (`count(DISTINCT profile_id)` must be 1 == my profile_id), context targets, maintainer
+check, freshness, capabilities, and a **VERDICT that embeds the runtime** — e.g. `READY (Cowork · direct_role)`
+vs `READY (App · supabase_client)` — so a local pass is never mistaken for an App pass. If no filesystem
+config (claude.ai/App), it reports BLOCKED and points to Project-knowledge bootstrap (§0 step 1).
 
 **Before composing ANY ad-hoc SQL**: load `docs/SCHEMA-MAP.md` (generated from column COMMENTs — the
 semantic ground truth incl. every trap). Prefer a `lib/views.py` catalog query first; only go ad-hoc when
