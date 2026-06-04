@@ -309,3 +309,51 @@ class TestIntakeLinksRegimen:
         assert REGIMEN_UUID in [str(v) for v in values], (
             f"regimen_id {REGIMEN_UUID} must appear in the INSERT values; got: {values}"
         )
+
+
+# ===========================================================================
+# Test 4 — Photo-sourced supplement intake writes cleanly (V3-8 source vocab)
+# ===========================================================================
+
+
+class TestPhotoSourcedIntakeWritesCleanly:
+    """A supplement intake parsed from a photo (source='photo') must validate and write
+    cleanly now that the source vocab includes 'photo' (migration 027) and write() skips
+    the GENERATED taken_on column."""
+
+    def test_photo_source_accepted_and_written(self):
+        fetchone_seq = [
+            (SUPPLEMENT_UUID,),  # resolve: supplement_aliases exact match
+            (REGIMEN_UUID,),     # find_active_regimen
+            (0.9,),              # confidence_min threshold (0.9 result ≥ it)
+            (1,),                # validate FK: profile_id
+            (1,),                # validate FK: supplement_id
+            (True,),             # write INSERT RETURNING (xmax=0) → inserted
+        ]
+        conn, cur = _conn_single_cursor(fetchone_seq)
+
+        payload = {
+            "name": "Creatine",
+            "dose_amount": 6.0,
+            "dose_unit": "g",
+            "source": "photo",                       # the new vocab value
+            "taken_at": "2026-06-04T07:00:00+00:00",
+        }
+
+        from ingest.supplement import ingest_supplement_row
+        result = ingest_supplement_row(payload, conn, PROFILE_UUID)
+
+        assert result["status"] == "inserted", f"expected inserted, got {result}"
+
+        # the INSERT into supplement_intake_logs carried source='photo'
+        inserts = [c for c in cur.execute.call_args_list
+                   if "supplement_intake_logs" in str(c[0][0]) and "INSERT" in str(c[0][0])]
+        assert inserts, "must INSERT into supplement_intake_logs"
+        assert any("photo" in (c[0][1] if len(c[0]) > 1 else []) for c in inserts), \
+            "source='photo' must reach the INSERT params"
+
+    def test_invalid_source_rejected_fast(self):
+        conn, _ = _conn_single_cursor([])
+        from ingest.supplement import ingest_supplement_row
+        with pytest.raises(ValueError, match="source 'tiktok' not in"):
+            ingest_supplement_row({"name": "Creatine", "source": "tiktok"}, conn, PROFILE_UUID)

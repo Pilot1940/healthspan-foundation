@@ -520,23 +520,57 @@ def _implausible_errors(cur, v: float, nm: str, plo, phi,
 # ----------------------------------------------------------------------------
 
 
+_GENERATED_CACHE: dict[str, frozenset] = {}
+
+
+def _generated_cols(conn, table: str) -> frozenset:
+    """Names of GENERATED ALWAYS columns on `table` (cached per process). These are
+    computed by the DB — Postgres rejects any supplied value (`GeneratedAlways`), so
+    write() must NEVER put them in the INSERT column list, even though they may be part
+    of a unique index used as an ON CONFLICT target (e.g. supplement_intake_logs.taken_on,
+    GENERATED from taken_at)."""
+    if table not in _GENERATED_CACHE:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT attname FROM pg_attribute
+                   WHERE attrelid = ('public.' || %s)::regclass
+                     AND attgenerated <> '' AND NOT attisdropped""",
+                (table,),
+            )
+            _GENERATED_CACHE[table] = frozenset(r[0] for r in cur.fetchall())
+        except Exception:
+            # introspection unavailable (e.g. a mocked conn in tests) — degrade to "none
+            # generated" (old behaviour: insert every column). Don't cache the failure so
+            # a real connection retries.
+            return frozenset()
+    return _GENERATED_CACHE[table]
+
+
 def write(conn, table: str, row: dict, conflict_cols) -> str:
     """Idempotent upsert: INSERT … ON CONFLICT (conflict_cols) DO UPDATE.
 
     Re-running with the same natural key UPDATES the existing row instead of
     inserting a duplicate. Returns 'inserted' | 'updated' | 'skipped'.
+
+    GENERATED columns are dropped from the INSERT/UPDATE (the DB computes them) but may
+    still serve as ON CONFLICT targets — so a conflict key like
+    (profile_id, supplement_id, taken_on, source) works even though taken_on is generated.
     """
-    cols = list(row.keys())
+    generated = _generated_cols(conn, table)
+    cols = [c for c in row.keys() if c not in generated]   # never write generated cols
     if not cols:
         raise ValueError("write(): empty row")
     conflict_cols = list(conflict_cols)
     for c in conflict_cols:
-        if c not in row:
+        # a generated conflict col need not be in `row` — the DB computes it for the index
+        if c not in row and c not in generated:
             raise ValueError(f"write(): conflict column {c!r} not present in row")
 
     qcols = ", ".join(_ident(c) for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
     conflict = ", ".join(_ident(c) for c in conflict_cols)
+    # don't UPDATE conflict keys or generated columns
     update_cols = [c for c in cols if c not in conflict_cols]
     if update_cols:
         set_clause = ", ".join(f"{_ident(c)} = EXCLUDED.{_ident(c)}" for c in update_cols)

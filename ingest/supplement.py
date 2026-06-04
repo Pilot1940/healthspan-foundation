@@ -33,6 +33,12 @@ from lib.contract import (
 #   UNIQUE(profile_id, supplement_id, taken_on, source)
 _CONFLICT_COLS = ["profile_id", "supplement_id", "taken_on", "source"]
 
+# Allowed values for supplement_intake_logs.source — must match the DB CHECK
+# (migration 027 added 'photo' to align with food_logs/biomarkers). Validated early,
+# mirroring food.py/biomarker.py's _VALID_METHODS, so an out-of-vocab source fails fast
+# with a clear message instead of a raw CHECK violation deep in the write.
+_VALID_SOURCES = {"manual", "journal", "skill", "csv", "photo"}
+
 
 # ---------------------------------------------------------------------------
 # Regimen lookup
@@ -71,12 +77,16 @@ def ingest_supplement_row(payload: dict, conn, profile_id: str) -> dict:
         taken_on    : str   ISO date (defaults to today, derived from taken_at)
         dose_amount : float
         dose_unit   : str
-        source      : str   defaults to 'skill' (allowed: manual/journal/skill/csv)
+        source      : str   defaults to 'skill' (allowed: manual/journal/skill/csv/photo;
+                            use 'photo' when the intake was parsed from a supplement-label
+                            or pill-tray photo)
         notes       : str
 
     Returns {"status": "inserted"|"updated"|"staged"|"failed", ...}
     """
-    source = payload.get("source", "skill")   # DB CHECK: manual|journal|skill|csv
+    source = payload.get("source", "skill")   # DB CHECK: manual|journal|skill|csv|photo
+    if source not in _VALID_SOURCES:
+        raise ValueError(f"source {source!r} not in {sorted(_VALID_SOURCES)}")
     taken_at_raw = payload.get("taken_at") or datetime.now(timezone.utc).isoformat()
     taken_on_raw = payload.get("taken_on")
     if not taken_on_raw:

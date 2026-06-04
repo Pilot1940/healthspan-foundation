@@ -65,6 +65,23 @@ function mapSleep(rec: any, profileId: string) {
   };
 }
 
+// On a sleep event the PRIOR WHOOP cycle has just closed, but WHOOP emits no
+// cycle.updated webhook — so the recovery-time cycle row is stale at ~0 day_strain.
+// Re-fetch the most-recent CLOSED cycle and upsert its FINAL strain. Best-effort: the
+// caller swallows failures so a refresh hiccup never loses the sleep that did save.
+async function refreshPriorCycle(db: any, token: string, profileId: string): Promise<number> {
+  const col = await whoopGet(token, "/v2/cycle?limit=2");   // most-recent first
+  const cycles: any[] = col?.records ?? [];
+  // the just-closed cycle is the most recent one that has an `end` (the current cycle is open → end null)
+  const prior = cycles.find((c) => c?.end);
+  if (!prior) return 0;
+  let recov = null; try { recov = await whoopGet(token, `/v2/recovery/cycle/${prior.id}`); } catch (_) {}
+  const row = mapCycle(prior, recov, profileId);
+  const { error } = await db.from("whoop_cycles").upsert(row, { onConflict: "profile_id,whoop_id" });
+  if (error) throw new Error(`prior-cycle refresh: ${error.message}`);
+  return 1;
+}
+
 function mapCycle(cyc: any, rec: any, profileId: string) {
   const cs = cyc.score ?? {}; const rs = rec?.score ?? {};
   return {
@@ -121,8 +138,22 @@ Deno.serve(async (req) => {
     const { error } = await db.from(table).upsert(row, { onConflict: "profile_id,whoop_id" });
     if (error) throw new Error(`${table} upsert: ${error.message}`);
 
+    // sleep.updated (waking) means the prior cycle just closed → refresh its final strain.
+    // Best-effort: the sleep already saved; a refresh failure is logged, not fatal.
+    let extra = 0;
+    if (type?.startsWith("sleep")) {
+      try {
+        extra = await refreshPriorCycle(db, token, profileId);
+      } catch (e) {
+        await db.from("wearable_sync_errors").insert({
+          sync_log_id: logId, record_ref: `prior-cycle-after/${type}/${id}`,
+          error_code: "prior_cycle_refresh", error_message: (e as Error).message,
+        });
+      }
+    }
+
     await db.from("wearable_sync_log").update({
-      status: "success", records_upserted: 1, completed_at: new Date().toISOString(),
+      status: "success", records_upserted: 1 + extra, completed_at: new Date().toISOString(),
     }).eq("id", logId);
     return new Response("ok", { status: 200 });
   } catch (e) {

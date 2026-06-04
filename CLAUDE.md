@@ -22,9 +22,16 @@
 
 ## Current State (2026-06-04)
 
-- **Migrations HEAD: 025 applied.** 026 authored as `*.PROPOSED` (drop 8 dead SaaS-fossil
+- **Migrations HEAD: 027 applied** (024 drop-backup, 025 query_audit reshape, 027
+  supplement source vocab +photo). 026 authored as `*.PROPOSED` (drop 8 dead SaaS-fossil
   tables) — NOT applied, awaiting PC sign-off. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
+- **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
+  webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
+  `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
+  `supabase functions deploy whoop-webhook --no-verify-jwt`.
+- **`lib/contract.write` skips GENERATED columns** (e.g. `supplement_intake_logs.taken_on`)
+  on INSERT/UPDATE while keeping them as `ON CONFLICT` targets.
 - **66 tables** (35 active / 31 empty), 7 views, 126 FKs (0 orphans). Full inventory +
   dormant-table classification: `docs/HEALTH-CHECK-2026-06-03.md`.
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,

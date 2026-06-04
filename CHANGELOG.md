@@ -1,5 +1,26 @@
 # HealthSpan Skill — Changelog
 
+## v3-8 — WHOOP strain refresh + supplement source vocab (2026-06-04)
+- **Stale-cycle strain fix.** WHOOP emits no `cycle.updated` webhook, so a cycle written at
+  recovery-time keeps its ~0 day_strain until re-pulled. Two fixes:
+  - `ingest/whoop_sync.py`: new reusable `refresh_recent(hours=48, profiles=…)` (mini sync
+    over a recent window for all token-holding profiles, per-profile error isolation), plus
+    `--since` relative windows (`48h`/`2d`) and `--all-profiles`. The morning brief (not yet
+    built) will call `refresh_recent` before composing.
+  - `supabase/functions/whoop-webhook`: on a `sleep.*` event (waking → the prior cycle just
+    closed) it now re-fetches the latest CLOSED cycle and upserts its FINAL strain.
+    Best-effort — a refresh hiccup never loses the sleep that saved. **Needs redeploy:**
+    `supabase functions deploy whoop-webhook --no-verify-jwt`.
+  - Verified live: PC's Jun-3 cycle day_strain 0.07 → **9.17**; Jun-3 running workout
+    duration NULL → **14.2 min**.
+- **Migration 027 — supplement source vocab.** `supplement_intake_logs.source` CHECK now
+  allows `photo` (aligns with food_logs/biomarkers). `ingest/supplement.py` validates
+  `source` against `_VALID_SOURCES` (mirrors food.py/biomarker.py `_VALID_METHODS`).
+- **`lib/contract.write` now skips GENERATED columns** on INSERT/UPDATE while still allowing
+  them as `ON CONFLICT` targets — fixes a latent bug where the skill's supplement-intake
+  write always failed on the generated `taken_on` column (the 17 existing rows came via the
+  journal path). Photo-sourced intake now writes cleanly (verified live).
+
 ## v3 — cleanup & observability pass (2026-06-04)
 - **Health check** (`docs/HEALTH-CHECK-2026-06-03.md`): full live inventory — 66 tables
   (35 active / 31 empty), 126 FKs with **0 orphans**, 0 invalid indexes, 0 `NOT VALID`

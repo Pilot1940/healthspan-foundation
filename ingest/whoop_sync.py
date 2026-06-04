@@ -13,11 +13,16 @@ Conflict keys (match live unique indexes):
 Each table gets its own wearable_sync_log run row for clear reporting.
 
 Usage (from repo root):
-  python -m ingest.whoop_sync --since 2026-05-26   # last 7 days
-  python -m ingest.whoop_sync --backfill            # full history from 2020-01-01
-  python -m ingest.whoop_sync --since 2026-01-01   # custom window
+  python -m ingest.whoop_sync --since 2026-05-26       # ISO date window
+  python -m ingest.whoop_sync --since 48h              # relative window (h/d)
+  python -m ingest.whoop_sync --since 48h --all-profiles   # every profile with a token
+  python -m ingest.whoop_sync --backfill                # full history from 2020-01-01
 
-This is a local one-off — do NOT schedule, do NOT deploy.
+The CLI stays a manual tool — do NOT schedule the CLI itself. For programmatic use (the
+morning brief's refresh-first step), import :func:`refresh_recent` — a mini sync over a
+recent window for all token-holding profiles, so the just-closed WHOOP cycle picks up its
+FINAL day_strain (WHOOP emits no cycle.updated webhook, so recovery-time cycle rows go
+stale at ~0 strain until re-pulled).
 """
 from __future__ import annotations
 
@@ -586,6 +591,83 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Window parsing + multi-profile helpers (reusable by the morning brief)
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def _parse_since(value: str, now_utc: datetime) -> str:
+    """Accept a relative window ('48h', '2d') OR an ISO date ('YYYY-MM-DD');
+    return an ISO-Z timestamp. Relative is measured back from now_utc."""
+    v = (value or "").strip().lower()
+    m = _re.fullmatch(r"(\d+)\s*([hd])", v)
+    if m:
+        n = int(m.group(1))
+        delta = timedelta(hours=n) if m.group(2) == "h" else timedelta(days=n)
+        return (now_utc - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{value}T00:00:00Z"
+
+
+def _token_profiles(conn) -> list[str]:
+    """Profile UUIDs that have a stored WHOOP token (the syncable set)."""
+    cur = conn.cursor()
+    cur.execute("SELECT profile_id FROM whoop_tokens ORDER BY profile_id")
+    return [str(r[0]) for r in cur.fetchall()]
+
+
+def _resolve_access_token(conn, profile_id: str, env: dict) -> str:
+    """DB token first (works for any profile); .env refresh-token fallback (PC only)."""
+    token = _get_token_from_db(conn, profile_id, env)
+    if token:
+        return token
+    token, new_refresh = _get_access_token(env)
+    if new_refresh and new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
+        _write_env_key("WHOOP_REFRESH_TOKEN", new_refresh)
+    return token
+
+
+def sync_profile(conn, profile_id: str, since_iso: str, to_iso: str, env: dict) -> list:
+    """Run all three per-table syncs for one profile over the window. Returns the
+    per-table result dicts."""
+    access_token = _resolve_access_token(conn, profile_id, env)
+    return [fn(conn, access_token, profile_id, since_iso, to_iso)
+            for fn in (sync_workouts, sync_cycles, sync_sleeps)]
+
+
+def refresh_recent(conn=None, *, hours: int = 48, profiles: list | None = None,
+                   env: dict | None = None) -> dict:
+    """Mini WHOOP sync over the last `hours` for `profiles` (default: every token-holding
+    profile). The morning brief calls this BEFORE composing so yesterday's just-closed
+    cycle picks up its final day_strain. Per-profile error isolation — one profile's dead
+    token never blocks the others. Returns {profile_id: [results] | {"error": msg}}.
+
+    Opens its own connection if none is given (and closes it)."""
+    own = conn is None
+    if conn is None:
+        conn = get_conn()
+    if env is None:
+        env = _load_env()
+    try:
+        now_utc = datetime.now(timezone.utc)
+        to_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        since_iso = (now_utc - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if profiles is None:
+            profiles = _token_profiles(conn)
+        out: dict = {}
+        for pid in profiles:
+            try:
+                out[pid] = sync_profile(conn, pid, since_iso, to_iso, env)
+            except Exception as e:               # isolate: a dead token can't block others
+                conn.rollback()
+                out[pid] = {"error": str(e).splitlines()[0]}
+        return out
+    finally:
+        if own:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -593,8 +675,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sync WHOOP API data to HealthSpan DB.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
-        "--since", metavar="DATE",
-        help="ISO date (YYYY-MM-DD) to sync from. Defaults to 7 days ago.",
+        "--since", metavar="WINDOW",
+        help="ISO date (YYYY-MM-DD) or relative window (e.g. 48h, 2d). Default: 7 days ago.",
     )
     group.add_argument(
         "--backfill", action="store_true",
@@ -602,7 +684,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--profile", default="PC",
-        help="Profile display_name or UUID (default: PC).",
+        help="Profile display_name or UUID (default: PC). Ignored with --all-profiles.",
+    )
+    parser.add_argument(
+        "--all-profiles", action="store_true",
+        help="Sync every profile that has a stored WHOOP token (the brief's behaviour).",
     )
     args = parser.parse_args()
 
@@ -614,32 +700,31 @@ def main() -> None:
     if args.backfill:
         since_iso = _BACKFILL_START
     elif args.since:
-        since_iso = f"{args.since}T00:00:00Z"
+        since_iso = _parse_since(args.since, now_utc)
     else:
         since_iso = (now_utc - timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
 
     print(f"Sync window: {since_iso} → {to_iso}")
 
-    # Connect first (needed for DB token lookup)
     conn = get_conn()
-    profile_id = resolve_profile(conn, args.profile)
-    print(f"Profile: {args.profile} → {profile_id}")
 
-    # Auth — DB token takes priority (works for any profile); .env fallback for PC
-    print("Refreshing WHOOP access token …")
-    access_token = _get_token_from_db(conn, profile_id, env)
-    if not access_token:
-        print("  No token in whoop_tokens — falling back to .env …")
-        access_token, new_refresh = _get_access_token(env)
-        if new_refresh and new_refresh != env.get("WHOOP_REFRESH_TOKEN"):
-            _write_env_key("WHOOP_REFRESH_TOKEN", new_refresh)
-            print("  Refresh token rotated — .env updated.")
+    # Resolve the profile set
+    if args.all_profiles:
+        profile_ids = _token_profiles(conn)
+        print(f"All-profiles: {len(profile_ids)} token-holding profile(s).")
+    else:
+        profile_ids = [resolve_profile(conn, args.profile)]
+        print(f"Profile: {args.profile} → {profile_ids[0]}")
 
-    # Run syncs
+    # Run syncs per profile (isolated — a dead token on one never blocks the others)
     results = []
-    for fn in (sync_workouts, sync_cycles, sync_sleeps):
-        r = fn(conn, access_token, profile_id, since_iso, to_iso)
-        results.append(r)
+    for pid in profile_ids:
+        print(f"\n— syncing profile {pid} …")
+        try:
+            results.extend(sync_profile(conn, pid, since_iso, to_iso, env))
+        except Exception as e:
+            conn.rollback()
+            print(f"  ⚠  profile {pid} failed: {str(e).splitlines()[0]}")
 
     conn.close()
 
