@@ -2,13 +2,17 @@
 name: healthspan
 description: >
   Transportable, multi-tenant, DB-backed personal health intelligence. Trigger for ANY health,
-  fitness, or wellness question or data drop: glucose, insulin, Metformin, berberine, Viome,
-  microbiome, diet, nutrition, food photo, meal log, exercise, workout, VO2 max, strength,
+  fitness, or wellness question or data drop — including casual ones: "log this", "here's my
+  lunch", "here's my meal", "save this", "how did I sleep", "how's my recovery", "am I on
+  track", or a dropped photo (meal, lab report, DEXA, Whoop screenshot). Topics: glucose,
+  insulin, Metformin, berberine, Viome, microbiome, diet, nutrition, food photo, meal log,
+  calories, macros, protein, creatine, fasting, weight, exercise, workout, VO2 max, strength,
   zone training, supplements, NMN, testosterone, vitamin D, homocysteine, inflammation, CRP,
   bloodwork, lab results, lab report photo, DEXA, bone density, body composition, sleep, HRV,
-  recovery, Whoop, UltraHuman, CGM, cardiac, Holter, cortisol, coaching, longevity, training
-  plan, goals, daily brief, expedition, altitude, or any question about the person's health
-  data, trends, plans, or goals. The person is identified by the loaded config — never assume.
+  recovery, Whoop, UltraHuman, CGM, cardiac, Holter, cortisol, stress, mental health, injury,
+  back pain, onsen, contrast therapy, anti-aging, lung, coaching, longevity, training plan,
+  goals, daily brief, expedition, altitude, or any question about the person's health data,
+  trends, plans, or goals. The person is identified by the loaded config — never assume.
 ---
 
 # HealthSpan — Personal Health Intelligence (v3, DB-backed, context-driven)
@@ -35,6 +39,12 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
 1. **Load config** — `lib.db.load_config(<path>)` → `{profile_id, display_name, is_owner, is_minor?,
    connection{...}}`. PC: `config/pc_skill.config.json`. Dea: `config/dea.config.json`. Same SKILL.md
    serves everyone; **RLS does the isolation.**
+   - **Bootstrap (no filesystem config/context — e.g. claude.ai / the Claude app):** the bundle is
+     person-AGNOSTIC and ships NO config or context. If there is no filesystem `config/` or `context/`,
+     read `<who>.config.json` + `<who>.context.md` from **PROJECT KNOWLEDGE**. If they are absent there,
+     **ask the user to paste both once** (config = identity + connection; context = targets/norms/voice).
+     **Never proceed with an assumed identity or assumed targets** — no config means no profile_id and no
+     scoped connection; no context means no targets. Stop and ask rather than guess.
 2. **Open the scoped connection** — `conn, mode = lib.db.get_app_connection(config)`.
    - A2 (`direct_role`): psycopg2 as `healthspan_app`, already `SET ROLE authenticated` + JWT claim →
      every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL.

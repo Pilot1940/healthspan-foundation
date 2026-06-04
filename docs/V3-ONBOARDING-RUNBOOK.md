@@ -28,18 +28,22 @@ Iterate SKILL.md wording where the model misroutes; re-run. The unit suite (`pyt
 ## B. Package the transportable `.skill`
 
 ```bash
-python scripts/package_skill.py v3        # → dist/healthspan-v3.skill
+python scripts/package_skill.py v3.1       # → dist/healthspan-v3.1.skill
 ```
 
 - Bundles SKILL.md + CHANGELOG + runtime modules (lib/plan/monitor/analysis/ingest/export) +
-  migrations + docs/SCHEMA-MAP + context templates + the **example** config.
+  migrations + docs/SCHEMA-MAP + the **example** config. The bundle is **person-agnostic**:
+  it ships NO `config/` and NO `context/` files (both delivered per-person).
 - A **leak guard** aborts if any secret (filled config, `.env`, `*.secret*`, a real
-  `hsapp_`/`sbp_`/JWT credential) reaches the staging tree. `dist/` is gitignored.
-- Verify independently: `unzip -l dist/healthspan-v3.skill` — only `config/*.example.json`
-  should appear under `config/`; no `.env`, no filled configs, no backups.
+  `hsapp_`/`sbp_`/JWT credential) OR any person-specific `context/*.context.md` reaches the
+  staging tree. `dist/` is gitignored.
+- Verify independently: `unzip -l dist/healthspan-v3.1.skill` — only `config/*.example.json`
+  under `config/`, and **no `context/` files at all**; no `.env`, no filled configs, no backups.
 
-Each install still needs its own per-instance `config/<name>.config.json` (NOT packaged —
-it carries the credential) + a `context/<name>.context.md`.
+Each install needs its own per-instance `config/<name>.config.json` (NOT packaged — carries
+the credential) + a `context/<name>.context.md`. On a filesystem (Cowork/Code) these live in
+the repo folder; on claude.ai / the Claude app they go in **Project knowledge**, and the skill
+bootstraps from there (or asks the user to paste them once) — see SKILL.md §0 step 1.
 
 ---
 

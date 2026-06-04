@@ -1,5 +1,20 @@
 # HealthSpan Skill — Changelog
 
+## v3.1 — person-agnostic repackage (2026-06-04)
+- **`package_skill.py` excludes `context/`** (same as `config/`) — the bundle is now
+  person-agnostic; per-person context is delivered separately (repo folder on Cowork/Code,
+  Project knowledge on claude.ai). The stale v3 artifact over-shipped `pc/dea.context.md`.
+- **Leak guard hardened**: aborts if any `context/*.context.md` is staged (a `.example.md`
+  template is allowed), alongside the existing secret checks.
+- **SKILL.md bootstrap amendment** (§0 step 1): with no filesystem config/context, read
+  `<who>.config.json` + `<who>.context.md` from Project knowledge; if absent, ask the user to
+  paste them once. Never proceed with assumed identity or targets.
+- **Trigger description strengthened**: casual action phrases ("log this", "here's my meal",
+  "save this", "how did I sleep", "how's my recovery", "am I on track", photo drops) + topics
+  (creatine, protein, macros, calories, weight, fasting, injury/back, stress, mental health,
+  onsen/contrast therapy, anti-aging, lung).
+- Rebuilt `dist/healthspan-v3.1.skill` (87 files); leak guard clean; frontmatter parses.
+
 ## v3 — fossil cleanup round 2 + deploy + persistence proof (2026-06-04)
 - **Migration 028**: dropped 4 more empty fossils — `user_telegram_links` (push is Google
   Chat via webhook, NOT Telegram — Telegram was never in the stack), `locations`,

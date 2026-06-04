@@ -1,9 +1,11 @@
 """package_skill.py — assemble a transportable `<name>.skill` zip (V3-7 packaging).
 
 A .skill is a zip with a single top-level dir: SKILL.md + CHANGELOG.md + the runtime code
-the skill imports + docs + context templates + the EXAMPLE config. It deliberately EXCLUDES
-every secret-bearing artefact (.env, filled per-instance configs, role secrets, DB backups)
-and runs a LEAK GUARD that aborts if any credential value slips into the staging tree.
+the skill imports + docs + the EXAMPLE config. It deliberately EXCLUDES every secret-bearing
+or person-specific artefact — .env, filled per-instance configs, role secrets, DB backups,
+AND the per-person context/ files (the bundle is person-AGNOSTIC; config + context are
+delivered per-person, never baked in). A LEAK GUARD aborts if any credential value OR any
+person-specific context file slips into the staging tree.
 
 Usage:  python scripts/package_skill.py [version]   # default version 'v3'
 Output: dist/healthspan-<version>.skill  (+ a printed manifest)
@@ -14,8 +16,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "healthspan"
 
 # Runtime + docs the skill needs — copied wholesale (minus the prune list below).
+# NB: context/ is intentionally EXCLUDED (same as config/) — the bundle is person-agnostic;
+# per-person context.md is delivered separately (repo folder on Cowork/Code, or Project
+# knowledge on claude.ai). Only the EXAMPLE config ships, as a format reference.
 INCLUDE_DIRS = ["lib", "plan", "monitor", "analysis", "ingest", "export",
-                "migrations", "docs", "context", "scripts"]
+                "migrations", "docs", "scripts"]
 INCLUDE_FILES = ["SKILL.md", "CHANGELOG.md", "requirements.txt",
                  "config/healthspan.config.example.json"]
 
@@ -28,6 +33,10 @@ PRUNE_SUFFIX = (".pyc", ".pyo")
 # carries a credential value (not an <…> placeholder).
 SECRET_PATH = re.compile(r"(^|/)(\.env$|config/.*\.config\.json$|.*\.secret.*)")
 SECRET_PATH_ALLOW = re.compile(r"config/.*\.example\.json$")
+# Per-person context files must NEVER ship — the bundle is person-agnostic. Any staged
+# context/<who>.context.md is a leak (a `.example.md` template would be allowed).
+CONTEXT_PATH = re.compile(r"(^|/)context/.*\.context\.md$")
+CONTEXT_PATH_ALLOW = re.compile(r"\.example\.md$")
 # Match only REAL credential shapes — long tokens / actual JWTs — never placeholders
 # like 'user:pass@', '[db-password]', or '<password>' (those are doc examples), and not
 # this guard's own short regex literals.
@@ -85,6 +94,9 @@ def _leak_guard(stage):
             if SECRET_PATH.search(rel) and not SECRET_PATH_ALLOW.search(rel):
                 leaks.append(f"secret path staged: {rel}")
                 continue
+            if CONTEXT_PATH.search(rel) and not CONTEXT_PATH_ALLOW.search(rel):
+                leaks.append(f"person-specific context file staged: {rel}")
+                continue
             try:
                 with open(full, encoding="utf-8", errors="ignore") as fh:
                     txt = fh.read()
@@ -119,7 +131,7 @@ def main():
                 z.write(full, arc)
                 n += 1
     size = os.path.getsize(out)
-    print(f"OK leak guard: no secrets staged")
+    print(f"OK leak guard: no secrets or person-specific context files staged")
     print(f"packaged {n} files → {out}  ({size:,} bytes)")
     print("manifest (top level):")
     for entry in sorted(os.listdir(stage)):
