@@ -1,8 +1,8 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-05 05:54 UTC.
-> generated_at: 2026-06-05T05:54:07Z
+> Generated 2026-06-05 05:58 UTC.
+> generated_at: 2026-06-05T05:58:53Z
 > coverage: 54 of 54 public base tables documented.
 
 ## `profiles`
