@@ -1,5 +1,32 @@
 # HealthSpan Skill — Changelog
 
+## v3.2 — schema-map completeness + generated-col doc fix (2026-06-05)
+- **Migration 016c — schema-comment completion.** 016 commented 19 high-value tables;
+  34 live tables (the v3 feature tables, the 5 `stg_*_review` staging queues, and the
+  catalogs) had ZERO `pg_description` and were invisible to `docs/SCHEMA-MAP.md`. 016c
+  adds table + column COMMENTs (MEANING + UNIT + TRAP) for every ACTIVE remaining table,
+  marks the two proven-dead fossils (`users_extended`, `body_metrics_history`) `DORMANT`,
+  and fills the one missed `profiles.is_maintainer` comment. **Coverage now 54/54 base
+  tables** (52 documented + 2 dormant), `profiles` 12/12.
+- **`supplement_intake_logs.taken_on` doc bug fixed at the source.** SCHEMA-MAP is
+  GENERATED from comments, so the durable fix is the COMMENT, not the doc. 016c supersedes
+  the 016 wording: `taken_on` is now documented as "GENERATED ALWAYS from `taken_at::date`
+  — NEVER insert/update (Postgres 428C9); set `taken_at` only; valid as an ON CONFLICT
+  target". The table comment now says ON CONFLICT key (not "upsert key"), so a hand-written
+  PostgREST insert can't be misled into supplying it again.
+- **`gen_schema_map.py` is now DB-driven** — it renders EVERY documented public base table
+  (was a hardcoded list of 19, which would have hidden the 34 newly-commented tables),
+  adds a `coverage: X of Y` header line, and a trailing `## Unmapped tables` section that
+  lists any base table with no comments (empty = full coverage). A table can no longer be
+  silently hidden by being absent from the generator's list.
+- **Regression guard** — `tests/unit/test_contract.py::TestGeneratedColsLive` asserts
+  `taken_on` is detected as GENERATED via live `pg_attribute` introspection (skips when no
+  DB), so a locked-down-role permissions regression that silently degrades `_generated_cols`
+  to empty fails loudly instead of reopening the 428C9 bug.
+- _No PostgREST write guard added: there is no `.insert/.upsert` write path in the
+  codebase (all writes go through the psycopg2 `contract.write`, which already strips
+  generated cols) — a hardcoded strip-set would be dead code that drifts._
+
 ## v3.2 — App/claude.ai connection fixes (2026-06-05)
 - **whoop-webhook bug fix (deployed):** `mapWorkout` never computed `duration_min` from
   `rec.start`/`rec.end` (the Python sync does, via `_duration_min`), so webhook-sourced workouts

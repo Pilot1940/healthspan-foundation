@@ -1,8 +1,9 @@
 # HealthSpan — Schema Map (semantic reference)
 
-> **GENERATED from pg_description (column/table COMMENTs, migration 016). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-05 05:18 UTC.
-> generated_at: 2026-06-05T05:18:36Z
+> **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
+> Generated 2026-06-05 05:54 UTC.
+> generated_at: 2026-06-05T05:54:07Z
+> coverage: 54 of 54 public base tables documented.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -20,7 +21,7 @@ _One row per tracked person. auth_user_id nullable (children with no login). Hea
 | `is_active` | boolean | Whether the profile is active. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update. |
-| `is_maintainer` | boolean |  |
+| `is_maintainer` | boolean | TRUE = this profile is a family maintainer (PC). Resolved live via public.is_maintainer() over family_memberships; gates maintainer-only RLS SELECT on query_audit / wearable_sync_log / wearable_sync_errors / stg_*_review. A non-maintainer (Dea/Dev) sees outcomes, never the machinery. |
 
 ## `families`
 _Household grouping for multi-tenant access._
@@ -310,7 +311,7 @@ _A person's supplement protocol (dose/timing/duration, cyclical aware). status: 
 | `updated_at` | timestamp with time zone | Last update. |
 
 ## `supplement_intake_logs`
-_Actual supplement intake events. Upsert key (profile_id, supplement_id, taken_on, source). source CHECK: manual|journal|skill|csv._
+_Actual supplement intake events. ON CONFLICT key (profile_id, supplement_id, taken_on, source) — taken_on is GENERATED from taken_at, so set taken_at and let it derive; never write taken_on. source CHECK: manual|journal|skill|csv._
 
 | column | type | meaning / unit / trap |
 |---|---|---|
@@ -319,7 +320,7 @@ _Actual supplement intake events. Upsert key (profile_id, supplement_id, taken_o
 | `regimen_id` | uuid | FK supplement_regimens.id (auto-attached from active regimen). |
 | `supplement_id` | uuid | FK supplements.id. |
 | `taken_at` | timestamp with time zone | Intake timestamp (timestamptz). |
-| `taken_on` | date | Intake date (date) — part of the upsert key. |
+| `taken_on` | date | GENERATED ALWAYS from taken_at::date — NEVER insert/update (Postgres 428C9). Set taken_at only. Valid as an ON CONFLICT target (part of the upsert key). |
 | `dose_amount` | numeric | Dose taken. |
 | `dose_unit` | text | Dose unit. |
 | `source` | text | CHECK: manual \| journal \| skill \| csv. Default skill. |
@@ -411,3 +412,593 @@ _Per-record ingestion failures (one row per bad record). Click a failed run to s
 | `error_message` | text | Error detail. |
 | `raw` | jsonb | JSONB of the raw record that failed. |
 | `created_at` | timestamp with time zone | Row insert time. |
+
+## `audit_log`
+_Generic row-level change audit (action/table/old_data/new_data). Currently EMPTY and not written by the v3 skill — kept (migration 028) pending a keep/drop ruling. Do not rely on it for history._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | auth.users id who performed the action. |
+| `action` | text | INSERT \| UPDATE \| DELETE (free text). |
+| `table_name` | text | Table the change was on. |
+| `record_id` | uuid | PK of the changed row. |
+| `old_data` | jsonb | JSONB row before. |
+| `new_data` | jsonb | JSONB row after. |
+| `ip_address` | inet | Client IP (inet). |
+| `user_agent` | text | Client user agent. |
+| `created_at` | timestamp with time zone | When the action happened. |
+
+## `biomarker_targets`
+_PER-PROFILE personal target range for a marker (the tighter goal vs the generic test_targets/metric_definitions reference range). Keyed by (profile_id, metric_definition_id, source). Currently empty._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `metric_definition_id` | uuid | FK metric_definitions.id — which marker. |
+| `low_optimal` | numeric | Personal optimal-range floor. |
+| `high_optimal` | numeric | Personal optimal-range ceiling. |
+| `low_normal` | numeric | Personal normal-range floor. |
+| `high_normal` | numeric | Personal normal-range ceiling. |
+| `source` | text | Origin of the target (system \| clinician \| self). Part of the UNIQUE key. |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `body_metrics_history`
+_DORMANT — not used by the skill; do not query. Superseded by public.biomarkers, which is the canonical home for all lab + DEXA scalar values (incl. body composition). Zero rows, zero code references._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid |  |
+| `user_id` | uuid |  |
+| `metric_definition_id` | uuid |  |
+| `value` | numeric |  |
+| `unit` | text |  |
+| `source` | text |  |
+| `measured_at` | timestamp with time zone |  |
+| `notes` | text |  |
+| `created_at` | timestamp with time zone |  |
+| `profile_id` | uuid |  |
+
+## `canonical_aliases`
+_Alias → metric_definitions resolution for biomarker-name normalisation (e.g. ag_ratio→albumin_globulin_ratio). UNIQUE(alias, source). Currently empty; resolution presently lives in code — kept pending a keep/drop ruling._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `alias` | text | The non-canonical marker name seen in a lab report. |
+| `metric_definition_id` | uuid | FK metric_definitions.id the alias maps to. |
+| `source` | text | Origin of the mapping. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `daily_log_metrics`
+_Metric values attached to a daily_logs row (EAV-style). Currently empty. Use the typed tables (biomarkers etc.) for real analysis._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `daily_log_id` | uuid | FK daily_logs.id (CASCADE). |
+| `metric_definition_id` | uuid | FK metric_definitions.id — which metric. |
+| `value` | numeric | Numeric value. |
+| `unit` | text | Unit of value. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `daily_logs`
+_Generic per-day log header (one per profile per log_date/log_type); its metric values hang off daily_log_metrics. Currently empty — most signals land in their typed tables (food_logs, biomarkers, whoop_*). Generic catch-all._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `log_date` | date | The day this log covers (date). |
+| `log_type` | text | Kind of daily log (default 'general'). |
+| `source` | text | Origin (manual, skill...). |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `documents`
+_Uploaded source files (lab PDFs, prescriptions, imaging) that ingestion extracts FROM. Many tables reference document_id back to here. category CHECK lab_report|prescription|imaging|insurance|other; status CHECK uploaded|processing|processed|failed. Currently empty._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `file_name` | text | Original file name. |
+| `file_type` | text | Logical type/extension. |
+| `file_size_bytes` | bigint | Size in bytes. |
+| `storage_path` | text | S3 (or storage) path/key. |
+| `mime_type` | text | MIME type. |
+| `category` | text | CHECK: lab_report \| prescription \| imaging \| insurance \| other. |
+| `status` | text | CHECK: uploaded \| processing \| processed \| failed. |
+| `ai_extracted` | boolean | TRUE once AI extraction has run on this document. |
+| `metadata` | jsonb | JSONB extra metadata. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `food_guidance`
+_FAMILY/GLOBAL food classification (the curated avoid/minimize/superfood list, incl. Viome-derived). TRAP: distinct from food_rules (per-profile medical/allergy rules). classification CHECK avoid|minimize|superfood. UNIQUE(item, classification, scope)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `item` | text | Food/ingredient name. |
+| `classification` | text | CHECK: avoid \| minimize \| superfood. |
+| `reason` | text | Why it is classified this way. |
+| `alternative` | text | Suggested swap. |
+| `category` | text | Food category grouping. |
+| `scope` | text | family (default) or a narrower scope. Part of the UNIQUE key. |
+| `source` | text | Origin (curated, viome...). |
+| `is_active` | boolean | Whether the guidance is in use. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `food_rules`
+_PER-PROFILE dietary rules (allergies, intolerances, preferences, medical avoidances). TRAP: distinct from food_guidance, which is FAMILY/GLOBAL classification. rule_type CHECK allergy|intolerance|preference|medical; severity CHECK mild|moderate|severe|life_threatening. Currently empty._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `rule_type` | text | CHECK: allergy \| intolerance \| preference \| medical. |
+| `item` | text | The food/ingredient the rule is about. |
+| `severity` | text | CHECK: mild \| moderate \| severe \| life_threatening. |
+| `notes` | text | Free text. |
+| `source` | text | Origin (manual, skill...). |
+| `is_active` | boolean | Whether the rule is in force. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `healthspan_tests`
+_One investigation INSTANCE (a lab visit / DEXA / scan) — groups the biomarkers it produced (biomarkers.healthspan_test_id → here). status CHECK scheduled|pending|complete|partial; investigation_type CHECK blood|imaging|scan|genetic|other._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `test_definition_id` | uuid | FK test_definitions.id — which panel type. |
+| `document_id` | uuid | FK documents.id (source PDF) if any. |
+| `tested_at` | timestamp with time zone | When the sample/scan was taken (timestamptz, from the report — never now()). |
+| `lab_name` | text | Lab/provider name. |
+| `status` | text | CHECK: scheduled \| pending \| complete \| partial. |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `program_id` | uuid | FK training_programs.id if the investigation belongs to a program. |
+| `provider` | text | Provider/clinic (free text). |
+| `location` | text | Where it was done. |
+| `investigation_type` | text | CHECK: blood \| imaging \| scan \| genetic \| other. |
+
+## `ingestion_tokens`
+_Hashed ingestion-auth tokens minted by mint_ingestion_token() (hs_ops mint-token) for the photo/screenshot ingestion path. token_hash is a one-way hash (the plaintext is shown ONCE). The analytics/read skill NEVER queries this — it is ingestion-auth infrastructure. UNIQUE(token_hash)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id the token ingests for (CASCADE). |
+| `token_hash` | bytea | One-way hash of the token (bytea). The plaintext is never stored. UNIQUE. |
+| `label` | text | Human label for the token. |
+| `allowed_methods` | text[] | TEXT[] of permitted ingest methods (default {photo,screenshot}). |
+| `created_by` | uuid | FK auth.users who minted it. |
+| `expires_at` | timestamp with time zone | Expiry (NULL = no expiry). |
+| `revoked_at` | timestamp with time zone | When revoked (NULL = active). |
+| `last_used_at` | timestamp with time zone | Last time the token authenticated an ingest. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `journal_behavior_aliases`
+_Alias → journal_behaviors resolution (WHOOP rewords prompts over time; aliases keep history joinable). UNIQUE(alias)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `alias` | text | An alternate prompt/label string (UNIQUE). |
+| `behavior_id` | uuid | FK journal_behaviors.id the alias resolves to. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `journal_behaviors`
+_Catalog of WHOOP journal habit QUESTIONS (the columns the whoop_journal view exposes). category CHECK diet|supplements|hydration|alcohol|sleep|wellness|other. UNIQUE(slug)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `slug` | text | Stable snake_case key (becomes the whoop_journal view column; UNIQUE). |
+| `question_text` | text | The journal prompt as WHOOP phrases it. |
+| `display_name` | text | Human label. |
+| `category` | text | CHECK: diet \| supplements \| hydration \| alcohol \| sleep \| wellness \| other. |
+| `is_quantitative` | boolean | TRUE = answer is a quantity (quantity col); FALSE = yes/no (answered_yes col). |
+| `default_unit` | text | Default unit for a quantitative behaviour. |
+| `is_active` | boolean | Whether the habit is in use. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `loinc_reference`
+_LOINC code reference for lab markers (metric_definitions.loinc_id → here). Read-only reference data. UNIQUE(loinc_code)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `loinc_code` | text | LOINC code (UNIQUE). |
+| `component` | text | The substance/analyte measured. |
+| `property` | text | LOINC property axis (e.g. MCnc, SCnc). |
+| `time_aspect` | text | LOINC time axis (Pt, 24H...). |
+| `system` | text | LOINC system/specimen (Ser/Plas, Bld...). |
+| `scale_type` | text | LOINC scale (Qn, Ord, Nom). |
+| `method_type` | text | LOINC method axis if specified. |
+| `long_name` | text | LOINC long common name. |
+| `short_name` | text | LOINC short name. |
+| `unit` | text | Conventional unit for the code. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `program_phases`
+_Ordered phases within a training_program (base / build / peak / taper...). UNIQUE(program_id, ordinal)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `program_id` | uuid | FK training_programs.id. |
+| `name` | text | Phase name. |
+| `ordinal` | integer | Order within the program (0-based). UNIQUE with program_id. |
+| `start_date` | date | Phase start (date). |
+| `end_date` | date | Phase end (date). |
+| `weekly_template` | jsonb | JSONB weekly session template for the phase. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `program_workouts`
+_Links a planned/performed whoop_workouts row to a program (and optionally a phase). UNIQUE(program_id, workout_id). Currently empty._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `program_id` | uuid | FK training_programs.id. |
+| `phase_id` | uuid | FK program_phases.id (NULL if not phase-assigned). |
+| `workout_id` | uuid | FK whoop_workouts.id. |
+| `workout_type` | text | Planned type/label for the session. |
+| `prescribed` | boolean | TRUE = prescribed by the plan (vs a workout retro-tagged to it). |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `query_audit`
+_Skill read-audit log: one row per skill query (lib.views.run_view = catalog, lib.sql_guard.run_adhoc_audited = adhoc). MAINTAINER-ONLY RLS SELECT (022) — non-maintainers see 0 rows. kind CHECK catalog|adhoc. Written non-blocking via lib.sql_guard.log_query._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — whose data the query ran against. |
+| `ts` | timestamp with time zone | When the query ran (timestamptz). |
+| `quality_verdict` | jsonb | JSONB data-quality verdict for the result (e.g. nullable-aggregate warning). |
+| `row_count` | integer | Rows the query returned. |
+| `flagged` | boolean | TRUE = flagged for maintainer review. |
+| `kind` | text | CHECK: catalog (a named lib/views entry) \| adhoc (a composed SQL). |
+| `name_or_sql` | text | The catalog view name (kind=catalog) or the raw SQL text (kind=adhoc). |
+| `params` | jsonb | JSONB bound parameters / intent. |
+
+## `stg_biomarker_review`
+_Staging queue for AI-extracted biomarkers (rule #2: extraction → staging, never prod). On approval, promotes to biomarkers.staging_id. MAINTAINER-gated. TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `document_id` | uuid | FK documents.id source PDF. |
+| `metric_definition_id` | uuid | FK metric_definitions.id once resolved (NULL = unresolved name to review). |
+| `extracted_name` | text | Raw marker name as read from the source. |
+| `extracted_value` | numeric | Raw value extracted. |
+| `extracted_unit` | text | Raw unit extracted. |
+| `measured_at` | timestamp with time zone | Sample date as read from the report. |
+| `confidence` | numeric | Extraction confidence 0-1 (CHECK). Below the system_config cutoff → stays for review. |
+| `status` | text | CHECK: pending \| approved \| rejected \| merged. |
+| `reviewed_at` | timestamp with time zone | When a maintainer actioned it. |
+| `raw_text` | text | The source text snippet the value came from. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `stg_food_log_review`
+_Staging queue for AI-extracted food logs (rule #2). On approval, promotes to food_logs. TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `document_id` | uuid | FK documents.id source. |
+| `sync_log_id` | uuid | FK wearable_sync_log.id (the ingest run that produced this). |
+| `meal_type` | text | Extracted meal type. |
+| `description` | text | Extracted meal description. |
+| `calories` | numeric | Extracted kcal (thousands separators stripped — see food_logs.calories trap). |
+| `protein_g` | numeric | Extracted protein (g). |
+| `carbs_g` | numeric | Extracted carbohydrate (g). |
+| `fat_g` | numeric | Extracted fat (g). |
+| `fiber_g` | numeric | Extracted fibre (g). |
+| `foods` | jsonb | JSONB array of extracted food items. |
+| `verdict` | text | Extracted diet-fit verdict. |
+| `confidence` | numeric | Extraction confidence 0-1 (CHECK). |
+| `status` | text | CHECK: pending \| approved \| rejected \| merged. |
+| `reviewed_at` | timestamp with time zone | When actioned. |
+| `raw_text` | text | Source text snippet. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `stg_food_rule_review`
+_Staging queue for AI-extracted food_rules (rule #2). TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `document_id` | uuid | FK documents.id source. |
+| `rule_type` | text | Extracted rule type (see food_rules.rule_type CHECK on promotion). |
+| `item` | text | Extracted food/ingredient. |
+| `severity` | text | Extracted severity. |
+| `confidence` | numeric | Extraction confidence 0-1 (CHECK). |
+| `status` | text | CHECK: pending \| approved \| rejected \| merged. |
+| `reviewed_at` | timestamp with time zone | When actioned. |
+| `raw_text` | text | Source text snippet. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `stg_supplement_intake_review`
+_Staging queue for AI-extracted supplement intake events (rule #2). On approval, promotes to supplement_intake_logs. TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `document_id` | uuid | FK documents.id source. |
+| `sync_log_id` | uuid | FK wearable_sync_log.id ingest run. |
+| `supplement_id` | uuid | FK supplements.id once resolved (NULL = unresolved name to review). |
+| `extracted_name` | text | Raw supplement name as read. |
+| `extracted_dose` | numeric | Raw dose amount. |
+| `extracted_unit` | text | Raw dose unit. |
+| `taken_at` | timestamp with time zone | Extracted intake timestamp (promotes to supplement_intake_logs.taken_at; taken_on derives). |
+| `confidence` | numeric | Extraction confidence 0-1 (CHECK). |
+| `status` | text | CHECK: pending \| approved \| rejected \| merged. |
+| `reviewed_at` | timestamp with time zone | When actioned. |
+| `raw_text` | text | Source text snippet. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `stg_test_result_review`
+_Staging queue for AI-extracted test/investigation results (rule #2). TRAP: not production truth. result_value is TEXT (free-form, pre-normalisation). status CHECK pending|approved|rejected|merged; confidence 0-1._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `document_id` | uuid | FK documents.id source. |
+| `test_name` | text | Raw test name as read. |
+| `result_value` | text | Raw result as TEXT (not yet numeric/normalised). |
+| `result_unit` | text | Raw unit. |
+| `tested_at` | timestamp with time zone | Extracted test date. |
+| `lab_name` | text | Extracted lab name. |
+| `confidence` | numeric | Extraction confidence 0-1 (CHECK). |
+| `status` | text | CHECK: pending \| approved \| rejected \| merged. |
+| `reviewed_at` | timestamp with time zone | When actioned. |
+| `raw_text` | text | Source text snippet. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `supplement_aliases`
+_Alias → supplements resolution (brand names, abbreviations, OCR variants). UNIQUE(alias, source)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `alias` | text | The alternate string seen in input. |
+| `supplement_id` | uuid | FK supplements.id the alias resolves to. |
+| `source` | text | Where the alias came from (curated, skill, csv...). |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `supplement_components`
+_Composition of a compound supplement: product_id is the parent, component_id an ingredient (both FK supplements.id). CHECK product<>component. UNIQUE(product_id, component_id)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `product_id` | uuid | FK supplements.id — the compound product. |
+| `component_id` | uuid | FK supplements.id — an ingredient of the product. |
+| `amount` | numeric | Amount of the component per serving (numeric). |
+| `unit` | text | Unit of amount (mg, mcg, IU...). |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `supplements`
+_Catalog of supplement/medication products AND their components (compounds reference their parts via supplement_components). Family/global rows + per-profile custom rows (owner_profile_id). UNIQUE(name)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `name` | text | Canonical snake_case name (the resolve key; aliases map to it via supplement_aliases). UNIQUE. |
+| `display_name` | text | Human label. |
+| `brand` | text | Brand/manufacturer if relevant. |
+| `key_active` | text | Primary active ingredient (free text). |
+| `category` | text | CHECK: supplement \| medication \| probiotic \| other. |
+| `default_unit` | text | Default dose unit (mg, mcg, g, IU, serving...). |
+| `is_medication` | boolean | TRUE = prescription/OTC medication (vs nutritional supplement). |
+| `is_compound` | boolean | TRUE = a multi-ingredient product; its parts are rows linked via supplement_components. |
+| `owner_profile_id` | uuid | FK profiles.id — set for a per-person CUSTOM entry; NULL = shared/global catalog row. |
+| `is_custom` | boolean | TRUE = user-added (not curated catalog). |
+| `notes` | text | Free text. |
+| `is_active` | boolean | Whether the entry is in use. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `system_config`
+_Thresholds & runtime config — the SINGLE source for thresholds (CLAUDE.md rule #1: never hardcode). lib.contract.get_config reads value (jsonb) by key. UNIQUE(key). e.g. the ingestion confidence cutoff lives here._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `key` | text | Config key (UNIQUE) — the lookup string. |
+| `value` | jsonb | JSONB value (parsed to native Python by get_config). |
+| `description` | text | What this config controls. |
+| `category` | text | Grouping for the config entry. |
+| `is_active` | boolean | TRUE = honoured (get_config filters on is_active). |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `test_definitions`
+_Catalog of investigation/panel TYPES (e.g. a lipid panel, a DEXA). A healthspan_tests row is one instance of one of these. UNIQUE(name)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `name` | text | Canonical snake_case name (UNIQUE). |
+| `display_name` | text | Human label. |
+| `category` | text | Grouping (blood, imaging, scan, genetic...). |
+| `description` | text | What the test covers. |
+| `biomarker_count` | integer | How many markers this panel typically yields (catalog hint). |
+| `is_active` | boolean | Whether the definition is in use. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `test_targets`
+_Reference/optimal ranges per (test_definition, metric_definition), age- and sex-aware. TRAP: these are GENERIC ranges; biomarker_targets holds the PER-PROFILE personal target that overrides them. Currently empty._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `test_definition_id` | uuid | FK test_definitions.id. |
+| `metric_definition_id` | uuid | FK metric_definitions.id. |
+| `low_normal` | numeric | Lower bound of the normal/reference range. |
+| `high_normal` | numeric | Upper bound of the normal/reference range. |
+| `low_optimal` | numeric | Lower bound of the OPTIMAL (tighter than normal) range. |
+| `high_optimal` | numeric | Upper bound of the optimal range. |
+| `age_min` | integer | Min age (years) this range applies to. NULL = no lower age bound. |
+| `age_max` | integer | Max age this range applies to. NULL = no upper age bound. |
+| `sex` | text | CHECK: male \| female \| all — which sex the range is for. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `training_programs`
+_A training program / plan (e.g. the Mera Peak plan). Has ordered program_phases and program_workouts. status CHECK planned|active|done|abandoned._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `name` | text | Program name. |
+| `objective` | text | What the program is for. |
+| `target_event` | text | The event/date it builds toward (e.g. a summit). |
+| `start_date` | date | Program start (date). |
+| `end_date` | date | Program end (date). |
+| `status` | text | CHECK: planned \| active \| done \| abandoned. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+
+## `trend_alerts`
+_Generated alerts (threshold breach, trend, anomaly, goal). alert_type CHECK threshold|trend|anomaly|goal; severity CHECK info|warning|critical. Currently empty (alerting not yet wired)._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `metric_definition_id` | uuid | FK metric_definitions.id if the alert is about a marker (NULL otherwise). |
+| `alert_type` | text | CHECK: threshold \| trend \| anomaly \| goal. |
+| `severity` | text | CHECK: info \| warning \| critical. |
+| `title` | text | Short alert title. |
+| `message` | text | Alert body. |
+| `data` | jsonb | JSONB supporting data/snapshot. |
+| `is_read` | boolean | Whether the alert has been read. |
+| `read_at` | timestamp with time zone | When it was read. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `user_goals`
+_Health/training goals — MULTIPLE concurrent goals per profile allowed (migration 020). TRAP: direction-aware — compare achieved/current vs baseline_value toward target_value; do NOT assume "higher is better". An open goal has is_active=true and ended_at NULL._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `metric_definition_id` | uuid | FK metric_definitions.id if the goal tracks a specific marker (NULL for free-form goals). |
+| `title` | text | Goal title. |
+| `description` | text | Goal detail. |
+| `target_value` | numeric | Numeric target to reach. |
+| `target_unit` | text | Unit of target_value. |
+| `target_date` | date | Date by which to hit the target. |
+| `is_active` | boolean | TRUE = open/ongoing goal. Derive status with ended_at. |
+| `progress_pct` | numeric | Cached progress percent (0-100); recompute from live data when displaying. |
+| `ended_at` | timestamp with time zone | When the goal was closed (NULL = still open). |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `program_id` | uuid | FK training_programs.id if the goal belongs to a program. |
+| `baseline_value` | numeric | Starting value when the goal was set — the reference for direction-aware progress. |
+| `achieved_value` | numeric | Best/last value achieved. |
+| `achieved_date` | date | Date the achieved_value was reached. |
+
+## `users_extended`
+_DORMANT — not used by the skill; do not query. SaaS-era per-user profile fossil (tier free/pro/premium, onboarding_complete). Superseded by public.profiles. Zero code references; kept only as historical structure._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid |  |
+| `user_id` | uuid |  |
+| `display_name` | text |  |
+| `date_of_birth` | date |  |
+| `sex` | text |  |
+| `blood_type` | text |  |
+| `tier` | text |  |
+| `timezone` | text |  |
+| `unit_system` | text |  |
+| `onboarding_complete` | boolean |  |
+| `avatar_url` | text |  |
+| `created_at` | timestamp with time zone |  |
+| `updated_at` | timestamp with time zone |  |
+
+## `weight_logs`
+_Body-weight log (kg). UNIQUE(profile_id, logged_at). Currently empty — weight currently arrives as a DEXA/lab biomarker; this is the dedicated time-series home._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `user_id` | uuid | LEGACY auth.users id — DORMANT. Use profile_id. |
+| `weight_kg` | numeric | Weight in KILOGRAMS (unit is fixed; do not assume lb). |
+| `source` | text | Origin (manual, scale, skill...). |
+| `logged_at` | timestamp with time zone | When the weight was taken (timestamptz). Part of the UNIQUE key. |
+| `notes` | text | Free text. |
+| `created_at` | timestamp with time zone | Row insert time. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `whoop_journal_entries`
+_Long-form WHOOP journal answers: one row per (cycle, behaviour). The whoop_journal VIEW (016b) pivots these into one boolean/quantity column per habit. UNIQUE(profile_id, cycle_start, behavior_id). JOIN TRAP: cycle_start is CSV-sourced and matches whoop_cycles.cycle_start only on ::date, never the exact timestamp._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `cycle_start` | timestamp with time zone | Owning WHOOP cycle start (timestamptz, from the CSV). JOIN TRAP: join to whoop_cycles on cycle_start::date, NOT the exact timestamp (exact match returns 0 rows). |
+| `cycle_end` | timestamp with time zone | Owning cycle end (timestamptz). |
+| `timezone` | text | WHOOP timezone_offset at cycle time. |
+| `behavior_id` | uuid | FK journal_behaviors.id — which habit question this answer is for. Part of the upsert key. |
+| `answered_yes` | boolean | Boolean answer for a yes/no habit (NULL if the behaviour is quantitative or unanswered). |
+| `quantity` | numeric | Numeric answer for a quantitative behaviour (e.g. glasses of water). NULL for yes/no habits. |
+| `unit` | text | Unit for quantity, if any. |
+| `notes` | text | Free text. |
+| `source_file` | text | Origin CSV/export name. |
+| `created_at` | timestamp with time zone | Row insert time. |
+
+## `whoop_tokens`
+_WHOOP OAuth tokens per profile, used by the WHOOP API sync (ingest/whoop_sync). UNIQUE(profile_id). SECRET — access/refresh tokens; never surface in skill output._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | PK. |
+| `profile_id` | uuid | FK profiles.id — whose WHOOP account this is (UNIQUE). |
+| `access_token` | text | OAuth access token (SECRET). |
+| `refresh_token` | text | OAuth refresh token (SECRET). |
+| `expires_at` | timestamp with time zone | Access-token expiry (refresh when past). |
+| `scope` | text | Granted OAuth scopes. |
+| `whoop_user_id` | text | WHOOP account user id. |
+| `updated_at` | timestamp with time zone | Last token refresh time. |
+
+## Unmapped tables
+
+_None — every public base table carries a comment._

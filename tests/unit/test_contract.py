@@ -732,3 +732,37 @@ class TestParseNumber:
     def test_decimal_only(self):
         assert parse_number(".59") == (0.59, None)
         assert parse_number("0.11 S/CO") == (0.11, None)
+
+
+# ===========================================================================
+# Integration — GENERATED-column introspection (live DB; skips when unreachable)
+# ===========================================================================
+# Regression guard for the supplement_intake_logs.taken_on 428C9 bug: write()
+# must NEVER put a GENERATED column in the INSERT list. _generated_cols() learns
+# that from pg_attribute. On a locked-down role with no pg_attribute read, the
+# except branch degrades to "none generated" and the bug silently reopens — this
+# test fails LOUDLY if taken_on stops being detected.
+class TestGeneratedColsLive:
+    def _conn(self):
+        import os, sys
+        here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        sys.path.insert(0, os.path.join(here, "scripts"))
+        try:
+            import hs_ops
+            hs_ops._load_env()
+            return hs_ops.connect(readonly=True)
+        except Exception as e:
+            pytest.skip(f"no live DB for generated-col introspection: {e}")
+
+    def test_taken_on_detected_as_generated(self):
+        from lib.contract import _generated_cols
+        conn = self._conn()
+        try:
+            gen = _generated_cols(conn, "supplement_intake_logs")
+        finally:
+            conn.close()
+        assert "taken_on" in gen, (
+            "supplement_intake_logs.taken_on no longer detected as GENERATED — "
+            "write() would try to INSERT it and raise 428C9 (check pg_attribute "
+            "read access on the connecting role)"
+        )
