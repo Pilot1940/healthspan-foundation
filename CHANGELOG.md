@@ -1,6 +1,11 @@
 # HealthSpan Skill — Changelog
 
 ## v3.2 — App/claude.ai connection fixes (2026-06-05)
+- **whoop-webhook bug fix (deployed):** `mapWorkout` never computed `duration_min` from
+  `rec.start`/`rec.end` (the Python sync does, via `_duration_min`), so webhook-sourced workouts
+  had NULL duration (e.g. the Jun-5 Fatmax Walk). Now computes it + the zone `*_pct` shares.
+  `mapSleep` likewise gained `in_bed_duration_min` (from start/end) + `awake_min`,
+  `sleep_need_min`, `sleep_debt_min`, `sleep_consistency_pct`. Existing NULLs backfilled.
 - **P0 — `supabase_client` now authenticates.** `lib/db.get_app_connection` previously returned
   an UNauthenticated client (anon → RLS denied every read, 42501). It now calls
   `client.auth.sign_in_with_password({email, password})` with `auth_email` + `auth_password`

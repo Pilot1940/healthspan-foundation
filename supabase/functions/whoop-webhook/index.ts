@@ -32,17 +32,27 @@ function mapWorkout(rec: any, profileId: string) {
   const s = rec.score ?? {}; const z = s.zone_durations ?? {};
   const total = ["zone_zero_milli","zone_one_milli","zone_two_milli","zone_three_milli","zone_four_milli","zone_five_milli"]
     .reduce((a,k)=>a+(z[k]??0),0);
+  // duration from start/end — the Python sync does this (_duration_min); the webhook didn't,
+  // so webhook-sourced workouts had duration_min = NULL despite valid timestamps.
+  const durationMin = (rec.start && rec.end)
+    ? Math.round((new Date(rec.end).getTime() - new Date(rec.start).getTime()) / 60000 * 10) / 10
+    : null;
   const row: Record<string, unknown> = {
     profile_id: profileId, whoop_id: String(rec.id),
     cycle_start: rec.start, workout_start: rec.start, workout_end: rec.end,
     timezone: rec.timezone_offset, activity_name: rec.sport_name ?? "Activity",
+    duration_min: durationMin,
     activity_strain: s.strain, avg_hr_bpm: s.average_heart_rate, max_hr_bpm: s.max_heart_rate,
     energy_burned_cal: kjToCal(s.kilojoule), source_file: "whoop_webhook",
   };
   if (total > 0) {
+    const pct = (ms: number) => Math.round((ms / total) * 10000) / 100;
     row.hr_zone0_sec = msToSec(z.zone_zero_milli); row.hr_zone1_sec = msToSec(z.zone_one_milli);
     row.hr_zone2_sec = msToSec(z.zone_two_milli);  row.hr_zone3_sec = msToSec(z.zone_three_milli);
     row.hr_zone4_sec = msToSec(z.zone_four_milli); row.hr_zone5_sec = msToSec(z.zone_five_milli);
+    row.hr_zone0_pct = pct(z.zone_zero_milli ?? 0); row.hr_zone1_pct = pct(z.zone_one_milli ?? 0);
+    row.hr_zone2_pct = pct(z.zone_two_milli ?? 0);  row.hr_zone3_pct = pct(z.zone_three_milli ?? 0);
+    row.hr_zone4_pct = pct(z.zone_four_milli ?? 0); row.hr_zone5_pct = pct(z.zone_five_milli ?? 0);
   }
   return row;
 }
@@ -50,17 +60,26 @@ function mapWorkout(rec: any, profileId: string) {
 function mapSleep(rec: any, profileId: string) {
   const s = rec.score ?? {}; const st = s.stage_summary ?? {};
   const asleep = (st.total_light_sleep_time_milli??0)+(st.total_slow_wave_sleep_time_milli??0)+(st.total_rem_sleep_time_milli??0);
+  // time in bed from start/end (the webhook didn't compute it → in_bed_duration_min was NULL)
+  const inBedMin = (rec.start && rec.end)
+    ? Math.round((new Date(rec.end).getTime() - new Date(rec.start).getTime()) / 60000 * 10) / 10
+    : null;
   return {
     profile_id: profileId, whoop_id: String(rec.id),
     cycle_start: rec.start, sleep_onset: rec.start, wake_onset: rec.end,
     timezone: rec.timezone_offset, is_nap: rec.nap ?? false,
     sleep_performance_pct: s.sleep_performance_percentage,
     sleep_efficiency_pct: s.sleep_efficiency_percentage,
+    sleep_consistency_pct: s.sleep_consistency_percentage,
     respiratory_rate_rpm: s.respiratory_rate,
     asleep_duration_min: asleep ? msToMin(asleep) : null,
+    in_bed_duration_min: inBedMin,
     deep_sws_min: msToMin(st.total_slow_wave_sleep_time_milli),
     rem_min: msToMin(st.total_rem_sleep_time_milli),
     light_sleep_min: msToMin(st.total_light_sleep_time_milli),
+    awake_min: msToMin(st.total_awake_time_milli),
+    sleep_need_min: msToMin(s.sleep_needed?.baseline_milli),
+    sleep_debt_min: msToMin(s.sleep_needed?.need_from_sleep_debt_milli),
     source_file: "whoop_webhook",
   };
 }
