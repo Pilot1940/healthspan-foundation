@@ -1,8 +1,6 @@
 # HealthSpan Skill — Changelog
 
-## v3.2 — App/claude.ai fixes + schema-map completeness (2026-06-05)
-
-### schema-map completeness + generated-col doc fix
+## v3.2.1 — schema-map completeness + generated-col doc fix (2026-06-05)
 - **Migration 016c — schema-comment completion.** 016 commented 19 high-value tables;
   34 live tables (the v3 feature tables, the 5 `stg_*_review` staging queues, and the
   catalogs) had ZERO `pg_description` and were invisible to `docs/SCHEMA-MAP.md`. 016c
@@ -29,7 +27,8 @@
   codebase (all writes go through the psycopg2 `contract.write`, which already strips
   generated cols) — a hardcoded strip-set would be dead code that drifts._
 
-### App/claude.ai connection fixes
+## v3.2 — App/claude.ai connection fixes (2026-06-05)
+
 - **whoop-webhook bug fix (deployed):** `mapWorkout` never computed `duration_min` from
   `rec.start`/`rec.end` (the Python sync does, via `_duration_min`), so webhook-sourced workouts
   had NULL duration (e.g. the Jun-5 Fatmax Walk). Now computes it + the zone `*_pct` shares.
