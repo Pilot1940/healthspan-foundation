@@ -17,7 +17,9 @@ Usage:  python scripts/self_test.py [config_path]
 from __future__ import annotations
 
 import os
+import re
 import sys
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -173,6 +175,20 @@ def main() -> int:
     print(f"    skill=healthspan  changelog_head={ver}")
     migs = sorted(fn for fn in os.listdir(os.path.join(ROOT, "migrations")) if fn.endswith(".sql"))
     print(f"    migrations on disk: {len(migs)} (HEAD {migs[-1] if migs else 'none'})")
+    # schema-map freshness — WARN if the generated_at stamp is >30 days old
+    smap = os.path.join(ROOT, "docs", "SCHEMA-MAP.md")
+    try:
+        head = open(smap).read(2000)
+        m = re.search(r"generated_at:\s*([0-9T:\-]+Z)", head)
+        if not m:
+            print("    schema-map: ⚠ WARN no generated_at stamp — regenerate scripts/gen_schema_map.py")
+        else:
+            gen = datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - gen).days
+            flag = "⚠ WARN >30d STALE — regenerate" if age > 30 else "ok"
+            print(f"    schema-map: generated_at={m.group(1)} (age {age}d) {flag}")
+    except FileNotFoundError:
+        print("    schema-map: ⚠ WARN docs/SCHEMA-MAP.md missing")
 
     # ===================== STEP 2 — IDENTITY =====================
     print("\n[2] IDENTITY  (from BAKED config — not asked)")

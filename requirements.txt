@@ -1,7 +1,22 @@
+# HealthSpan — pinned to the tested cold-start set (v3.2).
+# The CORE set works the App / supabase_client path WITHOUT psycopg2.
+
+# --- core (App / supabase_client path) ---
 supabase==2.10.0
+httpx<0.28            # supabase 2.10 needs httpx<0.28 (0.28 removed the `proxies` kwarg gotrue/postgrest pass)
+PyJWT==2.12.1         # pin away from the OS-managed PyJWT 2.7.0 whose RECORD conflicts on reinstall
 python-dotenv==1.0.0
-psycopg2-binary==2.9.11
-pytest==8.0.0
-pytest-asyncio==0.23.0
+
+# --- optional [direct_role] — local Postgres path only; NOT needed for the App path ---
+# A plain `pip install -r requirements.txt` SKIPS this (the `extra` marker is false outside
+# extras). For local / direct_role installs, add it explicitly:
+#     pip install psycopg2-binary==2.9.11
+psycopg2-binary==2.9.11 ; extra == "direct_role"
+
+# --- reports ---
 openpyxl==3.1.5
 reportlab==4.5.1
+
+# --- dev / test ---
+pytest==8.0.0
+pytest-asyncio==0.23.0

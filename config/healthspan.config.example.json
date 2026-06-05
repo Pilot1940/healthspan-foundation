@@ -19,7 +19,8 @@
       "supabase_url": "https://dsnydskkjwziynwmzfkh.supabase.co",
       "supabase_anon_key": "<publishable anon key — useless alone, RLS denies everything without a session>",
       "auth_email": "dea@chitalkar.com",
-      "auth_note": "skill signs in with this person's Supabase auth session (password or stored refresh token); JWT carries auth.uid() → RLS scopes automatically"
+      "auth_password": "<this person's Supabase auth password — REQUIRED for App mode>",
+      "auth_note": "get_app_connection() signs in HERE with auth_email + auth_password; the client then carries the person's JWT (auth.uid()) → RLS scopes automatically. The caller does nothing extra. Missing auth_password errors out rather than falling through to an anon client (which RLS denies, 42501)."
     },
 
     "direct_role": {

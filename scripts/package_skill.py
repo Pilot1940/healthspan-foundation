@@ -10,10 +10,27 @@ person-specific context file slips into the staging tree.
 Usage:  python scripts/package_skill.py [version]   # default version 'v3'
 Output: dist/healthspan-<version>.skill  (+ a printed manifest)
 """
-import os, re, sys, shutil, zipfile
+import os, re, sys, shutil, subprocess, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "healthspan"
+
+
+def _refresh_schema_map():
+    """Regenerate docs/SCHEMA-MAP.md from live column COMMENTs so every bundle ships a
+    CURRENT map (the schema-map staleness is what makes a tester guess wrong column names).
+    Best-effort: if the DB/.env is unavailable (offline packaging), warn and ship the
+    committed map rather than hard-failing."""
+    gen = os.path.join(ROOT, "scripts", "gen_schema_map.py")
+    try:
+        r = subprocess.run([sys.executable, gen], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            print("OK schema-map: regenerated from live COMMENTs")
+        else:
+            print("WARN schema-map: regen failed — shipping the committed docs/SCHEMA-MAP.md")
+            print("     " + (r.stderr.strip().splitlines() or ["(no stderr)"])[-1])
+    except Exception as e:
+        print(f"WARN schema-map: regen skipped ({type(e).__name__}) — shipping committed map")
 
 # Runtime + docs the skill needs — copied wholesale (minus the prune list below).
 # NB: context/ is intentionally EXCLUDED (same as config/) — the bundle is person-agnostic;
@@ -109,6 +126,7 @@ def _leak_guard(stage):
 
 def main():
     version = sys.argv[1] if len(sys.argv) > 1 else "v3"
+    _refresh_schema_map()          # ship a current schema map in every bundle
     stage = _stage(version)
 
     leaks = _leak_guard(stage)

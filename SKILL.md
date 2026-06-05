@@ -3,16 +3,15 @@ name: healthspan
 description: >
   Transportable, multi-tenant, DB-backed personal health intelligence. Trigger for ANY health,
   fitness, or wellness question or data drop — including casual ones: "log this", "here's my
-  lunch", "here's my meal", "save this", "how did I sleep", "how's my recovery", "am I on
-  track", or a dropped photo (meal, lab report, DEXA, Whoop screenshot). Topics: glucose,
-  insulin, Metformin, berberine, Viome, microbiome, diet, nutrition, food photo, meal log,
-  calories, macros, protein, creatine, fasting, weight, exercise, workout, VO2 max, strength,
-  zone training, supplements, NMN, testosterone, vitamin D, homocysteine, inflammation, CRP,
-  bloodwork, lab results, lab report photo, DEXA, bone density, body composition, sleep, HRV,
-  recovery, Whoop, UltraHuman, CGM, cardiac, Holter, cortisol, stress, mental health, injury,
-  back pain, onsen, contrast therapy, anti-aging, lung, coaching, longevity, training plan,
-  goals, daily brief, expedition, altitude, or any question about the person's health data,
-  trends, plans, or goals. The person is identified by the loaded config — never assume.
+  lunch/meal", "save this", "how did I sleep", "how's my recovery", "am I on track", or a
+  dropped photo (meal, lab report, DEXA, Whoop). Topics: glucose, insulin, Metformin, berberine,
+  Viome, microbiome, diet, nutrition, food/meal log, calories, macros, protein, creatine,
+  fasting, weight, workouts, VO2 max, strength, zone training, supplements, testosterone,
+  vitamin D, homocysteine, CRP, bloodwork, labs, DEXA, body composition, sleep, HRV, recovery,
+  Whoop, UltraHuman, CGM, cardiac, cortisol, stress, mental health, injury, back pain,
+  anti-aging, longevity, training plans, goals, daily brief, expedition, altitude — or any
+  question about the person's health data, trends, plans, or goals. Identified by the loaded
+  config — never assume.
 ---
 
 # HealthSpan — Personal Health Intelligence (v3, DB-backed, context-driven)
@@ -45,10 +44,20 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
      **ask the user to paste both once** (config = identity + connection; context = targets/norms/voice).
      **Never proceed with an assumed identity or assumed targets** — no config means no profile_id and no
      scoped connection; no context means no targets. Stop and ask rather than guess.
-2. **Open the scoped connection** — `conn, mode = lib.db.get_app_connection(config)`.
+2. **Open the scoped connection** — `conn, mode = lib.db.get_app_connection(config)`. **It returns an
+   ALREADY-AUTHENTICATED handle — the caller does nothing extra (no separate sign-in).**
    - A2 (`direct_role`): psycopg2 as `healthspan_app`, already `SET ROLE authenticated` + JWT claim →
-     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL.
-   - A1 (`supabase_client`): supabase-py with the person's JWT. **Never** the admin/service connection.
+     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (psycopg2 is imported
+     lazily — only this path needs it; the App path runs without psycopg2 installed.)
+   - A1 (`supabase_client`, App/claude.ai): `get_app_connection` **signs in HERE** with the config's
+     `auth_email` + `auth_password` (`client.auth.sign_in_with_password`) so the client carries the
+     person's JWT → RLS scopes automatically. Missing `auth_password` → a clear error; it **never** falls
+     through to an anon client (RLS would deny every read, 42501). **Never** the admin/service connection.
+   - **App cold-start install (one line):**
+     `pip install --break-system-packages --ignore-installed PyJWT "httpx<0.28" supabase`
+     — `--ignore-installed` clears the OS-managed **PyJWT 2.7.0 RECORD conflict** (a plain reinstall
+     fails on its dist-info RECORD); `httpx<0.28` because supabase 2.10 passes the `proxies` kwarg 0.28
+     removed. The App path needs **no psycopg2**.
 3. **Load the CONTEXT MD** — `lib.context.get_context(config)` → `{targets, coaching, safety, is_minor,…}`.
    It cross-checks the file's profile_id against the config (wrong file = hard error). **Take every
    target/norm from here** (`lib.context.get_target(ctx, "daily_calories")`); a missing entry returns
@@ -103,10 +112,12 @@ check, freshness, capabilities, and a **VERDICT that embeds the runtime** — e.
 vs `READY (App · supabase_client)` — so a local pass is never mistaken for an App pass. If no filesystem
 config (claude.ai/App), it reports BLOCKED and points to Project-knowledge bootstrap (§0 step 1).
 
-**Before composing ANY ad-hoc SQL**: load `docs/SCHEMA-MAP.md` (generated from column COMMENTs — the
-semantic ground truth incl. every trap). Prefer a `lib/views.py` catalog query first; only go ad-hoc when
-no view fits. **Catalog (view) queries are pre-vetted — they skip the quality layer. Every NON-catalog
-query goes through `run_adhoc_audited`**, which:
+**Views catalog FIRST — ad-hoc SQL ONLY after loading `docs/SCHEMA-MAP.md`.** Try a `lib/views.py`
+catalog query before anything else; only go ad-hoc when no view fits, and only once you have loaded the
+schema map (generated from column COMMENTs — the semantic ground truth incl. every trap). **Never guess a
+column name** — e.g. `whoop_sleeps` uses `sleep_onset` / `wake_onset`, NOT `start_time`; the map is
+authoritative, your memory is not. **Catalog (view) queries are pre-vetted — they skip the quality layer.
+Every NON-catalog query goes through `run_adhoc_audited`**, which:
   - runs the read-only guard (single SELECT/WITH only; plain EXPLAIN on the scoped conn so a hallucinated
     column fails BEFORE returning data; injects a LIMIT),
   - surfaces `traps` (the TRAP column/table COMMENTs for every referenced table — **honour every one**,

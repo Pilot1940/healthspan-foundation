@@ -1,7 +1,8 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migration 016). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-04 03:08 UTC.
+> Generated 2026-06-05 05:18 UTC.
+> generated_at: 2026-06-05T05:18:36Z
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._

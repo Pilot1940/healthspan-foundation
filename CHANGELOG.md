@@ -1,5 +1,26 @@
 # HealthSpan Skill — Changelog
 
+## v3.2 — App/claude.ai connection fixes (2026-06-05)
+- **P0 — `supabase_client` now authenticates.** `lib/db.get_app_connection` previously returned
+  an UNauthenticated client (anon → RLS denied every read, 42501). It now calls
+  `client.auth.sign_in_with_password({email, password})` with `auth_email` + `auth_password`
+  from the config, verifies a session/JWT came back, and returns the authenticated client.
+  Actionable errors: missing `auth_password` → "config.connection.supabase_client.auth_password
+  required for App mode"; bad creds → the auth error surfaces, **never** an anon fall-through.
+  (`lib/db.py` get_app_connection; config example gains `auth_password`; SKILL.md §0 step 2.)
+- **psycopg2 import is now lazy** (`lib/db._psycopg2()`), so the pure App path imports `lib.db`
+  and signs in WITHOUT psycopg2. `direct_role` without it → "pip install psycopg2-binary".
+- **Pinned cold-start set** — `supabase==2.10.0`, `httpx<0.28`, `PyJWT==2.12.1`; `psycopg2-binary`
+  moved to an optional `[direct_role]` extra (skipped by a plain `-r requirements.txt`). App
+  bootstrap one-liner in SKILL.md: `pip install --break-system-packages --ignore-installed PyJWT
+  "httpx<0.28" supabase` (clears the OS PyJWT 2.7.0 RECORD conflict). Pins verified via dry-run.
+- **Schema-map freshness** — `gen_schema_map.py` stamps `generated_at`; `package_skill.py`
+  regenerates the map into every bundle (best-effort); `self_test.py` WARNs if it's >30 days old;
+  SKILL.md ad-hoc rule strengthened to "views catalog FIRST; ad-hoc only after loading
+  SCHEMA-MAP.md" (a live tester guessed `whoop_sleeps.start_time`; real cols `sleep_onset`/`wake_onset`).
+- **SKILL.md description trimmed to 923 chars** (was 1083 — over the 1024 install limit; the trim
+  had only ever lived in packaged bundles, so repackaging kept regressing it).
+
 ## v3.1 — person-agnostic repackage (2026-06-04)
 - **`scripts/self_test.py`** — first-class read-only self-test (never writes; no `query_audit`
   rows). Prints **STEP 0 "WHERE AM I RUNNING" first** — connection mode *with meaning*

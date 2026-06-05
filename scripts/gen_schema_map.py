@@ -32,12 +32,15 @@ def main():
     conn = hs_ops.connect(readonly=True)
     cur = conn.cursor()
 
+    now = datetime.now(timezone.utc)
     out = ["# HealthSpan — Schema Map (semantic reference)",
            "",
            "> **GENERATED from pg_description (column/table COMMENTs, migration 016). "
            "Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** "
            "The skill loads this before composing any ad-hoc SQL.",
-           f"> Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}.",
+           f"> Generated {now.strftime('%Y-%m-%d %H:%M UTC')}.",
+           # machine-parseable stamp — self_test.py WARNs if this is >30 days old
+           f"> generated_at: {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
            ""]
 
     for t in ACTIVE:
