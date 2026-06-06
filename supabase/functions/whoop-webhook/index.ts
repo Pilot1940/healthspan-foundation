@@ -1,6 +1,7 @@
 // whoop-webhook — WHOOP pushes {type,id,user_id}; we verify the signature, map the
 // user to a profile, fetch the referenced record, and upsert on the confirmed key
 // (profile_id, whoop_id) for ALL THREE tables (008b/008e). Logs to wearable_sync_log.
+// Phase 2 (030): short push notifications after each upsert + dead-man heartbeat check.
 // Deploy: supabase functions deploy whoop-webhook --no-verify-jwt
 // Register URL in WHOOP dashboard:
 //   https://dsnydskkjwziynwmzfkh.supabase.co/functions/v1/whoop-webhook
@@ -114,6 +115,251 @@ function mapCycle(cyc: any, rec: any, profileId: string) {
   };
 }
 
+// ── Telegram send helper ───────────────────────────────────────────────────────
+async function telegramSend(chatId: number, text: string): Promise<void> {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  }).catch(() => {}); // best-effort — a send failure must not kill the upsert
+}
+
+// ── Push config ────────────────────────────────────────────────────────────────
+
+interface PushConfig {
+  debounceWindowMin: number;  // minutes; from push.debounce_window_min
+  quietStart: number;         // local hour; from push.quiet_hours_start
+  quietEnd: number;           // local hour; from push.quiet_hours_end
+  recoveryThreshold: number;  // %; from push.recovery_critical_threshold
+  hrvCrashPct: number;        // %; from push.hrv_crash_pct
+  materialChangePct: number;  // ppt; from push.material_change_pct
+  deadManHours: number;       // h; from push.dead_man_hours
+}
+
+async function loadPushConfig(db: any): Promise<PushConfig> {
+  const { data } = await db
+    .from("system_config")
+    .select("key, value")
+    .in("key", [
+      "push.debounce_window_min", "push.quiet_hours_start", "push.quiet_hours_end",
+      "push.recovery_critical_threshold", "push.hrv_crash_pct",
+      "push.material_change_pct", "push.dead_man_hours",
+    ])
+    .eq("is_active", true);
+  const m: Record<string, number> = {};
+  for (const r of data ?? []) m[r.key] = Number(r.value);
+  return {
+    debounceWindowMin:  m["push.debounce_window_min"]          ?? 30,
+    quietStart:         m["push.quiet_hours_start"]             ?? 22,
+    quietEnd:           m["push.quiet_hours_end"]               ?? 7,
+    recoveryThreshold:  m["push.recovery_critical_threshold"]   ?? 34,
+    hrvCrashPct:        m["push.hrv_crash_pct"]                 ?? 20,
+    materialChangePct:  m["push.material_change_pct"]           ?? 5,
+    deadManHours:       m["push.dead_man_hours"]                ?? 36,
+  };
+}
+
+// ── Exported pure helpers (tested in webhook_test.ts) ─────────────────────────
+
+/** Convert a UTC timestamp to the local hour using a WHOOP timezone string.
+ *  Accepts IANA names ("Asia/Kolkata") and UTC offset strings ("+05:30", "-05:00").
+ *  Falls back to UTC hour on unknown/null timezone. */
+export function localHour(timezone: string | null, now: Date): number {
+  if (!timezone) return now.getUTCHours();
+  try {
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric", hour12: false, timeZone: timezone,
+    });
+    const parts = fmt.formatToParts(now);
+    const h = parts.find((p) => p.type === "hour");
+    if (h) return parseInt(h.value, 10) % 24; // 24 → midnight in some locales
+  } catch (_) {}
+  // UTC offset fallback: "+05:30", "-05:00", "+5"
+  const m = timezone.match(/^([+-])(\d{1,2})(?::(\d{2}))?$/);
+  if (m) {
+    const sign = m[1] === "+" ? 1 : -1;
+    const offsetMin = sign * (parseInt(m[2], 10) * 60 + parseInt(m[3] ?? "0", 10));
+    const localMin = (now.getUTCHours() * 60 + now.getUTCMinutes() + offsetMin + 1440) % 1440;
+    return Math.floor(localMin / 60);
+  }
+  return now.getUTCHours();
+}
+
+/** Pure threshold check for dead-man alert. Returns true when data is overdue.
+ *  lastDataMs: epoch ms of last records_upserted > 0 row; null = never had data. */
+export function deadManThreshold(
+  lastDataMs: number | null,
+  thresholdHours: number,
+  nowMs: number,
+): boolean {
+  if (lastDataMs === null) return true;
+  return (nowMs - lastDataMs) / 3600000 >= thresholdHours;
+}
+
+/** Decide whether to send a push or suppress it.
+ *
+ *  Priority order (highest first):
+ *    1. Critical → always send (bypasses quiet hours + debounce).
+ *    2. Debounce window + material-change gate.
+ *    3. Quiet hours (evaluated in local time).
+ *    4. Send.
+ */
+export function decidePush(opts: {
+  now: Date;
+  lastPush: { sent_at: string; dedup_value: number | null } | null;
+  isCritical: boolean;
+  currentValue: number | null;
+  timezone: string | null;
+  config: PushConfig;
+}): "send" | "suppress_debounce" | "suppress_quiet" | "suppress_unchanged" {
+  const { now, lastPush, isCritical, currentValue, timezone, config } = opts;
+
+  if (isCritical) return "send";
+
+  if (lastPush) {
+    const msSinceLast = now.getTime() - new Date(lastPush.sent_at).getTime();
+    if (msSinceLast < config.debounceWindowMin * 60000) {
+      // Inside debounce window — allow through only if materially changed
+      if (currentValue !== null && lastPush.dedup_value !== null) {
+        if (Math.abs(currentValue - lastPush.dedup_value) >= config.materialChangePct) {
+          return "send";
+        }
+      }
+      return "suppress_debounce";
+    }
+  }
+
+  // Quiet hours — evaluated in the recipient's local timezone
+  const hour = localHour(timezone, now);
+  const { quietStart, quietEnd } = config;
+  // quietStart > quietEnd means the window wraps midnight (e.g. 22 → 07)
+  const inQuiet = quietStart > quietEnd
+    ? hour >= quietStart || hour < quietEnd
+    : hour >= quietStart && hour < quietEnd;
+  if (inQuiet) return "suppress_quiet";
+
+  return "send";
+}
+
+/** Compose a short templated Telegram message for the given push type.
+ *  Minor framing: performance/growth language; no deficit/restriction words. */
+export function composePush(
+  pushType: string,
+  row: Record<string, unknown>,
+  isMinor: boolean,
+): string {
+  if (pushType === "recovery_landed") {
+    const score = row.recovery_score_pct ?? "?";
+    const hrv   = row.hrv_ms != null ? `${row.hrv_ms}ms` : "?";
+    const rhr   = row.resting_hr_bpm ?? "?";
+    return isMinor
+      ? `⚡ Recovery ${score}% — HRV ${hrv}, RHR ${rhr}bpm`
+      : `📊 Recovery ${score}% | HRV ${hrv} | RHR ${rhr}bpm`;
+  }
+  if (pushType === "workout_logged") {
+    const name   = String(row.activity_name ?? "Workout");
+    const strain = row.activity_strain ?? "?";
+    const dur    = row.duration_min ? ` · ${row.duration_min}min` : "";
+    return isMinor
+      ? `💪 ${name}${dur} · Strain ${strain}`
+      : `🏋️ ${name}${dur} · Strain ${strain}`;
+  }
+  return `📌 ${pushType}`;
+}
+
+// ── HRV crash detection ────────────────────────────────────────────────────────
+
+async function isHrvCrash(
+  db: any,
+  profileId: string,
+  currentHrv: number,
+  crashPct: number,
+): Promise<boolean> {
+  const { data } = await db
+    .from("whoop_cycles")
+    .select("hrv_ms")
+    .eq("profile_id", profileId)
+    .not("hrv_ms", "is", null)
+    .order("cycle_start", { ascending: false })
+    .limit(7);
+  if (!data?.length) return false;
+  const avg = data.reduce((s: number, r: any) => s + Number(r.hrv_ms), 0) / data.length;
+  if (avg <= 0) return false;
+  return ((avg - currentHrv) / avg) * 100 >= crashPct;
+}
+
+// ── Dead-man heartbeat ─────────────────────────────────────────────────────────
+// Runs on every WHOOP event, checking ALL active profiles (not just the event's
+// profile). If a profile has had no WHOOP data in dead_man_hours, an alert is
+// pushed to PC. Suppressed for 22h after each alert to avoid spam.
+//
+// IMPORTANT: this only fires when at least one WHOOP event comes in. For a
+// scenario where ALL profiles are simultaneously dead (no events at all), a
+// scheduled pg_cron job calling this endpoint is required as a backstop.
+async function checkDeadMan(db: any, config: PushConfig): Promise<void> {
+  const { data: identities } = await db
+    .from("telegram_identities")
+    .select("profile_id, display_name")
+    .eq("status", "active");
+  if (!identities?.length) return;
+
+  // Maintainer's chat_id for alert delivery
+  const { data: maint } = await db
+    .from("profiles").select("id").eq("is_maintainer", true).single();
+  if (!maint) return;
+  const { data: maintChat } = await db
+    .from("telegram_identities").select("chat_id")
+    .eq("profile_id", maint.id).eq("status", "active").maybeSingle();
+  if (!maintChat?.chat_id) return;
+
+  const nowMs = Date.now();
+  const suppressMs = 22 * 3600000; // re-alert at most once per 22h per profile
+
+  for (const identity of identities) {
+    const { data: lastSync } = await db
+      .from("wearable_sync_log")
+      .select("started_at")
+      .eq("profile_id", identity.profile_id)
+      .gt("records_upserted", 0)
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const lastDataMs = lastSync ? new Date(lastSync.started_at).getTime() : null;
+    if (!deadManThreshold(lastDataMs, config.deadManHours, nowMs)) continue;
+
+    // Suppress if we already alerted within 22h
+    const { data: recentAlert } = await db
+      .from("push_log")
+      .select("id")
+      .eq("profile_id", identity.profile_id)
+      .eq("push_type", "dead_man")
+      .gte("sent_at", new Date(nowMs - suppressMs).toISOString())
+      .limit(1)
+      .maybeSingle();
+    if (recentAlert) continue;
+
+    const hoursAgo = lastDataMs
+      ? Math.round((nowMs - lastDataMs) / 3600000)
+      : config.deadManHours;
+    const name = identity.display_name ?? identity.profile_id;
+    await telegramSend(
+      maintChat.chat_id,
+      `⚠️ Dead-man: no WHOOP data from ${name} in ${hoursAgo}h`,
+    );
+    await db.from("push_log").insert({
+      profile_id: identity.profile_id,
+      push_type: "dead_man",
+      subject_id: null,
+      status: "sent",
+      dedup_value: null,
+    });
+  }
+}
+
+// ── Main handler ───────────────────────────────────────────────────────────────
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
   const raw = await req.text();
@@ -174,6 +420,81 @@ Deno.serve(async (req) => {
     await db.from("wearable_sync_log").update({
       status: "success", records_upserted: 1 + extra, completed_at: new Date().toISOString(),
     }).eq("id", logId);
+
+    // ── Phase 2: push notification (best-effort — never fails the 200 response) ──
+    (async () => {
+      try {
+        const cfg = await loadPushConfig(db);
+        const { data: identity } = await db
+          .from("telegram_identities")
+          .select("chat_id, is_minor")
+          .eq("profile_id", profileId)
+          .eq("status", "active")
+          .maybeSingle();
+
+        if (identity?.chat_id) {
+          let pushType: string | null = null;
+          let dedupValue: number | null = null;
+          let isCritical = false;
+
+          if (type?.startsWith("recovery") || type?.startsWith("cycle")) {
+            pushType = "recovery_landed";
+            dedupValue = typeof row.recovery_score_pct === "number" ? row.recovery_score_pct : null;
+            isCritical = dedupValue !== null && dedupValue < cfg.recoveryThreshold;
+            if (!isCritical && typeof row.hrv_ms === "number" && (row.hrv_ms as number) > 0) {
+              isCritical = await isHrvCrash(db, profileId, row.hrv_ms as number, cfg.hrvCrashPct);
+            }
+          } else if (type?.startsWith("workout")) {
+            pushType = "workout_logged";
+            dedupValue = typeof row.activity_strain === "number" ? row.activity_strain : null;
+          }
+
+          if (pushType) {
+            const subjectId = String(id);
+            const { data: lastPush } = await db
+              .from("push_log")
+              .select("sent_at, dedup_value")
+              .eq("profile_id", profileId)
+              .eq("push_type", pushType)
+              .eq("subject_id", subjectId)
+              .order("sent_at", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            const timezone = typeof row.timezone === "string" ? row.timezone : null;
+            const decision = decidePush({
+              now: new Date(),
+              lastPush,
+              isCritical,
+              currentValue: dedupValue,
+              timezone,
+              config: cfg,
+            });
+
+            if (decision === "send") {
+              await telegramSend(
+                identity.chat_id,
+                composePush(pushType, row, identity.is_minor ?? false),
+              );
+            }
+            // Log every attempt (sent or suppressed) — idempotency + audit trail
+            await db.from("push_log").insert({
+              profile_id: profileId,
+              push_type: pushType,
+              subject_id: subjectId,
+              status: decision === "send" ? "sent" : "suppressed",
+              dedup_value: dedupValue,
+            });
+          }
+        }
+
+        // Dead-man heartbeat: check all active profiles on every WHOOP event
+        await checkDeadMan(db, cfg);
+      } catch (_) {
+        // Push errors are non-fatal; upsert already succeeded
+      }
+    })();
+
     return new Response("ok", { status: 200 });
   } catch (e) {
     const msg = (e as Error).message;

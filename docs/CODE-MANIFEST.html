@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HealthSpan — Code Manifest</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3347;
+      --accent: #6c8cf7;
+      --accent2: #4ec9b0;
+      --accent3: #ce9178;
+      --accent4: #dcdcaa;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --text: #d4d4d4;
+      --muted: #6b7280;
+      --tag-py: #3b7dd8;
+      --tag-ts: #1e7fc0;
+      --tag-sql: #c97f2a;
+      --tag-edge: #7c3aed;
+      --tag-test: #16a34a;
+      --tag-conf: #374151;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 24px 32px;
+    }
+    header h1 { font-size: 1.5rem; color: #fff; }
+    header p  { color: var(--muted); font-size: 0.875rem; margin-top: 4px; }
+    .badge {
+      display: inline-block; border-radius: 4px; padding: 2px 8px;
+      font-size: 0.7rem; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase; margin-right: 4px;
+    }
+    .py  { background: var(--tag-py);   color: #fff; }
+    .ts  { background: var(--tag-ts);   color: #fff; }
+    .sql { background: var(--tag-sql);  color: #fff; }
+    .edge{ background: var(--tag-edge); color: #fff; }
+    .test{ background: var(--tag-test); color: #fff; }
+    .conf{ background: var(--tag-conf); color: #bbb; }
+    main { max-width: 1200px; margin: 0 auto; padding: 32px; }
+    section { margin-bottom: 48px; }
+    section > h2 {
+      font-size: 0.7rem; font-weight: 700; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px; margin-bottom: 16px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 10px;
+    }
+    .card-header {
+      display: flex; align-items: flex-start;
+      gap: 12px; margin-bottom: 8px;
+    }
+    .card-header .path {
+      font-family: 'Menlo', 'Fira Code', monospace;
+      font-size: 0.85rem; color: var(--accent2);
+      flex: 1;
+    }
+    .card p { color: var(--muted); font-size: 0.875rem; margin-bottom: 6px; }
+    .card ul { list-style: none; padding-left: 0; }
+    .card ul li {
+      font-size: 0.8rem; color: var(--text); padding: 3px 0;
+      padding-left: 14px; position: relative;
+    }
+    .card ul li::before {
+      content: "›"; position: absolute; left: 0; color: var(--accent);
+    }
+    .card ul li code {
+      font-family: 'Menlo', 'Fira Code', monospace;
+      background: var(--surface2); padding: 1px 5px; border-radius: 3px;
+      font-size: 0.75rem; color: var(--accent4);
+    }
+    .phase-tag {
+      display: inline-block; border-radius: 4px; padding: 2px 8px;
+      font-size: 0.68rem; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase; background: #1e293b; color: var(--warn);
+      border: 1px solid #334155;
+    }
+    .new-tag {
+      display: inline-block; border-radius: 4px; padding: 2px 8px;
+      font-size: 0.68rem; font-weight: 700; background: #064e3b; color: #6ee7b7;
+      border: 1px solid #065f46;
+    }
+    .infra-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 12px;
+    }
+    .infra-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 18px;
+    }
+    .infra-card h3 { font-size: 0.85rem; color: #fff; margin-bottom: 4px; }
+    .infra-card p  { font-size: 0.8rem; color: var(--muted); }
+    .infra-card .detail { font-size: 0.75rem; color: var(--text); margin-top: 6px; }
+    .flow {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 20px 24px; font-size: 0.8rem;
+      font-family: 'Menlo', 'Fira Code', monospace; color: var(--text);
+      white-space: pre; overflow-x: auto;
+    }
+    .flow .c  { color: var(--muted); }
+    .flow .fn { color: var(--accent2); }
+    .flow .kw { color: var(--accent); }
+    .flow .db { color: var(--accent3); }
+    .rule {
+      display: flex; gap: 10px; padding: 10px 14px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 6px; margin-bottom: 8px; align-items: flex-start;
+    }
+    .rule-num {
+      background: var(--accent); color: #fff;
+      border-radius: 4px; padding: 0 6px; font-size: 0.75rem;
+      font-weight: 700; flex-shrink: 0; margin-top: 2px;
+    }
+    .rule-text { font-size: 0.85rem; }
+    .rule-text code {
+      font-family: 'Menlo', monospace; background: var(--surface2);
+      padding: 1px 5px; border-radius: 3px; font-size: 0.75rem; color: var(--accent4);
+    }
+    .push-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-top: 8px; }
+    .push-table th {
+      background: var(--surface2); color: var(--muted); font-weight: 600;
+      text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+    }
+    .push-table td {
+      padding: 8px 12px; border-bottom: 1px solid var(--border);
+    }
+    .push-table tr:last-child td { border-bottom: none; }
+    .push-table code {
+      font-family: 'Menlo', monospace; background: var(--surface2);
+      padding: 1px 5px; border-radius: 3px; color: var(--accent4);
+    }
+    .ok   { color: #4ade80; }
+    .warn { color: var(--warn); }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>HealthSpan — Code Manifest</h1>
+  <p>Telegram ingestion Phase 2 · v3.4.0 · 2026-06-07 · Supabase <code style="font-family:monospace;background:#22263a;padding:1px 6px;border-radius:3px;font-size:0.8rem">dsnydskkjwziynwmzfkh</code></p>
+</header>
+
+<main>
+
+<!-- ── RULES ────────────────────────────────────────────────────────────── -->
+<section>
+  <h2>Non-Negotiable Rules</h2>
+  <div class="rule"><div class="rule-num">1</div><div class="rule-text">Never hardcode thresholds — all live in <code>system_config</code>. Read via <code>lib.contract.get_config(conn, key)</code> (Python) or <code>system_config SELECT</code> (Edge fn).</div></div>
+  <div class="rule"><div class="rule-num">2</div><div class="rule-text">AI extraction output goes to <code>stg_*_review</code> staging first, never directly to prod tables.</div></div>
+  <div class="rule"><div class="rule-num">3</div><div class="rule-text">Every new table needs an RLS policy in the same migration. DELETE/TRUNCATE revoked from <code>authenticated</code> + <code>healthspan_app</code>; ALL revoked from <code>anon</code>.</div></div>
+  <div class="rule"><div class="rule-num">4</div><div class="rule-text">Test files mirror source structure: <code>src/foo.py → tests/unit/test_foo.py</code>.</div></div>
+  <div class="rule"><div class="rule-num">5</div><div class="rule-text">Commit format: <code>feat: | fix: | schema: | test: | docs: | chore: | adr:</code></div></div>
+  <div class="rule"><div class="rule-num">6</div><div class="rule-text">Never modify auth logic without explicit instruction.</div></div>
+  <div class="rule"><div class="rule-num">7</div><div class="rule-text">When stuck for more than 2 attempts, stop and ask.</div></div>
+</section>
+
+<!-- ── INFRA ─────────────────────────────────────────────────────────────── -->
+<section>
+  <h2>Infrastructure</h2>
+  <div class="infra-grid">
+    <div class="infra-card">
+      <h3>Supabase (PostgreSQL + RLS)</h3>
+      <p>Primary data store. All tables have RLS. Service-role used by Edge fns; restricted <code>healthspan_app</code> role used by Routines.</p>
+      <div class="detail">DB: dsnydskkjwziynwmzfkh · 59 tables (54 active)</div>
+    </div>
+    <div class="infra-card">
+      <h3>Supabase Edge Functions (Deno)</h3>
+      <p>Cheap, fast, always-on. Used for: webhook receipt, sender auth, push composition, dead-man heartbeat, media→Storage.</p>
+      <div class="detail">3 functions: <code>whoop-webhook</code>, <code>telegram-webhook</code>, <code>whoop-oauth</code></div>
+    </div>
+    <div class="infra-card">
+      <h3>Supabase Storage</h3>
+      <p>Private <code>health-media</code> bucket. Telegram photos uploaded here; signed URLs only. No health data in any URL param.</p>
+    </div>
+    <div class="infra-card">
+      <h3>Claude Code Routine (API-triggered)</h3>
+      <p>Cloud-hosted, laptop-independent. Used for: vision extraction (food/workout/lab photos), on-demand queries, richer digest. Triggered by Edge fn HTTP POST.</p>
+    </div>
+    <div class="infra-card">
+      <h3>WHOOP API</h3>
+      <p>Webhooks push <code>{type, id, user_id}</code> to <code>whoop-webhook</code>. Routine syncs cover: workouts, cycles, recovery, sleep.</p>
+      <div class="detail">OAuth tokens stored in <code>whoop_tokens</code>. Lazy refresh-on-use.</div>
+    </div>
+    <div class="infra-card">
+      <h3>Telegram Bot</h3>
+      <p>Inbound: <code>telegram-webhook</code> receives messages. Outbound: <code>whoop-webhook</code> and Phase-3 Routine push notifications via <code>sendMessage</code>.</p>
+      <div class="detail">Auth: <code>X-Telegram-Bot-Api-Secret-Token</code> + <code>chat_id → profile_id</code> mapping</div>
+    </div>
+    <div class="infra-card">
+      <h3>Anthropic Claude API</h3>
+      <p>Used by: vision extraction (food/lab photos → structured data), on-demand health queries, morning digest (richer path).</p>
+    </div>
+    <div class="infra-card">
+      <h3>AWS S3 + SES</h3>
+      <p>S3: media backup. SES: admin alerts (separate from Telegram push path).</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── FILES ──────────────────────────────────────────────────────────────── -->
+<section>
+  <h2>Files — By Layer</h2>
+
+  <!-- Migrations -->
+  <h3 style="font-size:0.8rem;color:var(--accent3);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.06em">Migrations (PostgreSQL DDL)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/029_telegram_ingestion.sql</span>
+    </div>
+    <p>Phase 1 Telegram schema — five new tables, all RLS-protected.</p>
+    <ul>
+      <li><code>telegram_link_codes</code> — one-time activation codes (maintainer mints, recipient sends to bot). Credential: never log in plaintext.</li>
+      <li><code>telegram_identities</code> — <code>chat_id → profile_id</code> binding. Status: <code>pending → active → revoked</code>. RLS: each profile sees own row; maintainer sees all.</li>
+      <li><code>telegram_processed_updates</code> — inbound idempotency latch. Written ONLY after <code>media_inbox</code> insert succeeds (Telegram retry safety).</li>
+      <li><code>media_inbox</code> — durable inbound queue drained by Phase-3 Routine. <code>caption</code> stored as DATA only (injection rule).</li>
+      <li><code>push_log</code> — outbound push idempotency + debounce ledger. Debounce key: <code>(profile_id, push_type, subject_id)</code>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/030_push_enhancements.sql</span>
+      <span class="new-tag">Phase 2</span>
+    </div>
+    <p>Adds <code>push_log.dedup_value</code> and seeds all push thresholds into <code>system_config</code>.</p>
+    <ul>
+      <li><code>push_log.dedup_value numeric</code> — metric at push time; enables material-change re-score gate. NULL for non-numeric push types.</li>
+      <li>9 <code>push.*</code> system_config rows: debounce window, quiet hours, recovery critical threshold, HRV crash %, material change %, dead-man hours, reconcile default + max widen hours.</li>
+      <li>Verify: confirms column present + all 9 config rows active.</li>
+    </ul>
+  </div>
+
+  <!-- Edge Functions -->
+  <h3 style="font-size:0.8rem;color:var(--accent);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Edge Functions (Deno/TypeScript)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge ts">TS</span>
+      <span class="badge edge">Edge Fn</span>
+      <span class="path">supabase/functions/whoop-webhook/index.ts</span>
+      <span class="new-tag">Phase 2 updated</span>
+    </div>
+    <p>Receives WHOOP webhook events; verifies HMAC-SHA256 signature; upserts to <code>whoop_workouts</code> / <code>whoop_cycles</code> / <code>whoop_sleeps</code>. Phase 2: composes + sends Telegram push after each upsert. Dead-man check on every event.</p>
+    <ul>
+      <li><code>verify()</code> — constant-time HMAC-SHA256 signature check.</li>
+      <li><code>mapWorkout / mapSleep / mapCycle</code> — WHOOP API → DB row mappers.</li>
+      <li><code>refreshPriorCycle()</code> — re-fetches the just-closed cycle's final strain (WHOOP emits no <code>cycle.updated</code> webhook).</li>
+      <li><code>telegramSend()</code> — best-effort <code>sendMessage</code>; failures never kill the upsert.</li>
+      <li><code>loadPushConfig()</code> — reads all <code>push.*</code> rows from <code>system_config</code>.</li>
+      <li><code>export localHour(timezone, now)</code> — UTC→local hour; accepts IANA names + UTC offset strings. Tested.</li>
+      <li><code>export deadManThreshold(lastDataMs, thresholdHours, nowMs)</code> — pure threshold check. Tested.</li>
+      <li><code>export decidePush(opts)</code> — returns <code>"send" | "suppress_debounce" | "suppress_quiet" | "suppress_unchanged"</code>. Priority: critical → debounce+material-change → quiet hours → send. Tested.</li>
+      <li><code>export composePush(pushType, row, isMinor)</code> — short templated message; minor framing (no deficit language). Tested.</li>
+      <li><code>isHrvCrash()</code> — queries last 7 cycles for HRV baseline; fires critical if drop ≥ <code>push.hrv_crash_pct</code>.</li>
+      <li><code>checkDeadMan()</code> — checks all active profiles; alerts PC if any profile exceeds <code>push.dead_man_hours</code> since last <code>records_upserted &gt; 0</code>. Suppressed for 22h per profile.</li>
+      <li>Push block runs in detached async closure — never delays the 200 response.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge ts">TS</span>
+      <span class="badge edge">Edge Fn</span>
+      <span class="path">supabase/functions/telegram-webhook/index.ts</span>
+    </div>
+    <p>Inbound Telegram message handler. Auth, dedup, media→Storage, enqueue.</p>
+    <ul>
+      <li><code>verifySecretToken()</code> — constant-time <code>X-Telegram-Bot-Api-Secret-Token</code> check.</li>
+      <li><code>guessKind(caption)</code> — keyword classifier for food/workout/lab/dexa/unknown. Caption is DATA only — never executed.</li>
+      <li><code>storeMedia()</code> — Telegram <code>getFile</code> → download → upload to <code>health-media</code> private bucket.</li>
+      <li>Link-code activation: <code>/start &lt;code&gt;</code> or bare code validates against <code>telegram_link_codes</code>.</li>
+      <li>Identity lookup: <code>chat_id → telegram_identities → profile_id</code>. Unknown → onboarding + maintainer alert. Revoked → reject.</li>
+      <li>Enqueue: <code>media_inbox</code> INSERT first; <code>telegram_processed_updates</code> INSERT only after (idempotency ordering).</li>
+      <li>Minor-safe ack framing when <code>is_minor=true</code>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge ts">TS</span>
+      <span class="badge edge">Edge Fn</span>
+      <span class="path">supabase/functions/whoop-oauth/index.ts</span>
+    </div>
+    <p>WHOOP OAuth2 callback handler. Exchanges auth code for tokens; stores in <code>whoop_tokens</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge ts">TS</span>
+      <span class="path">supabase/functions/_shared/whoop.ts</span>
+    </div>
+    <p>Shared WHOOP helpers used by all Edge fns: <code>svc()</code> (service-role client), <code>getValidAccessToken()</code> (lazy refresh-on-use), <code>whoopGet()</code>, <code>storeTokens()</code>, <code>exchangeCode()</code>.</p>
+  </div>
+
+  <!-- Python ingest -->
+  <h3 style="font-size:0.8rem;color:var(--accent2);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Ingest (Python)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">ingest/whoop_sync.py</span>
+    </div>
+    <p>WHOOP API pull → DB upsert for workouts, cycles, recovery, sleep. Handles token refresh, pagination, field mapping, and wearable_sync_log tracking.</p>
+    <ul>
+      <li><code>refresh_recent(conn, hours, profiles)</code> — importable mini-sync; called by <code>monitor/reconcile.py</code> before morning digest.</li>
+      <li><code>sync_workouts / sync_cycles / sync_sleeps</code> — per-table pull + upsert.</li>
+      <li>CLI: <code>python -m ingest.whoop_sync --since 48h [--all-profiles]</code>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">ingest/food.py</span>
+      <span class="path" style="margin-left:8px">ingest/biomarker.py</span>
+      <span class="path" style="margin-left:8px">ingest/supplement.py</span>
+    </div>
+    <p>AI-extraction pipelines for food logs, lab biomarkers, and supplement intake. All write to <code>stg_*_review</code> on low confidence; directly to prod on high confidence (threshold from <code>system_config.ingest.confidence_min</code>).</p>
+  </div>
+
+  <!-- Monitor -->
+  <h3 style="font-size:0.8rem;color:var(--warn);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Monitor (Python)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">monitor/reconcile.py</span>
+      <span class="new-tag">Phase 2 new</span>
+    </div>
+    <p>Age-aware WHOOP reconcile. Importable from morning digest; also a standalone CLI.</p>
+    <ul>
+      <li><code>reconcile(conn, profiles, default_hours, max_widen_hours)</code> — per-profile: queries last successful <code>wearable_sync_log</code> run, computes <code>max(default, ceil(gap)+2h buffer)</code> window capped at <code>push.reconcile_max_widen_hours</code>, calls <code>refresh_recent</code> with that window. Never-synced profile gets <code>max_widen_hours</code>.</li>
+      <li><code>_profile_window(conn, profile_id, default, max_widen)</code> — core window computation. Mocked in unit tests.</li>
+      <li><code>_last_sync_hours_ago(conn, profile_id)</code> — hours since last <code>status='success'</code> run.</li>
+      <li><code>_get_config_int(conn, key, default)</code> — reads <code>system_config</code>; returns default on missing key (safe for bootstrap).</li>
+      <li>CLI: <code>python -m monitor.reconcile [--profile PC] [--hours 24]</code>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">monitor/ingest_health.py</span>
+    </div>
+    <p>Maintainer-only data-quality digest: staging backlog, failed sync runs, recent per-record errors. Non-maintainers get an empty result.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">monitor/query_log.py</span>
+    </div>
+    <p>Maintainer-only query audit digest: recent query counts (catalog vs ad-hoc), flagged quality violations, top catalog views.</p>
+  </div>
+
+  <!-- Lib -->
+  <h3 style="font-size:0.8rem;color:var(--muted);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Library (Python)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">lib/contract.py</span>
+    </div>
+    <p>Core data contract: write (upsert), staging, confidence gate, sync log open/close, <code>get_config(conn, key)</code>. All thresholds via <code>system_config</code> — never hardcoded.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">lib/db.py</span>
+    </div>
+    <p>Connection (reads <code>.db-config.json</code>), <code>resolve_profile()</code> (name or UUID), <code>get_conn()</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">lib/views.py</span>
+      <span class="path" style="margin-left:8px">lib/sql_guard.py</span>
+      <span class="path" style="margin-left:8px">lib/context.py</span>
+    </div>
+    <p>Catalog view runner (auto-logs to <code>query_audit</code>), ad-hoc SQL guard (quality-checks + logs), and session context builder.</p>
+  </div>
+
+  <!-- Tests -->
+  <h3 style="font-size:0.8rem;color:var(--tag-test);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Tests</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge py">PY</span>
+      <span class="path">tests/unit/test_reconcile.py</span>
+      <span class="new-tag">Phase 2 new</span>
+    </div>
+    <p>12 unit tests for <code>monitor/reconcile.py</code> — all mocked, no live DB needed.</p>
+    <ul>
+      <li><span class="ok">✓</span> reconcile widens on stale sync (72h ago → window 74h)</li>
+      <li><span class="ok">✓</span> uses default for recent sync (10h ago → window 48h)</li>
+      <li><span class="ok">✓</span> caps at max_widen (200h ago → window 168h)</li>
+      <li><span class="ok">✓</span> never-synced uses max_widen</li>
+      <li><span class="ok">✓</span> exactly-at-boundary widens by buffer</li>
+      <li><span class="ok">✓</span> buffer ensures overlap coverage</li>
+      <li><span class="ok">✓</span> get_config_int returns value / fallback / null-value</li>
+      <li><span class="ok">✓</span> last_sync_hours_ago returns float / None</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge ts">TS</span>
+      <span class="path">supabase/functions/whoop-webhook/webhook_test.ts</span>
+      <span class="new-tag">Phase 2 new</span>
+    </div>
+    <p>20 Deno unit tests for whoop-webhook push helpers — pure functions, no DB/Telegram.</p>
+    <ul>
+      <li><span class="ok">✓</span> critical always sends (quiet hours bypass)</li>
+      <li><span class="ok">✓</span> critical always sends (debounce bypass)</li>
+      <li><span class="ok">✓</span> debounce collapses burst to one push</li>
+      <li><span class="ok">✓</span> material change ≥5ppt overrides debounce</li>
+      <li><span class="ok">✓</span> sub-threshold change stays debounced</li>
+      <li><span class="ok">✓</span> quiet-hours suppresses at 11pm UTC</li>
+      <li><span class="ok">✓</span> quiet-hours uses local timezone not UTC</li>
+      <li><span class="ok">✓</span> sends after quiet hours end</li>
+      <li><span class="ok">✓</span> push idempotency on webhook replay</li>
+      <li><span class="ok">✓</span> localHour: null / IANA / offset-string / invalid fallback</li>
+      <li><span class="ok">✓</span> deadManThreshold: null / exact-36h / under-36h / recent</li>
+      <li><span class="ok">✓</span> composePush: recovery adult + minor, workout adult + minor, fallback</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge py">PY</span>
+      <span class="path">tests/unit/test_telegram_webhook.py</span>
+    </div>
+    <p>9 DB-layer integration tests for migration 029 tables (requires live <code>DATABASE_URL</code>).</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge ts">TS</span>
+      <span class="path">supabase/functions/telegram-webhook/webhook_test.ts</span>
+    </div>
+    <p>Deno unit tests for telegram-webhook helpers: <code>verifySecretToken</code>, <code>guessKind</code>, injection safety.</p>
+  </div>
+
+  <!-- Config / Ops -->
+  <h3 style="font-size:0.8rem;color:var(--muted);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Config &amp; Ops</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge conf">OPS</span>
+      <span class="badge py">PY</span>
+      <span class="path">scripts/hs_ops.py</span>
+    </div>
+    <p>Admin CLI: apply migrations, verify RLS, mint ingestion tokens, mint Telegram link codes, setup storage bucket.</p>
+    <ul>
+      <li><code>python hs_ops.py apply &lt;migration.sql&gt;</code></li>
+      <li><code>python hs_ops.py verify</code> — RLS coverage + data integrity</li>
+      <li><code>python hs_ops.py mint-link-code &lt;profile_id&gt;</code> — Telegram activation code</li>
+      <li><code>python hs_ops.py setup-telegram-storage</code> — create <code>health-media</code> bucket</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge conf">DOC</span>
+      <span class="path">CHANGELOG.md</span>
+      <span class="path" style="margin-left:8px">CLAUDE.md</span>
+      <span class="path" style="margin-left:8px">docs/SCHEMA-MAP.md</span>
+    </div>
+    <p>CHANGELOG tracks every version with full detail. CLAUDE.md has the non-negotiable rules. SCHEMA-MAP is auto-generated from <code>pg_description</code>.</p>
+  </div>
+</section>
+
+<!-- ── PUSH FLOW ──────────────────────────────────────────────────────────── -->
+<section>
+  <h2>Push Decision Flow</h2>
+  <div class="flow"><span class="c">// whoop-webhook: after successful upsert</span>
+
+<span class="kw">WHOOP event arrives</span>
+  └─ verify HMAC signature
+  └─ map whoop_user_id → profile_id
+  └─ fetch + map + upsert (whoop_workouts / whoop_cycles / whoop_sleeps)
+  └─ <span class="db">wearable_sync_log</span> → status: success
+  └─ <span class="fn">detached async push block</span> (never delays 200 response)
+       │
+       ├─ <span class="fn">loadPushConfig</span>(<span class="db">system_config</span>)  ← all thresholds from DB
+       ├─ lookup <span class="db">telegram_identities</span>(profile_id) → chat_id, is_minor
+       │
+       ├─ determine push_type + dedupValue + isCritical:
+       │   recovery/cycle → push_type = "recovery_landed"
+       │                    isCritical = score &lt; 34 OR HRV crash ≥ 20% of baseline
+       │   workout       → push_type = "workout_logged"
+       │
+       ├─ lookup <span class="db">push_log</span>(profile, type, subject_id) ORDER BY sent_at DESC LIMIT 1
+       │
+       ├─ <span class="fn">decidePush</span>(now, lastPush, isCritical, currentValue, timezone, config)
+       │   ┌ CRITICAL?       → "send"           (always — bypasses all gates)
+       │   ├ within debounce window?
+       │   │  └ material change ≥ 5ppt? → "send"
+       │   │  └ else         → "suppress_debounce"
+       │   ├ quiet hours (local time)?  → "suppress_quiet"
+       │   └ else            → "send"
+       │
+       ├─ if "send" → <span class="fn">composePush</span>(type, row, is_minor) → <span class="fn">telegramSend</span>(chat_id, text)
+       │
+       ├─ <span class="db">push_log</span> INSERT (status: sent | suppressed, dedup_value: score)
+       │
+       └─ <span class="fn">checkDeadMan</span>: scan ALL active profiles
+            └─ last <span class="db">wearable_sync_log</span> with records_upserted &gt; 0 &gt; 36h ago?
+            └─ already alerted within 22h? → skip
+            └─ else → telegramSend(maintainer_chat, "⚠️ Dead-man: ...") + push_log INSERT</div>
+</section>
+
+<!-- ── PUSH THRESHOLDS ────────────────────────────────────────────────────── -->
+<section>
+  <h2>Push Thresholds (system_config — migration 030)</h2>
+  <table class="push-table">
+    <thead>
+      <tr>
+        <th>Key</th><th>Value</th><th>Meaning</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td><code>push.debounce_window_min</code></td><td>30</td><td>Minutes. Burst of same (profile, type, subject) collapses to one push, unless score changes materially.</td></tr>
+      <tr><td><code>push.quiet_hours_start</code></td><td>22</td><td>Local hour. Non-critical pushes suppressed from 10pm (evaluated in WHOOP timezone).</td></tr>
+      <tr><td><code>push.quiet_hours_end</code></td><td>7</td><td>Local hour. Non-critical pushes resume at 7am.</td></tr>
+      <tr><td><code>push.recovery_critical_threshold</code></td><td>34</td><td>Recovery % below which push is CRITICAL — sent regardless of quiet hours or debounce.</td></tr>
+      <tr><td><code>push.hrv_crash_pct</code></td><td>20</td><td>HRV drop (%) vs 7-cycle baseline that triggers CRITICAL alert.</td></tr>
+      <tr><td><code>push.material_change_pct</code></td><td>5</td><td>Score change (ppt) threshold for a re-score within debounce window to re-push.</td></tr>
+      <tr><td><code>push.dead_man_hours</code></td><td>36</td><td>Hours of no WHOOP data before dead-man alert to PC. Anchor: <code>records_upserted &gt; 0</code>.</td></tr>
+      <tr><td><code>push.reconcile_default_hours</code></td><td>48</td><td>Default reconcile window. Widens per profile if last sync is older.</td></tr>
+      <tr><td><code>push.reconcile_max_widen_hours</code></td><td>168</td><td>Max reconcile window cap (7 days). Prevents unbounded backfill on dormant profiles.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ── OPEN ITEMS ─────────────────────────────────────────────────────────── -->
+<section>
+  <h2>Open Items &amp; Phase Gaps</h2>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-tag">Phase 3</span>
+      <span class="path">Cloud Routine — vision extraction</span>
+    </div>
+    <p>Photo vision → contract validate → unattended-write → Telegram confirmation. Routine trigger not yet wired in <code>telegram-webhook</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-tag">Phase 4</span>
+      <span class="path">On-demand query + command grammar</span>
+    </div>
+    <p>"recovery?", "log 6g creatine", "weight 84.2", "undo last" — light command parser.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-tag">Phase 5</span>
+      <span class="path">Weekly review queue + audit trail</span>
+    </div>
+    <p>Bulk approval of high-confidence auto-writes + instant nudge for staged rows.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-tag">Phase 6</span>
+      <span class="path">Dea onboarding (minor framing proven)</span>
+    </div>
+    <p>Once PC's path is stable. Framing guard is already in <code>composePush</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="warn">⚠</span>&nbsp;
+      <span class="path">Dead-man fully-silent backstop</span>
+    </div>
+    <p>Dead-man check runs on every WHOOP event (covers all profiles). If ALL profiles simultaneously go silent (no webhooks at all), a pg_cron job calling the edge fn endpoint is needed as a time-triggered backstop. Not yet deployed — schedule when an availability incident makes it warranted.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="warn">⚠</span>&nbsp;
+      <span class="path">Altitude early-warning</span>
+    </div>
+    <p>No confirmed data source in the WHOOP schema. Deferred until a source is identified.</p>
+  </div>
+</section>
+
+</main>
+</body>
+</html>

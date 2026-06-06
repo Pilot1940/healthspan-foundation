@@ -1,5 +1,69 @@
 # HealthSpan Skill — Changelog
 
+## v3.4.0 — Telegram ingestion Phase 2: reconcile + push + dead-man (2026-06-07)
+
+- **Migration 030 — push_log.dedup_value + system_config push thresholds.**
+  - `push_log.dedup_value numeric` — stores the metric score at push time (recovery_score_pct
+    for recovery pushes, activity_strain for workouts). Enables "materially changed" re-score
+    suppression within the debounce window: re-push only if change ≥ push.material_change_pct.
+  - 9 new `push.*` system_config rows seeded (rule #1 — no hardcoded thresholds):
+    `debounce_window_min=30`, `quiet_hours_start=22`, `quiet_hours_end=7`,
+    `recovery_critical_threshold=34`, `hrv_crash_pct=20`, `material_change_pct=5`,
+    `dead_man_hours=36`, `reconcile_default_hours=48`, `reconcile_max_widen_hours=168`.
+  - Verify: `push_log.dedup_value` present; all 9 `push.*` rows active.
+- **`monitor/reconcile.py` — age-aware WHOOP reconcile (importable + CLI).**
+  - Importable: `from monitor.reconcile import reconcile` — called before morning digest.
+  - CLI: `python -m monitor.reconcile [--profile PC] [--hours 24]`.
+  - Per-profile age-aware window: reads `push.reconcile_default_hours` (48h default) from
+    system_config; widens per profile if last successful `wearable_sync_log` run is older
+    (`max(default, ceil(hours_since_last) + 2h buffer)`); caps at `push.reconcile_max_widen_hours`
+    (168h / 7d) to prevent unbounded backfill on long-dormant profiles.
+  - Never-synced profile gets `max_widen_hours` (safe initial window).
+  - Per-profile error isolation — one dead token never blocks others.
+  - Returns `{profile_id: {"window_hours": int, "results": list | dict}}`.
+- **`supabase/functions/whoop-webhook/index.ts` — Phase 2 push additions.**
+  - **Short WHOOP pushes (best-effort, non-blocking).** After each upsert, the webhook
+    composes and sends a short templated push via the Telegram bot:
+    - `recovery_landed` push (recovery/cycle events): includes recovery_score_pct, hrv_ms,
+      resting_hr_bpm. Minor framing for `is_minor=true` (growth/performance language).
+    - `workout_logged` push (workout events): includes activity_name, strain, duration_min.
+    - All thresholds from system_config; no hardcoded values.
+  - **Debounce**: `(profile_id, push_type, subject_id)` within `push.debounce_window_min`
+    (30min) collapses to one push. Re-score within window re-pushes only if score changes
+    ≥ `push.material_change_pct` (5ppt) — requires `push_log.dedup_value`.
+  - **Quiet hours**: non-critical pushes suppressed between `push.quiet_hours_start` (22)
+    and `push.quiet_hours_end` (7). Evaluated in the recipient's **local timezone**
+    (WHOOP `timezone_offset` field), not UTC. Handles both IANA names and UTC offset strings.
+  - **Critical alerts** (recovery < 34% OR HRV crash ≥ 20% vs 7-cycle baseline) bypass
+    quiet hours and debounce — always send. HRV crash queries last 7 `whoop_cycles.hrv_ms`
+    rows. Altitude early-warning deferred (no confirmed data source in WHOOP schema).
+  - **Idempotency**: every push attempt logged to `push_log` (status: `sent` or `suppressed`).
+    Webhook replay for the same `(type, id)` within the debounce window → `suppress_debounce`.
+  - **Dead-man heartbeat**: on every WHOOP event, checks ALL active profiles for 36h data
+    silence (`wearable_sync_log.records_upserted > 0` anchor — empty syncs do not reset
+    the clock). Pushes an alert to PC if overdue; suppressed for 22h after each alert.
+    Runs best-effort in a detached async closure — never delays the 200 response.
+  - **Exported pure functions** (`localHour`, `decidePush`, `composePush`, `deadManThreshold`)
+    — no DB/network dependencies, fully unit-testable.
+- **Tests — 12 Python unit tests** (`tests/unit/test_reconcile.py`):
+  `reconcile widens on stale sync`, `uses default for recent sync`, `caps at max_widen`,
+  `never-synced uses max_widen`, `exactly-at-boundary widens by buffer`, `buffer ensures overlap`,
+  plus `get_config_int` and `last_sync_hours_ago` helpers. All 12 pass (no live DB needed).
+- **Tests — 20 Deno unit tests** (`supabase/functions/whoop-webhook/webhook_test.ts`):
+  `critical-always` (quiet + debounce bypassed), `debounce collapses burst to one push`,
+  `material-change overrides debounce`, `sub-threshold change stays debounced`,
+  `quiet-hours suppression`, `quiet-hours uses local timezone not UTC`, `sends after quiet end`,
+  `push idempotency on replay`, `localHour` (IANA / offset-string / null / fallback),
+  `deadManThreshold` (null / exact-36h / under-36h / recent), `composePush` (recovery adult +
+  minor framing, workout adult + minor, unknown type fallback).
+- **Debounce window**: 30 minutes (`push.debounce_window_min`).
+- **Dead-man threshold**: 36 hours (`push.dead_man_hours`); trigger = `wearable_sync_log`
+  rows with `records_upserted > 0`; suppressed for 22h after each alert.
+- **Note — fully-silent scenario**: dead-man check runs on each incoming WHOOP event
+  and covers all profiles. If ALL profiles go simultaneously silent (no webhooks), a
+  separate pg_cron job calling the function endpoint is required as a backstop (not yet
+  deployed — schedule when an availability incident makes it warranted).
+
 ## v3.3.0 — Telegram ingestion Phase 1 (2026-06-06)
 
 - **Migration 029 — Telegram ingestion tables + RLS.** Reinstates Telegram as an
