@@ -109,7 +109,10 @@ SUBJECT = ['sprints','whoop_cycles','whoop_sleeps','whoop_workouts','whoop_journ
  'biomarker_targets','documents','trend_alerts','wearable_sync_log',
  'stg_biomarker_review','stg_food_rule_review','stg_test_result_review',
  'travel_log','supplement_regimens','supplement_intake_logs','hr_zone_config',
- 'workout_intervals','workout_hr_samples']
+ 'workout_intervals','workout_hr_samples',
+ # 029 — Telegram ingestion
+ 'telegram_link_codes','telegram_identities','telegram_processed_updates',
+ 'media_inbox','push_log']
 
 def cmd_verify(_):
     c = connect(); cur = c.cursor()
@@ -163,8 +166,65 @@ def cmd_mint_token(args):
     print("INGESTION TOKEN (shown once — embed in the .skill, store encrypted):")
     print("  " + tok)
 
+def cmd_mint_link_code(args):
+    """Mint a single-use Telegram link code for a profile.
+
+    Usage: mint-link-code <profile_id>
+    The code is printed once — send it to the person who will DM the bot.
+    They send the code to the bot; the Edge fn activates their identity.
+    """
+    if not args:
+        sys.exit("usage: mint-link-code <profile_id>")
+    profile_id = args[0]
+    import secrets
+    code = secrets.token_urlsafe(16)
+    c = connect(readonly=False); cur = c.cursor()
+    cur.execute("""
+        INSERT INTO public.telegram_link_codes (code, profile_id)
+        VALUES (%s, %s)
+        RETURNING expires_at
+    """, (code, profile_id))
+    expires_at = cur.fetchone()[0]
+    c.commit()
+    print("TELEGRAM LINK CODE (send this to the person — single-use, expires " + str(expires_at) + "):")
+    print("  " + code)
+    print("Send this code as a DM to @chitalkar_healthspan_bot to link your account.")
+
+def cmd_setup_telegram_storage(_):
+    """Create the health-media private Storage bucket if it does not exist.
+
+    Usage: setup-telegram-storage
+    Idempotent — safe to re-run.
+    """
+    import json
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    url = os.environ["SUPABASE_URL"].rstrip("/")
+    key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+    headers = {"Authorization": f"Bearer {key}", "apikey": key, "Content-Type": "application/json"}
+
+    # Check existence
+    try:
+        req = Request(f"{url}/storage/v1/bucket/health-media", headers=headers)
+        resp = urlopen(req)
+        data = json.loads(resp.read())
+        print(f"Bucket health-media already exists (public={data.get('public', '?')}). OK.")
+        return
+    except HTTPError as e:
+        if e.code != 400:
+            raise
+
+    # Create
+    body = json.dumps({"id": "health-media", "name": "health-media", "public": False}).encode()
+    req = Request(f"{url}/storage/v1/bucket", data=body, headers=headers, method="POST")
+    resp = urlopen(req)
+    print("Created bucket health-media (private). OK.")
+    print(resp.read().decode())
+
 CMDS = {"whoami": cmd_whoami, "profiles": cmd_profiles, "backup": cmd_backup,
-        "apply": cmd_apply, "verify": cmd_verify, "mint-token": cmd_mint_token}
+        "apply": cmd_apply, "verify": cmd_verify, "mint-token": cmd_mint_token,
+        "mint-link-code": cmd_mint_link_code,
+        "setup-telegram-storage": cmd_setup_telegram_storage}
 
 if __name__ == "__main__":
     _load_env()

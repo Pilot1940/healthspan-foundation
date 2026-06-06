@@ -1,5 +1,55 @@
 # HealthSpan Skill — Changelog
 
+## v3.3.0 — Telegram ingestion Phase 1 (2026-06-06)
+
+- **Migration 029 — Telegram ingestion tables + RLS.** Reinstates Telegram as an
+  ingestion channel (029 supersedes the `user_telegram_links` fossil dropped in 028).
+  Five new tables, all with RLS and 016-style column comments:
+  - `telegram_link_codes` — one-time codes PC mints before a chat_id is known. Maintainer-only
+    RLS; code is a credential, single-use, 7-day expiry. Minted via `hs_ops.py mint-link-code`.
+  - `telegram_identities` — chat_id → profile_id binding. Status: pending → active → revoked.
+    RLS: a profile sees its own row; maintainer sees all. Only service role / maintainer writes.
+  - `telegram_processed_updates` — inbound update_id idempotency latch. Written ONLY after
+    media_inbox insert succeeds (ordering rule — Telegram retry safety).
+  - `media_inbox` — photo/text queue drained by Phase-3 Routine. kind guessed from caption
+    keywords (food/workout/lab/dexa/unknown). caption stored as DATA only (injection rule).
+  - `push_log` — outbound push idempotency + debounce ledger. Debounce key:
+    (profile_id, push_type, subject_id).
+  - All 5 tables: DELETE/TRUNCATE revoked from `authenticated` + `healthspan_app`; ALL
+    revoked from `anon`. SCHEMA-MAP coverage 54 → 59/59.
+- **Edge fn `telegram-webhook` (Deno).** Deployed to `dsnydskkjwziynwmzfkh`. Reads secrets:
+  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+  - Secret-token verification: constant-time comparison of `X-Telegram-Bot-Api-Secret-Token`.
+  - Idempotency: checks `telegram_processed_updates` on entry; writes update_id ONLY after
+    successful `media_inbox` insert (so Telegram retry re-runs on any earlier failure).
+  - Identity: chat_id → `telegram_identities`. Unknown/pending → onboarding prompt + maintainer
+    alert; revoked → rejection. Active → resolve profile_id.
+  - Link-code activation: `/start <code>` or bare code from unknown/pending chat → validates
+    against `telegram_link_codes` (unexpired, unused) → flips identity to active.
+  - Photo/document: `getFile` + download → upload to `health-media` private bucket (signed
+    URLs only) → `media_inbox` row (status=pending). Download failure is non-fatal (null
+    storage_path; Routine re-fetches).
+  - Text: `media_inbox` row with caption. Caption is DATA only — injection rule enforced at
+    code level (no eval/exec path on caption content).
+  - Minor-safe ack framing when `telegram_identities.is_minor = true`.
+  - Phase-3 Routine trigger NOT wired (Phase 3 work).
+- **Storage bucket `health-media` created** (private; no public access; signed URLs only).
+  Created via `hs_ops.py setup-telegram-storage`.
+- **`hs_ops.py` additions:**
+  - `mint-link-code <profile_id>` — mints a single-use Telegram activation code (7-day expiry).
+  - `setup-telegram-storage` — idempotently creates the `health-media` private Storage bucket.
+  - `SUBJECT` list extended with all 5 new tables for ongoing `verify` coverage.
+- **Tests — 9 Python integration tests** (`tests/unit/test_telegram_webhook.py`): tables exist,
+  RLS enabled, media_inbox columns, update_id dedup (PK conflict on replay), media_inbox
+  enqueue round-trip, injection caption stored-not-executed, unknown-chat no-row guard,
+  push_log columns, link_code uniqueness. All 9 pass.
+- **Deno unit tests** (`supabase/functions/telegram-webhook/webhook_test.ts`): secret-token
+  correct/wrong/null/length-mismatch, guessKind food/workout/lab/dexa/unknown, injection
+  text classified-not-executed, SQL injection and prompt injection are plain strings.
+- **Auth model note:** Edge fn uses `service_role` (same as `whoop-webhook` — no user
+  session in an inbound webhook). `healthspan_app` role (Phase-3 Routine) reads via
+  `SET ROLE authenticated + JWT`; RLS policies cover both paths.
+
 ## v3.2.1 — schema-map completeness + generated-col doc fix (2026-06-05)
 - **Migration 016c — schema-comment completion.** 016 commented 19 high-value tables;
   34 live tables (the v3 feature tables, the 5 `stg_*_review` staging queues, and the
