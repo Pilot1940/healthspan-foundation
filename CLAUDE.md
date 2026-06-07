@@ -27,10 +27,13 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–035 written** — Telegram ingestion Phase 1–3B + drain identity.
-  029–034 applied. **035 pending apply** — re-keys drain service identity to
-  `healthspan.drainer@chitalkar.com` (was `healthspan.drain@chitalkar.com`).
-  Apply: `python3 scripts/hs_ops.py apply migrations/035_drain_identity_drainer.sql`.
+- **Migrations 029–036 written and applied** — Telegram ingestion Phase 1–3B + drain
+  identity + completeness gate. 035 re-keyed drain identity to
+  `healthspan.drainer@chitalkar.com`. **036 (applied 2026-06-07)** added `p_force_stage`
+  to `maintainer_ingest_food` (completeness-based routing, not model confidence) + a
+  DB-side `food_energy_kcal [25,12000]` calorie plausibility gate, and removed the
+  duplicate `ingest.confidence_min` config key (`ingest.confidence_threshold` 0.7 is canonical;
+  `lib/contract.confidence_min()` reads it).
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`

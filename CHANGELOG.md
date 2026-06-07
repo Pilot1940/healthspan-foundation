@@ -18,9 +18,8 @@ Fixes from the first real drain run (2 failed, 3 staged — one a clean extracti
   (a full-macro protein shake scored 0.5 and was wrongly staged). New `food_is_complete(extracted)`:
   auto-write requires `description AND calories AND ≥1 macro (protein_g|carbs_g|fat_g)`; otherwise
   stage. Confidence is still **recorded** (`p_confidence`), no longer the primary gate. A second
-  plausibility gate on calories (`food_energy_kcal` bounds in `metric_definitions`) runs DB-side in
-  the new RPC — intended as the "1,020 kcal → 20" comma-slip backstop (asserted by construction;
-  to be verified once 036 is applied).
+  plausibility gate on calories runs DB-side in the new RPC against `food_energy_kcal` bounds
+  `[25, 12000]` in `metric_definitions` — the "1,020 kcal → 20" comma-slip backstop (20 < 25 → staged).
 - **Migration 036 — `maintainer_ingest_food` adds `p_force_stage boolean DEFAULT FALSE`.**
   DROP + CREATE (param-list change can't use CREATE OR REPLACE). Python's completeness gate sets
   `p_force_stage`; the RPC routes to `stg_food_log_review` when forced or when calories fall outside
@@ -42,9 +41,10 @@ Fixes from the first real drain run (2 failed, 3 staged — one a clean extracti
   circular — the mock returned the status regardless of routing). 36 pass in the file; full unit
   suite 179 passed / 9 skipped.
 
-⚠️ **Deploy ordering:** apply migration 036 **before** the new drain code runs against prod —
-the new Python sends `p_force_stage`, which 500s against the old 14-param signature until 036 is live.
-Apply: `python3 scripts/hs_ops.py apply migrations/036_completeness_gate.sql`.
+**Deployed 2026-06-07:** migration 036 applied. Live DB verified — single 15-param
+`maintainer_ingest_food` (old signature dropped), grants `authenticated`/`postgres`/`service_role`
+only (no `anon`, no `PUBLIC`), `ingest.confidence_min` removed (`ingest.confidence_threshold` 0.7
+remains), `food_energy_kcal` bound `[25, 12000]` active.
 
 ## v3.6.0 — Telegram ingestion Phase 3B: autonomous drain with vision extraction (2026-06-07)
 
