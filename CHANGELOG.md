@@ -1,5 +1,20 @@
 # HealthSpan Skill — Changelog
 
+## v3.4.1 — whoop-webhook: EdgeRuntime.waitUntil for push background task (2026-06-07)
+
+- **`supabase/functions/whoop-webhook/index.ts`** — reliability fix for Phase 2 push block.
+  - The bare fire-and-forget `(async () => {...})()` could be terminated when the Supabase
+    Edge Function isolate is reclaimed after the 200 response, silently dropping all pushes
+    and the dead-man heartbeat.
+  - Fix: capture the promise as `pushTask`, then register it with `EdgeRuntime.waitUntil(pushTask)`.
+    The runtime keeps the isolate alive until the promise settles without delaying the 200.
+  - typeof-guard fallback: `if (typeof EdgeRuntime !== "undefined") ... else await pushTask` —
+    local/test environments (where `EdgeRuntime` is undefined) await the promise directly
+    instead of silently no-oping.
+  - No DB change, no migration. Inner try/catch unchanged — push errors remain non-fatal.
+- **Deployed:** `whoop-webhook` redeployed to dsnydskkjwziynwmzfkh (72.43 kB).
+  `telegram-webhook` redeployed (no-change bundle confirmed).
+
 ## v3.4.0 — Telegram ingestion Phase 2: reconcile + push + dead-man (2026-06-07)
 
 - **Migration 030 — push_log.dedup_value + system_config push thresholds.**

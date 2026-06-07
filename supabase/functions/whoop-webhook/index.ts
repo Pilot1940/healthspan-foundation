@@ -422,7 +422,10 @@ Deno.serve(async (req) => {
     }).eq("id", logId);
 
     // ── Phase 2: push notification (best-effort — never fails the 200 response) ──
-    (async () => {
+    // EdgeRuntime.waitUntil keeps the isolate alive until the promise settles without
+    // delaying the 200. The typeof guard lets local/test environments (where
+    // EdgeRuntime is undefined) still await the promise rather than silently dropping it.
+    const pushTask = (async () => {
       try {
         const cfg = await loadPushConfig(db);
         const { data: identity } = await db
@@ -494,6 +497,14 @@ Deno.serve(async (req) => {
         // Push errors are non-fatal; upsert already succeeded
       }
     })();
+
+    // Register with EdgeRuntime so the isolate is not reclaimed before pushTask settles.
+    // Falls back to awaiting directly in local/test environments where EdgeRuntime is absent.
+    if (typeof EdgeRuntime !== "undefined") {
+      EdgeRuntime.waitUntil(pushTask);
+    } else {
+      await pushTask;
+    }
 
     return new Response("ok", { status: 200 });
   } catch (e) {
