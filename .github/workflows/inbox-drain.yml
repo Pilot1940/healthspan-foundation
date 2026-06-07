@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 15
 
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -35,7 +36,7 @@ jobs:
 
       - name: Run drain — event-driven (short settle window)
         if: github.event_name == 'repository_dispatch'
-        run: python3 -m monitor.inbox_drain --once --settle-sec 30
+        run: python3 -m monitor.inbox_drain --once --settle-sec 5
 
       - name: Run drain — daily cron / manual
         if: github.event_name != 'repository_dispatch'
