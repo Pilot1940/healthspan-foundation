@@ -27,24 +27,28 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–037 written and applied** — Telegram ingestion Phase 1–3B + drain
-  identity + completeness gate + stage_reason. 035 re-keyed drain identity to
-  `healthspan.drainer@chitalkar.com`. **036 (applied 2026-06-07)** added `p_force_stage`
-  to `maintainer_ingest_food` (completeness-based routing, not model confidence) + a
-  DB-side `food_energy_kcal [25,12000]` calorie plausibility gate, and removed the
-  duplicate `ingest.confidence_min` config key (`ingest.confidence_threshold` 0.7 is canonical;
-  `lib/contract.confidence_min()` reads it). **037 (written 2026-06-07, apply pending)**
-  adds `stage_reason text` to `media_inbox` + `stg_food_log_review`; rebuilds
-  `maintainer_ingest_food` with 16th param `p_stage_reason text DEFAULT NULL`; DB-side
-  kcal gate returns its reason in the jsonb result; drain propagates to both tables.
+- **Migrations 029–038 all written and applied** — Telegram ingestion Phase 1–3B + drain
+  identity + completeness gate + stage_reason + supplement/biomarker alignment. 035
+  re-keyed drain identity to `healthspan.drainer@chitalkar.com`. **036 (applied
+  2026-06-07)** added `p_force_stage` to `maintainer_ingest_food` + DB-side kcal gate.
+  **037 (applied 2026-06-07)** added `stage_reason` to `media_inbox` +
+  `stg_food_log_review`. **038 (applied 2026-06-07)** rebuilt
+  `maintainer_ingest_supplement` + `maintainer_ingest_biomarker` to mirror food pattern:
+  `p_force_stage boolean DEFAULT FALSE` + `p_stage_reason text DEFAULT NULL`, same
+  routing/guard/grants; added `stage_reason` to `stg_biomarker_review` +
+  `stg_supplement_intake_review`; biomarker has DB-side `plausible_min/max` gate;
+  drain now uses per-kind completeness gates (`supplement_is_complete`,
+  `biomarker_is_complete`) + improved `unknown` prompt with per-kind schemas.
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
   webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
   `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
   `supabase functions deploy whoop-webhook --no-verify-jwt`.
-- **`lib/contract.write` skips GENERATED columns** (e.g. `supplement_intake_logs.taken_on`)
-  on INSERT/UPDATE while keeping them as `ON CONFLICT` targets.
+- **`lib/contract.write` skips GENERATED columns** on INSERT/UPDATE while keeping them
+  as `ON CONFLICT` targets. Note: `supplement_intake_logs.taken_on` is a plain nullable
+  `date` column in the live DB (not GENERATED); migration 038 sets it explicitly as
+  `(taken_at AT TIME ZONE 'UTC')::date` to satisfy the unique index.
 - **66 tables** (35 active / 31 empty), 7 views, 126 FKs (0 orphans). Full inventory +
   dormant-table classification: `docs/HEALTH-CHECK-2026-06-03.md`.
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,

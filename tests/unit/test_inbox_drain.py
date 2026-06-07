@@ -21,6 +21,7 @@ from monitor.inbox_drain import (
     _image_block,
     _strip_fences,
     _totals_line,
+    biomarker_is_complete,
     build_clusters,
     compose_confirmation,
     content_cluster_ungrouped,
@@ -29,6 +30,7 @@ from monitor.inbox_drain import (
     food_is_complete,
     merge_caption,
     run_once,
+    supplement_is_complete,
     vision_extract,
 )
 
@@ -1036,3 +1038,279 @@ def test_stage_reason_absent_on_successful_write():
     patch_call = next(c for c in captured if "media_inbox" in c["url"])
     assert patch_call["body"]["status"] == "done"
     assert "stage_reason" not in patch_call["body"]
+
+
+# ── supplement_is_complete / biomarker_is_complete ────────────────────────────
+
+def test_supplement_is_complete_with_id_and_dose():
+    assert supplement_is_complete({
+        "supplement_id": "uuid-123",
+        "dose_amount": 500,
+        "dose_unit": "mg",
+    }) is True
+
+
+def test_supplement_is_complete_missing_id():
+    assert supplement_is_complete({"dose_amount": 500, "dose_unit": "mg"}) is False
+
+
+def test_supplement_is_complete_missing_dose_amount():
+    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_unit": "mg"}) is False
+
+
+def test_supplement_is_complete_missing_dose_unit():
+    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_amount": 500}) is False
+
+
+def test_biomarker_is_complete_with_metric_value_unit():
+    assert biomarker_is_complete({
+        "metric_definition_id": "uuid-456",
+        "value": 5.1,
+        "unit": "mmol/L",
+    }) is True
+
+
+def test_biomarker_is_complete_missing_metric_id():
+    assert biomarker_is_complete({"value": 5.1, "unit": "mmol/L"}) is False
+
+
+def test_biomarker_is_complete_missing_value():
+    assert biomarker_is_complete({"metric_definition_id": "uuid-456", "unit": "mmol/L"}) is False
+
+
+def test_biomarker_is_complete_missing_unit():
+    assert biomarker_is_complete({"metric_definition_id": "uuid-456", "value": 5.1}) is False
+
+
+# ── supplement per-kind completeness gate ─────────────────────────────────────
+
+_SUPP_FULL = {
+    "name": "berberine",
+    "supplement_id": "supp-uuid",
+    "dose_amount": 500,
+    "dose_unit": "mg",
+    "taken_at": "2026-06-07T08:00:00Z",
+    "confidence": 0.9,
+}
+
+_SUPP_NO_DOSE = {
+    "name": "berberine",
+    "supplement_id": "supp-uuid",
+    "dose_amount": None,
+    "dose_unit": None,
+    "confidence": 0.9,
+}
+
+_SUPP_NO_MATCH = {
+    "name": "unknown herb",
+    "dose_amount": 500,
+    "dose_unit": "mg",
+    "confidence": 0.9,
+}
+
+
+def test_supplement_complete_with_match_autowrites():
+    """Matched supplement with dose → p_force_stage=False (auto-write to prod)."""
+    db, captured = _db_capture([
+        (200, {"id": "sl-uuid", "status": "inserted"}),  # rpc
+        (200, []),                                         # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="supplement", caption="berberine 500mg")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_FULL), \
+         patch("monitor.inbox_drain.lookup_supplement_by_name",
+               return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["written"] == 1
+    assert summary["staged"] == 0
+    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
+    assert rpc["body"]["p_force_stage"] is False
+    assert rpc["body"]["p_stage_reason"] is None
+
+
+def test_supplement_missing_dose_stages():
+    """Matched supplement but no dose → staged with 'incomplete: missing dose or unit'."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged",
+               "stage_reason": "incomplete: missing dose or unit"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="supplement", caption="berberine")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_DOSE), \
+         patch("monitor.inbox_drain.lookup_supplement_by_name",
+               return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True
+    assert rpc["body"]["p_stage_reason"] == "incomplete: missing dose or unit"
+
+
+def test_supplement_no_match_stages():
+    """Unresolved supplement (no lookup match) → staged with 'incomplete: no supplement match'."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged",
+               "stage_reason": "incomplete: no supplement match"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="supplement", caption="unknown herb 500mg")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_MATCH), \
+         patch("monitor.inbox_drain.lookup_supplement_by_name", return_value=[]), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True
+    assert rpc["body"]["p_stage_reason"] == "incomplete: no supplement match"
+
+
+# ── write_supplement / write_biomarker now accept force_stage ─────────────────
+
+def test_write_supplement_forwards_force_stage_true():
+    """write_supplement(force_stage=True) sends p_force_stage=True to the RPC."""
+    from monitor.inbox_drain import write_supplement
+
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),
+        (200, []),
+    ])
+    rows = [_item("r1", kind="supplement")]
+    write_supplement(db, rows, rows[0]["profile_id"],
+                     {"name": "berberine"}, confidence=0.9, raw_text="berberine",
+                     force_stage=True, stage_reason="incomplete: no supplement match")
+
+    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True
+    assert rpc["body"]["p_stage_reason"] == "incomplete: no supplement match"
+
+
+def test_write_supplement_forwards_force_stage_false():
+    """write_supplement(force_stage=False) sends p_force_stage=False to the RPC."""
+    from monitor.inbox_drain import write_supplement
+
+    db, captured = _db_capture([
+        (200, {"id": "sl-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    rows = [_item("r1", kind="supplement")]
+    write_supplement(db, rows, rows[0]["profile_id"],
+                     {"supplement_id": "s1", "dose_amount": 500, "dose_unit": "mg"},
+                     confidence=0.9, raw_text="berberine 500mg", force_stage=False)
+
+    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
+    assert rpc["body"]["p_force_stage"] is False
+
+
+def test_write_biomarker_forwards_force_stage_true():
+    """write_biomarker(force_stage=True) sends p_force_stage=True with stage_reason."""
+    from monitor.inbox_drain import write_biomarker
+
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),
+        (200, []),
+    ])
+    rows = [_item("r1", kind="lab")]
+    write_biomarker(db, rows, rows[0]["profile_id"],
+                    {"extracted_name": "glucose", "value": 95, "unit": "mg/dL"},
+                    confidence=0.8, raw_text="glucose 95",
+                    force_stage=True, stage_reason="incomplete: no metric match")
+
+    rpc = next(c for c in captured if "maintainer_ingest_biomarker" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True
+    assert rpc["body"]["p_stage_reason"] == "incomplete: no metric match"
+
+
+# ── classification: unknown kind re-dispatched ───────────────────────────────
+
+def test_unknown_kind_reclassified_as_food_list():
+    """unknown kind + vision returns food list → food branch writes each item."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),
+        (200, {"id": "f2", "status": "inserted"}),
+        (200, []),  # mark_rows once for the cluster
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="unknown", caption="shake + 300g fish + 1 bowl rice")]
+
+    classified = {
+        "kind": "food",
+        "data": [
+            {"description": "protein shake", "calories": 320, "protein_g": 40, "confidence": 0.9},
+            {"description": "grilled fish", "calories": 350, "protein_g": 60, "confidence": 0.9},
+        ],
+    }
+    with patch("monitor.inbox_drain.vision_extract", return_value=classified), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
+    assert len(rpc_calls) == 2
+    assert summary["written"] == 1
+    assert summary["failed"] == 0
+
+
+def test_unknown_kind_reclassified_as_supplement():
+    """unknown kind + vision returns supplement → supplement branch runs completeness gate."""
+    db, captured = _db_capture([
+        (200, {"id": "sl-uuid", "status": "inserted"}),  # supplement rpc
+        (200, []),                                         # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="unknown", caption="berberine + omega-3")]
+
+    classified = {
+        "kind": "supplement",
+        "data": {
+            "name": "berberine",
+            "dose_amount": 500,
+            "dose_unit": "mg",
+            "taken_at": "2026-06-07T08:00:00Z",
+            "confidence": 0.9,
+        },
+    }
+    with patch("monitor.inbox_drain.vision_extract", return_value=classified), \
+         patch("monitor.inbox_drain.lookup_supplement_by_name",
+               return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_calls = [c for c in captured if "maintainer_ingest_supplement" in c["url"]]
+    assert len(rpc_calls) == 1
+    assert rpc_calls[0]["body"]["p_force_stage"] is False
+    assert summary["written"] == 1
+
+
+def test_unknown_kind_stays_unknown_stages_with_could_not_classify():
+    """unknown kind + vision also returns unknown → staged with 'could not classify'."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged",
+               "stage_reason": "could not classify"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="unknown", caption="???")]
+
+    with patch("monitor.inbox_drain.vision_extract",
+               return_value={"kind": "unknown", "data": {}}), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc["body"]["p_stage_reason"] == "could not classify"

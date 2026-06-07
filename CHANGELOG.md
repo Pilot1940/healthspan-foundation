@@ -1,5 +1,41 @@
 # HealthSpan Skill — Changelog
 
+## v3.10.0 — Drain: supplement + biomarker alignment (2026-06-07)
+
+- **Root cause fixed:** live 400 on `maintainer_ingest_supplement`. Two failure modes in the
+  old confidence-routed RPC: (a) matched supplement + `taken_at=NULL` → NOT NULL violation on
+  `supplement_intake_logs.taken_at`; (b) unmatched supplement + `extracted_name=NULL` →
+  NOT NULL violation on `stg_supplement_intake_review`. Both resolved.
+- **Migration 038** (`038_supplement_biomarker_align.sql`): drops both old 10-param RPCs; creates
+  12-param versions that mirror `maintainer_ingest_food` (036/037):
+  - `p_force_stage boolean DEFAULT FALSE` + `p_stage_reason text DEFAULT NULL`
+  - Route on `p_force_stage` (Python completeness gate), not confidence threshold
+  - `COALESCE(p_taken_at, now())` + explicit `taken_on` set in supplement prod INSERT
+  - `COALESCE(p_extracted_name, 'unknown')` in both staging INSERTs
+  - `maintainer_ingest_biomarker`: DB-side plausibility gate using `metric_definitions.plausible_min/max`
+  - Same guard (`is_maintainer() AND has_profile_access`), same grants (revoke PUBLIC/anon, grant authenticated)
+  - Returns `{id, status, stage_reason}` jsonb; `NOTIFY pgrst` at end
+  - `stage_reason text` added to `stg_biomarker_review` and `stg_supplement_intake_review`
+- **Per-kind completeness gate** in `monitor/inbox_drain.py`:
+  - `supplement_is_complete(extracted)` — requires resolved `supplement_id` + `dose_amount` + `dose_unit`
+  - `biomarker_is_complete(extracted)` — requires `metric_definition_id` + `value` + `unit`
+  - Supplement branch uses `force_stage=True` + kind-specific reason when incomplete
+    (`"incomplete: no supplement match"` or `"incomplete: missing dose or unit"`)
+  - Biomarker branch same pattern (`"incomplete: no metric match"` / `"incomplete: missing value or unit"`)
+  - `write_supplement()` and `write_biomarker()` now accept `force_stage` and `stage_reason` params
+  - `_supplement_rpc_args()` and `_biomarker_rpc_args()` helpers added (mirror `_food_rpc_args`)
+- **Improved `unknown` prompt** — explicit per-kind schemas replace the vague `{...kind-specific fields...}`:
+  - Supplement: single-object `data` with dose fields
+  - Food: list `data` (even for single item) → after re-dispatch, food branch handles `isinstance(extracted, list)` correctly for multi-item text
+  - Lab/DEXA: `data.biomarkers` list
+  - Unclassifiable: `{"kind":"unknown","data":{}}`
+- **`else` branch reason**: `kind == "unknown"` after re-dispatch → `"could not classify"`;
+  `kind == "workout"` etc. → `"unknown kind: {kind}"` (preserves existing test)
+- **Tests** (+17, 78 total): `supplement_is_complete` (4), `biomarker_is_complete` (4),
+  supplement completeness gate (3: auto-write / missing-dose / no-match), `write_supplement`/
+  `write_biomarker` forward `force_stage` (3), unknown-kind reclassification to food-list /
+  supplement / stays-unknown (3).
+
 ## v3.9.0 — Drain: persist stage_reason on media_inbox + stg_food_log_review (2026-06-07)
 
 - **`media_inbox.stage_reason text`** column added (migration 037). Every `mark_rows` call for a

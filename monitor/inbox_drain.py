@@ -163,6 +163,24 @@ def food_is_complete(extracted: dict) -> bool:
     return any(extracted.get(m) is not None for m in ("protein_g", "carbs_g", "fat_g"))
 
 
+def supplement_is_complete(extracted: dict) -> bool:
+    """True when supplement has a resolved ID and dose information — safe to auto-write."""
+    return bool(
+        extracted.get("supplement_id")
+        and extracted.get("dose_amount") is not None
+        and extracted.get("dose_unit")
+    )
+
+
+def biomarker_is_complete(extracted: dict) -> bool:
+    """True when biomarker has a resolved metric ID, numeric value, and unit."""
+    return bool(
+        extracted.get("metric_definition_id")
+        and extracted.get("value") is not None
+        and extracted.get("unit")
+    )
+
+
 def _food_rpc_args(
     profile_id: str,
     extracted: dict[str, Any],
@@ -202,11 +220,15 @@ def write_food(
                                  force_stage, stage_reason))
 
 
-def write_biomarker(
-    db: DbRest, rows: list[dict], profile_id: str,
-    extracted: dict[str, Any], confidence: float, raw_text: str,
+def _biomarker_rpc_args(
+    profile_id: str,
+    extracted: dict[str, Any],
+    confidence: float,
+    raw_text: str,
+    force_stage: bool,
+    stage_reason: str | None = None,
 ) -> dict:
-    return _write(db, rows, "maintainer_ingest_biomarker", {
+    return {
         "p_profile_id":            profile_id,
         "p_metric_definition_id":  extracted.get("metric_definition_id"),
         "p_value":                 extracted.get("value"),
@@ -217,14 +239,31 @@ def write_biomarker(
         "p_extracted_name":        extracted.get("extracted_name"),
         "p_confidence":            confidence,
         "p_raw_text":              raw_text,
-    })
+        "p_force_stage":           force_stage,
+        "p_stage_reason":          stage_reason,
+    }
 
 
-def write_supplement(
+def write_biomarker(
     db: DbRest, rows: list[dict], profile_id: str,
     extracted: dict[str, Any], confidence: float, raw_text: str,
+    force_stage: bool = False,
+    stage_reason: str | None = None,
 ) -> dict:
-    return _write(db, rows, "maintainer_ingest_supplement", {
+    return _write(db, rows, "maintainer_ingest_biomarker",
+                  _biomarker_rpc_args(profile_id, extracted, confidence, raw_text,
+                                      force_stage, stage_reason))
+
+
+def _supplement_rpc_args(
+    profile_id: str,
+    extracted: dict[str, Any],
+    confidence: float,
+    raw_text: str,
+    force_stage: bool,
+    stage_reason: str | None = None,
+) -> dict:
+    return {
         "p_profile_id":     profile_id,
         "p_supplement_id":  extracted.get("supplement_id"),
         "p_dose_amount":    extracted.get("dose_amount"),
@@ -235,7 +274,20 @@ def write_supplement(
         "p_extracted_name": extracted.get("name"),
         "p_confidence":     confidence,
         "p_raw_text":       raw_text,
-    })
+        "p_force_stage":    force_stage,
+        "p_stage_reason":   stage_reason,
+    }
+
+
+def write_supplement(
+    db: DbRest, rows: list[dict], profile_id: str,
+    extracted: dict[str, Any], confidence: float, raw_text: str,
+    force_stage: bool = False,
+    stage_reason: str | None = None,
+) -> dict:
+    return _write(db, rows, "maintainer_ingest_supplement",
+                  _supplement_rpc_args(profile_id, extracted, confidence, raw_text,
+                                       force_stage, stage_reason))
 
 
 # ── lookups ───────────────────────────────────────────────────────────────────
@@ -328,9 +380,19 @@ _VISION_PROMPTS: dict[str, str] = {
         '"taken_at":"ISO-8601 (use NOW if not stated)","notes":null,"confidence":0.0_to_1.0}'
     ),
     "unknown": (
-        'Classify and extract health data. Return JSON only:\n'
-        '{"kind":"food|lab|supplement|workout|unknown","data":{...kind-specific fields...},'
-        '"confidence":0.0_to_1.0}'
+        'Classify and extract health data. Return JSON only — no prose, no markdown.\n\n'
+        'Supplement (single item or combo):\n'
+        '{"kind":"supplement","data":{"name":"...","dose_amount":null,"dose_unit":null,'
+        '"taken_at":"NOW","notes":null,"confidence":0.0_to_1.0}}\n\n'
+        'Food or meal (use a list even for one item; one object per distinct dish):\n'
+        '{"kind":"food","data":[{"meal_type":"breakfast|lunch|dinner|snack",'
+        '"description":"...","calories":null,"protein_g":null,"carbs_g":null,'
+        '"fat_g":null,"fiber_g":null,"logged_at":"NOW","notes":null}]}\n\n'
+        'Lab or DEXA result:\n'
+        '{"kind":"lab","data":{"biomarkers":[{"extracted_name":"...","value":null,'
+        '"unit":"...","measured_at":"NOW","confidence":0.0_to_1.0}]}}\n\n'
+        'Unclassifiable:\n'
+        '{"kind":"unknown","data":{}}'
     ),
 }
 
@@ -731,13 +793,25 @@ def _process_cluster(
         biomarkers = extracted.get("biomarkers", [])
         all_ok = True
         for bio in biomarkers:
-            # Resolve metric_definition_id by extracted_name
             matches = lookup_metric(db, bio.get("extracted_name", ""))
             if matches:
                 bio["metric_definition_id"] = matches[0]["id"]
+            complete = biomarker_is_complete(bio)
+            if not complete:
+                reason = (
+                    "incomplete: no metric match" if not bio.get("metric_definition_id")
+                    else "incomplete: missing value or unit"
+                )
+                result = write_biomarker(
+                    db, cluster, profile_id, bio,
+                    float(bio.get("confidence", 0.0)), raw_text,
+                    force_stage=True, stage_reason=reason,
+                )
             else:
-                bio["confidence"] = 0.0  # force staging — maintainer resolves
-            result = write_biomarker(db, cluster, profile_id, bio, float(bio.get("confidence", 0.0)), raw_text)
+                result = write_biomarker(
+                    db, cluster, profile_id, bio,
+                    float(bio.get("confidence", 0.0)), raw_text,
+                )
             if result.get("status") not in ("inserted", "staged"):
                 all_ok = False
         rpc_status = "inserted" if all_ok and biomarkers else "staged"
@@ -747,20 +821,31 @@ def _process_cluster(
         matches = lookup_supplement_by_name(db, name) if name else []
         if matches:
             extracted["supplement_id"] = matches[0]["id"]
+        complete = supplement_is_complete(extracted)
+        if not complete:
+            reason = (
+                "incomplete: no supplement match" if not extracted.get("supplement_id")
+                else "incomplete: missing dose or unit"
+            )
+            result = write_supplement(
+                db, cluster, profile_id, extracted, confidence, raw_text,
+                force_stage=True, stage_reason=reason,
+            )
         else:
-            extracted["confidence"] = 0.0  # force staging — maintainer resolves
-            confidence = 0.0
-        result = write_supplement(db, cluster, profile_id, extracted, confidence, raw_text)
+            result = write_supplement(db, cluster, profile_id, extracted, confidence, raw_text)
         rpc_status = result.get("status", "failed")
 
     else:
-        # workout / truly unknown — always stage as food for human review.
-        # force_stage=True is required: maintainer_ingest_food now routes on p_force_stage,
-        # not confidence, so without it a 0.0-confidence unknown item would auto-write to prod.
+        # workout / could not classify — always stage as food for human review.
+        # force_stage=True required: maintainer_ingest_food routes on p_force_stage, not confidence.
+        if kind == "unknown":
+            stage_rsn = "could not classify"
+        else:
+            stage_rsn = f"unknown kind: {kind}"
         extracted.setdefault("meal_type", "unknown")
-        extracted.setdefault("description", caption or "unknown item")
+        extracted.setdefault("description", caption or "unclassified item")
         result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text,
-                            force_stage=True, stage_reason=f"unknown kind: {kind}")
+                            force_stage=True, stage_reason=stage_rsn)
         rpc_status = result.get("status", "failed")
 
     if rpc_status == "inserted":
