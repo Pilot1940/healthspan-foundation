@@ -1,11 +1,12 @@
 // trigger-drain: fires GitHub repository_dispatch when media_inbox gets a new row.
-// Deduplicates within a 120s window so rapid album uploads only trigger one run.
+// Deduplicates within a 15s window — albums arrive in <1s so this batches them
+// without orphaning back-to-back meals.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const GITHUB_REPO = "Pilot1940/healthspan-foundation";
 const DEDUP_KEY = "trigger_drain.last_dispatch_ts";
-const DEDUP_WINDOW_SEC = 120;
+const DEDUP_WINDOW_SEC = 15;
 
 Deno.serve(async (_req) => {
   try {
