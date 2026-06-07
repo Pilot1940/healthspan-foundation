@@ -1107,7 +1107,7 @@ def _process_cluster(
     telegram_send(token, chat_id, msg)
 
 
-def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
+def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_override: int | None = None) -> dict:
     """Full drain loop. Returns JSON-serialisable summary dict."""
     summary: dict[str, Any] = {
         "fetched": 0, "clustered": 0,
@@ -1115,7 +1115,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
         "errors": [],
     }
 
-    settle_sec = int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
+    settle_sec = settle_sec_override if settle_sec_override is not None else int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
     learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
@@ -1229,6 +1229,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="HealthSpan inbox drain")
     parser.add_argument("--once", action="store_true", help="Run full drain loop and exit")
+    parser.add_argument("--settle-sec", type=int, default=None, metavar="SEC",
+                        help="Override inbox settle window (default: push.inbox_settle_sec config)")
     args = parser.parse_args()
 
     url = os.environ["SUPABASE_URL"]
@@ -1244,7 +1246,7 @@ if __name__ == "__main__":
         cfg = get_config(db)
 
         if args.once:
-            summary = run_once(db, cfg, api_key, token)
+            summary = run_once(db, cfg, api_key, token, settle_sec_override=args.settle_sec)
             print(json.dumps(summary))
             sys.exit(0 if summary["failed"] == 0 else 1)
 

@@ -1,0 +1,42 @@
+name: Inbox Drain
+
+on:
+  repository_dispatch:
+    types: [inbox-drain]
+  schedule:
+    - cron: '30 3 * * *'   # 09:00 IST — daily backstop
+  workflow_dispatch:        # manual trigger for debugging
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      HS_AUTH_EMAIL: ${{ secrets.HS_AUTH_EMAIL }}
+      HS_AUTH_PASSWORD: ${{ secrets.HS_AUTH_PASSWORD }}
+      HS_ANTHROPIC_API_KEY: ${{ secrets.HS_ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ENVIRONMENT: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run drain — event-driven (short settle window)
+        if: github.event_name == 'repository_dispatch'
+        run: python3 -m monitor.inbox_drain --once --settle-sec 30
+
+      - name: Run drain — daily cron / manual
+        if: github.event_name != 'repository_dispatch'
+        run: python3 -m monitor.inbox_drain --once
