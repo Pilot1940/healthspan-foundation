@@ -183,7 +183,7 @@
 
 <header>
   <h1>HealthSpan — Code Manifest</h1>
-  <p>Telegram ingestion Phase 3B complete · v3.6.0 · 2026-06-07 · Supabase <code style="font-family:monospace;background:#22263a;padding:1px 6px;border-radius:3px;font-size:0.8rem">dsnydskkjwziynwmzfkh</code></p>
+  <p>Ingredient-level Viome analysis + daily brief · v3.13.0 · 2026-06-07 · Supabase <code style="font-family:monospace;background:#22263a;padding:1px 6px;border-radius:3px;font-size:0.8rem">dsnydskkjwziynwmzfkh</code></p>
 </header>
 
 <main>
@@ -207,7 +207,7 @@
     <div class="infra-card">
       <h3>Supabase (PostgreSQL + RLS)</h3>
       <p>Primary data store. All tables have RLS. SECURITY DEFINER RPCs used for maintainer cross-profile writes from cloud Routine.</p>
-      <div class="detail">Project: dsnydskkjwziynwmzfkh · 54 active tables · 3 SECURITY DEFINER RPCs · 7 views · 126 FKs</div>
+      <div class="detail">Project: dsnydskkjwziynwmzfkh · 55 active tables · 6 SECURITY DEFINER RPCs · 7 views · 126 FKs · migrations 029–041 applied</div>
     </div>
     <div class="infra-card">
       <h3>Supabase Edge Functions (Deno) <span class="live-tag">3 deployed</span></h3>
@@ -235,7 +235,7 @@
     </div>
     <div class="infra-card">
       <h3>Anthropic Claude API</h3>
-      <p>Used by <code>inbox_drain --once</code> for vision extraction (food/lab/supplement photos) and content-clustering ungrouped items. Model configurable via <code>system_config.drain.vision_model</code>.</p>
+      <p>Used by <code>inbox_drain --once</code> for vision extraction (food/lab/supplement photos), content-clustering ungrouped items, and (via <code>monitor/brief.py</code>) generating rest-of-day action suggestions. Model configurable via <code>system_config.drain.vision_model</code>; brief model via <code>system_config.brief.model</code>.</p>
       <div class="detail">Env: <code>HS_ANTHROPIC_API_KEY</code> (platform reserves the plain name)</div>
     </div>
     <div class="infra-card">
@@ -330,7 +330,7 @@
   <h2>Files — By Layer</h2>
 
   <!-- Migrations -->
-  <h3 style="font-size:0.8rem;color:var(--accent3);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.06em">Migrations (PostgreSQL DDL) — 035 applied</h3>
+  <h3 style="font-size:0.8rem;color:var(--accent3);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.06em">Migrations (PostgreSQL DDL) — 041 applied</h3>
 
   <div class="card">
     <div class="card-header">
@@ -405,6 +405,78 @@
       <span class="new-tag">Phase 3B</span>
     </div>
     <p>Switches drain service account to <code>healthspan.drainer@chitalkar.com</code>. Resolves new UID dynamically from <code>auth.users</code> at apply time — no hardcoded UUID. Removes old drain memberships; inserts new ones for PC, Dea, Dev. Verifies <code>is_maintainer=t</code>, all three profile accesses, and old rows gone.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/036_completeness_gate.sql</span>
+      <span class="new-tag">Step 1</span>
+    </div>
+    <p>Adds <code>p_force_stage boolean DEFAULT FALSE</code> to <code>maintainer_ingest_food</code>; adds DB-side <code>food_energy_kcal</code> plausibility gate on calories (from <code>metric_definitions</code> bounds). Return now emits <code>id, status, stage_reason</code>.</p>
+    <ul>
+      <li>Force-stage path: any food insert can be routed to staging without dropping below the confidence threshold.</li>
+      <li>DB-side kcal plausibility: out-of-bounds calories → auto-staged with <code>stage_reason</code>.</li>
+      <li>Verify assertions: old 14-param version absent; new 15-param version present.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/037_stage_reason.sql</span>
+      <span class="new-tag">Step 1</span>
+    </div>
+    <p>Adds <code>stage_reason TEXT</code> to <code>media_inbox</code> and <code>stg_food_log_review</code>. Drain writes the reason when an item is routed to staging — low confidence, plausibility failure, missing fields, or forced.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/038_supplement_biomarker_align.sql</span>
+      <span class="new-tag">Step 1</span>
+    </div>
+    <p>Aligns supplement and biomarker RPCs with the food pattern. Adds <code>p_force_stage</code> + <code>p_stage_reason</code> to both; adds <code>stage_reason</code> to <code>stg_biomarker_review</code> + <code>stg_supplement_intake_review</code>. Biomarker RPC adds DB-side <code>plausible_min/max</code> gate from <code>metric_definitions</code>. Drain uses per-kind completeness gates (<code>supplement_is_complete</code>, <code>biomarker_is_complete</code>). All three RPCs now return <code>{id, status, stage_reason}</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/039_supplement_rpc_fix_generated_taken_on.sql</span>
+      <span class="new-tag">Step 1</span>
+    </div>
+    <p>Fixes <code>maintainer_ingest_supplement</code> error 428C9. <code>supplement_intake_logs.taken_on</code> is a <code>GENERATED ALWAYS AS ((taken_at AT TIME ZONE 'UTC')::date)</code> column — it cannot appear in the INSERT column list. Migration removes it from the INSERT target (Postgres auto-populates from <code>taken_at</code>); keeps it in the <code>ON CONFLICT</code> target where it is valid.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/040_write_contract_audit.sql</span>
+      <span class="new-tag">Step 1</span>
+    </div>
+    <p>Write-contract audit pass across all three ingest RPCs. Closes gaps found during review.</p>
+    <ul>
+      <li>Adds <code>'telegram'</code> to <code>supplement_intake_logs.source</code> CHECK constraint (was missing — drain inserts <code>source='telegram'</code> but column rejected it).</li>
+      <li>DB-side NOT NULL guards in supplement (<code>supplement_id</code>), biomarker (<code>metric_definition_id</code>, <code>value</code>), and food (<code>description</code>, <code>meal_type</code> CHECK excludes <code>'unknown'</code>).</li>
+      <li>Fixed food RETURN: now emits <code>v_stage_reason</code> (DB-computed) instead of <code>p_stage_reason</code> (caller-passed). Correctly surfaces DB-side routing decisions to the drain.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/041_food_reference_viome_peruser.sql</span>
+      <span class="new-tag">Step 2</span>
+    </div>
+    <p>Shared macro library + per-profile Viome guidance. Three new SECURITY DEFINER lookup RPCs.</p>
+    <ul>
+      <li><strong><code>food_reference</code></strong> table: shared macro library. <code>profile_id IS NULL</code> = global (all profiles); <code>profile_id = uuid</code> = personal. Columns: name, aliases[], serving_desc, macros, brand, source, verified. Two partial unique indexes (case-insensitive). RLS: global readable by all authenticated; personal rows by owner only; global writes = service_role only. Seed: Hooray Strawberry Shake (global, 250 kcal, 31g P, 22g C, 4g F).</li>
+      <li><strong><code>food_guidance.profile_id</code></strong> FK added: <code>NULL</code> = family-wide, <code>UUID</code> = belongs to that profile. All 86 existing rows migrated to the maintainer profile dynamically (no hardcoded UUID). <code>effective_food_guidance</code> view updated to filter per profile. RLS updated: global rows readable by all; personal rows by owner only.</li>
+      <li><strong><code>lookup_food_reference(p_name, p_profile_id)</code></strong> SECURITY DEFINER — case-insensitive name/alias match; personal before global. <code>GRANT EXECUTE TO authenticated</code>.</li>
+      <li><strong><code>lookup_viome_verdicts(p_items text[], p_profile_id)</code></strong> SECURITY DEFINER — bulk avoid/minimize/superfood check. Returns <code>{item, effective_classification, reason}[]</code>. DEFINER needed: <code>effective_food_guidance</code> is <code>security_invoker</code>; drainer would see wrong guidance without DEFINER.</li>
+      <li><strong><code>promote_food_to_reference(p_name, p_profile_id, macros…)</code></strong> SECURITY DEFINER — upserts personal-scope entry; ready for learn-from-past flow.</li>
+      <li><code>system_config</code> key: <code>food_reference.learn_min_logs = 2</code> (Rule #1: no hardcoded thresholds).</li>
+    </ul>
   </div>
 
   <!-- Edge Functions -->
@@ -493,20 +565,41 @@
     <div class="card-header">
       <span class="badge py">PY</span>
       <span class="path">monitor/inbox_drain.py</span>
-      <span class="new-tag">Phase 3B complete</span>
+      <span class="new-tag">v3.13.0</span>
     </div>
-    <p>Fully autonomous cloud Routine entrypoint. Run with <code>python -m monitor.inbox_drain --once</code> — fetches settled items, clusters, extracts via Anthropic vision API, writes via SECURITY DEFINER RPCs, sends Telegram confirmations, prints JSON summary. Uses <code>lib.db_rest</code> (httpx only — no psycopg2).</p>
+    <p>Fully autonomous cloud Routine entrypoint. Run with <code>python -m monitor.inbox_drain --once</code> — fetches settled items, clusters, extracts via Anthropic vision API, writes via SECURITY DEFINER RPCs, sends Telegram confirmations + Viome cross-check + daily brief, prints JSON summary. Uses <code>lib.db_rest</code> (httpx only — no psycopg2).</p>
     <ul>
-      <li><code>run_once(db, cfg, api_key, token) → dict</code> — full drain loop. Returns <code>{fetched, clustered, written, staged, failed, errors:[]}</code>.</li>
-      <li><code>vision_extract(api_key, model, image_blocks, caption, kind, now_iso)</code> — POSTs to <code>https://api.anthropic.com/v1/messages</code>. Model from <code>drain.vision_model</code> system_config. Returns parsed JSON or <code>{confidence:0, _error:"..."}</code> on failure — always routes to staging rather than crashing.</li>
-      <li><code>content_cluster_ungrouped(api_key, model, items)</code> — text-only API call groups ungrouped items by caption/kind. Single item skips API call; falls back to singletons on any error.</li>
-      <li><code>build_clusters(items)</code> — album clusters (shared <code>media_group_id</code> ≥ 2) + ungrouped.</li>
-      <li><code>claim(db, item_id)</code> — atomic PATCH <code>pending → processing</code>; returns False if another fire won the race.</li>
-      <li><code>get_signed_url / _download_image / _image_block</code> — Storage access pipeline; <code>storage_path=None</code> skips gracefully.</li>
-      <li><code>write_food / write_biomarker / write_supplement</code> — call SECURITY DEFINER RPC; mark rows done/staged.</li>
-      <li><code>compose_confirmation(kind, rpc_status, extracted, is_minor)</code> — minor-safe: growth/performance framing only when <code>is_minor=True</code>.</li>
+      <li><code>run_once(db, cfg, api_key, token) → dict</code> — full drain loop. Returns <code>{fetched, clustered, written, staged, failed, errors:[]}</code>. After end-of-run summary: calls <code>compose_brief()</code> for each adult profile with ≥1 food write (best-effort, never raises).</li>
+      <li><code>vision_extract(api_key, model, image_blocks, caption, kind, now_iso)</code> — POSTs to Anthropic. Model from <code>drain.vision_model</code>. Returns parsed JSON or error dict.</li>
+      <li><code>content_cluster_ungrouped / build_clusters / claim</code> — clustering + atomic claim.</li>
+      <li><code>write_food / write_biomarker / write_supplement</code> — SECURITY DEFINER RPC + mark rows done/staged. All accept <code>force_stage</code> + <code>stage_reason</code>.</li>
+      <li><code>food_is_complete / supplement_is_complete / biomarker_is_complete</code> — completeness gates before auto-write.</li>
+      <li><strong>Food pipeline additions:</strong> <code>_food_reference_candidates(caption, food_item)</code> — ordered candidate list for reference lookup. <code>lookup_food_reference(db, candidates, profile_id)</code> — RPC-based macro lookup; personal before global. <code>lookup_past_food_macros(db, description, profile_id, min_logs)</code> — past confirmed entries for learn-from-past offer. <code>_food_reference_candidates</code> → caption first, then vision description, then foods[] ingredient names.</li>
+      <li><strong>Viome pipeline:</strong> <code>lookup_viome_verdicts(db, candidates, profile_id)</code> — bulk RPC; returns <code>{item, effective_classification, reason}[]</code>. <code>compute_meal_verdict(verdicts) → (verdict, flags[])</code> — worst-case: avoid &gt; minimize &gt; superfood &gt; clean. Stores <code>verdict + flags[]</code> on <code>food_logs</code> via <code>db.update</code> after insert. Adult only — never runs for minors.</li>
+      <li><code>_viome_verdict_lines(verdicts)</code> — composes ⚠️ AVOID / ⚠️ minimize / ✅ superfood lines for Telegram confirmation.</li>
+      <li><code>_VISION_PROMPTS["food"]</code> — extended to instruct ingredient decomposition: Thai/Indian/composite dishes must list constituent ingredients in <code>foods[]</code>; explicitly surfaces coconut milk/oil/flesh, dairy, alliums, high-sugar fruits, fatty cuts.</li>
+      <li><code>compose_confirmation(kind, rpc_status, extracted, is_minor)</code> — minor-safe framing; appended Viome lines and learn offer for adults.</li>
       <li><code>telegram_send(token, chat_id, text)</code> — best-effort, never raises.</li>
-      <li>CLI: <code>python -m monitor.inbox_drain --once</code> — print JSON summary, exit 0/1. Without <code>--once</code>: dry-run cluster summary only.</li>
+      <li>CLI: <code>python -m monitor.inbox_drain --once</code>.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">monitor/brief.py</span>
+      <span class="new-tag">v3.13.0 — new</span>
+    </div>
+    <p>Daily health brief composer. Called from <code>run_once()</code> after every adult food write; also runnable directly via CLI. Assembles a structured Telegram message from four data sources, then asks Claude for 2-4 concrete rest-of-day actions. Minor-safe: Viome section suppressed; growth/performance framing in food and actions.</p>
+    <ul>
+      <li><code>compose_brief(db, profile_id, cfg, api_key, token, today) → str</code> — looks up <code>chat_id + is_minor</code> from <code>telegram_identities</code>; loads targets from <code>lib.context.load_context</code>.</li>
+      <li><strong>Food section:</strong> <code>_fetch_food_full</code> — kcal, protein, carbs, fat, meal count from <code>food_logs</code>. Shown vs targets with remaining. Minor: growth-fuelling nudge if &lt;60% of target.</li>
+      <li><strong>Supplements section:</strong> <code>_fetch_supplement_status</code> — active regimen entries (name + timing[]) + today's <code>supplement_intake_logs</code>. Groups by timing slot (morning/lunch/dinner/bedtime/anytime); ✅ taken / ⬜ not taken; current slot marked ←.</li>
+      <li><strong>WHOOP section:</strong> <code>_fetch_whoop</code> — most recent <code>whoop_cycles</code> row (recovery%, HRV ms, RHR bpm, sleep h:mm). Stale flag if <code>cycle_start &lt; today</code>.</li>
+      <li><strong>Viome section (adult only):</strong> <code>_fetch_today_viome_flags</code> — today's <code>food_logs</code> rows where <code>verdict IS NOT NULL AND verdict &lt;&gt; 'clean'</code>; surfaces <code>flags[]</code> for avoid/minimize + superfoods.</li>
+      <li><strong>Actions section:</strong> <code>_call_claude_actions</code> — calls Claude with a structured context prompt; returns 2-4 numbered action sentences. Model: <code>system_config.brief.model</code> (default: <code>claude-haiku-4-5-20251001</code>). Best-effort — empty string on failure.</li>
+      <li>Sends via <code>telegram_send</code> (lazy import from <code>inbox_drain</code> — avoids circular import at module level).</li>
+      <li>CLI: <code>python -m monitor.brief --profile-id &lt;uuid&gt; [--today YYYY-MM-DD]</code></li>
     </ul>
   </div>
 
@@ -568,33 +661,44 @@
       <span class="badge test">TEST</span>
       <span class="badge py">PY</span>
       <span class="path">tests/unit/test_inbox_drain.py</span>
-      <span class="new-tag">Phase 3B — 25 tests</span>
+      <span class="new-tag">93 tests</span>
     </div>
-    <p>25 unit tests for <code>monitor/inbox_drain.py</code> + <code>lib/db_rest.py</code>. All mocked — <code>httpx.MockTransport</code> for DB, <code>MagicMock</code> for Anthropic API. No live DB or HTTP.</p>
+    <p>93 unit tests for <code>monitor/inbox_drain.py</code> + <code>lib/db_rest.py</code>. All mocked — <code>httpx.MockTransport</code> for DB, <code>MagicMock</code> for Anthropic API. No live DB or HTTP.</p>
     <ul>
-      <li><span class="ok">✓</span> vision_extract: parses food JSON correctly</li>
-      <li><span class="ok">✓</span> vision_extract: strips markdown code fences</li>
-      <li><span class="ok">✓</span> vision_extract: parse error → <code>{confidence:0, _error:...}</code></li>
-      <li><span class="ok">✓</span> vision_extract: HTTP 500 → error dict, never raises</li>
+      <li><span class="ok">✓</span> vision_extract: parses food JSON; strips fences; parse/HTTP error → error dict; never raises</li>
       <li><span class="ok">✓</span> _image_block: correct Anthropic content block shape</li>
-      <li><span class="ok">✓</span> build_clusters: shared media_group_id → one album cluster</li>
-      <li><span class="ok">✓</span> build_clusters: single mgid row → ungrouped</li>
-      <li><span class="ok">✓</span> build_clusters: two unrelated → two ungrouped</li>
-      <li><span class="ok">✓</span> content_cluster: single item → no API call</li>
-      <li><span class="ok">✓</span> content_cluster: API groups two → one cluster</li>
-      <li><span class="ok">✓</span> content_cluster: API keeps separate → two singletons</li>
-      <li><span class="ok">✓</span> content_cluster: API error → singletons, never raises</li>
-      <li><span class="ok">✓</span> merge_caption: deduplicates identical captions</li>
-      <li><span class="ok">✓</span> merge_caption: handles empty/null captions</li>
-      <li><span class="ok">✓</span> write_food: high confidence → inserted</li>
-      <li><span class="ok">✓</span> write_food: low confidence → staged</li>
-      <li><span class="ok">✓</span> write_biomarker: missing metric_definition_id → no KeyError</li>
-      <li><span class="ok">✓</span> write_supplement: missing supplement_id → no KeyError</li>
-      <li><span class="ok">✓</span> minor framing: food / staged / lab — no deficit words</li>
-      <li><span class="ok">✓</span> run_once: high-conf → written=1, staged=0, failed=0</li>
-      <li><span class="ok">✓</span> run_once: low-conf → staged=1</li>
-      <li><span class="ok">✓</span> run_once: vision error → failed=1, errors non-empty</li>
-      <li><span class="ok">✓</span> run_once: empty inbox → summary zeros, no API calls</li>
+      <li><span class="ok">✓</span> build_clusters: album / singleton / two unrelated → correct groupings</li>
+      <li><span class="ok">✓</span> content_cluster: single item skips API; groups two; keeps separate; error → singletons</li>
+      <li><span class="ok">✓</span> merge_caption: deduplicates; handles empty/null</li>
+      <li><span class="ok">✓</span> write_food: high confidence → inserted; low → staged; force_stage flag forwarded</li>
+      <li><span class="ok">✓</span> write_biomarker / write_supplement: missing IDs → no KeyError</li>
+      <li><span class="ok">✓</span> minor framing: food / staged / lab — no deficit language</li>
+      <li><span class="ok">✓</span> run_once: written=1, staged=1, failed=1, empty inbox — all paths correct</li>
+      <li><span class="ok">✓</span> food_is_complete / biomarker_is_complete / supplement_is_complete</li>
+      <li><span class="ok">✓</span> completeness gate: complete shake → auto-write; bare caption → stages</li>
+      <li><span class="ok">✓</span> food list (multi-item): each item writes separately</li>
+      <li><span class="ok">✓</span> totals line: adult with targets; minor growth framing; no totals → ''</li>
+      <li><span class="ok">✓</span> food reference: Hooray resolves global macros → correct macros reach RPC</li>
+      <li><span class="ok">✓</span> Viome: avoid → ⚠️ + ingredient + "AVOID" in message; superfood → ✅; verdict suppressed for minor</li>
+      <li><span class="ok">✓</span> food_reference_candidates: caption first; no duplicates</li>
+      <li><span class="ok">✓</span> learn-from-past: no ref hit + past macros → 💡 offer with count</li>
+      <li><span class="ok">✓</span> <strong>Step 2:</strong> green curry → coconut milk in viome candidates; compute_meal_verdict worst-case (avoid wins, minimize-only, clean)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge py">PY</span>
+      <span class="path">tests/unit/test_brief.py</span>
+      <span class="new-tag">v3.13.0 — 4 tests</span>
+    </div>
+    <p>4 unit tests for <code>monitor/brief.py</code>. All mocked — <code>MagicMock</code> for DB + Anthropic. No live DB or HTTP.</p>
+    <ul>
+      <li><span class="ok">✓</span> compose_brief: full flow → telegram_send called once; message contains food totals, WHOOP data, supplement name</li>
+      <li><span class="ok">✓</span> compose_brief: no telegram identity → returns '' and does not call telegram_send</li>
+      <li><span class="ok">✓</span> _supps_section: taken/untaken count correct; ✅ / ⬜ markers correct</li>
+      <li><span class="ok">✓</span> minor framing: is_minor=True → no Viome section; is_minor flag forwarded to _call_claude_actions</li>
     </ul>
   </div>
 
@@ -668,7 +772,7 @@
       <span class="path" style="margin-left:8px">CLAUDE.md</span>
       <span class="path" style="margin-left:8px">docs/SCHEMA-MAP.md</span>
     </div>
-    <p>CHANGELOG tracks every version with full detail (current: v3.6.0). CLAUDE.md has non-negotiable rules + current state. SCHEMA-MAP auto-generated from <code>pg_description</code>.</p>
+    <p>CHANGELOG tracks every version with full detail (current: v3.13.0). CLAUDE.md has non-negotiable rules + current state. SCHEMA-MAP auto-generated from <code>pg_description</code>.</p>
   </div>
 </section>
 
@@ -743,7 +847,22 @@
        │  if kind=supp   → write_supplement (lookup supplement UUID)
        │  else           → write_food (confidence=0 → staging)
        ├─ mark_rows(<span class="db">media_inbox</span>, status: done|staged|failed)
-       └─ <span class="fn">compose_confirmation</span>(kind, status, extracted, is_minor) → telegramSend
+       ├─ <span class="fn">compose_confirmation</span>(kind, status, extracted, is_minor) → telegramSend
+       │
+       └─ if kind=food AND inserted AND adult:
+            ├─ <span class="fn">lookup_viome_verdicts</span>(<span class="db">effective_food_guidance</span>)  ← ingredient-level
+            ├─ <span class="fn">compute_meal_verdict</span>  → worst-case (avoid&gt;minimize&gt;superfood&gt;clean)
+            ├─ <span class="db">food_logs</span>.verdict + .flags[] ← stored via db.update (best-effort)
+            └─ append ⚠️/✅ verdict lines to Telegram confirmation
+
+  └─ end-of-run summary per chat
+  └─ for each adult profile with food_written &gt; 0:
+       └─ <span class="fn">compose_brief</span>(<span class="db">food_logs</span>, <span class="db">supplement_regimens</span>, <span class="db">whoop_cycles</span>, <span class="db">food_logs.verdict</span>)
+            ├─ food: kcal/protein/carbs/fat vs targets
+            ├─ supps: by timing slot ✅/⬜, current slot marked ←
+            ├─ WHOOP: recovery%, HRV, RHR, sleep (⚠️ if cycle_start &lt; today)
+            ├─ Viome (adult): today's avoid/minimize/superfood items
+            └─ Claude haiku → 2-4 rest-of-day actions → telegramSend
 
   └─ print JSON: {"fetched":N,"clustered":N,"written":N,"staged":N,"failed":N,"errors":[]}
   └─ exit 0 (no failures) | 1 (any failure)</div>
@@ -751,7 +870,7 @@
 
 <!-- ── PUSH THRESHOLDS ────────────────────────────────────────────────────── -->
 <section>
-  <h2>system_config Thresholds (migrations 030 + 031 + 034)</h2>
+  <h2>system_config Thresholds (migrations 030 + 031 + 034 + 041)</h2>
   <table class="push-table">
     <thead>
       <tr>
@@ -773,6 +892,8 @@
       <tr><td><code>routine.last_fire_at</code></td><td>(epoch)</td><td>ISO-8601 last Routine fire. Epoch initial value → first message always fires. Atomic CAS dedup key.</td></tr>
       <tr><td><code>routine.fire_dedup_sec</code></td><td>300</td><td>Min seconds between Routine fires from telegram-webhook. Prevents duplicate runs from rapid messages.</td></tr>
       <tr><td><code>drain.vision_model</code></td><td>"claude-sonnet-4-6"</td><td>Anthropic model used by <code>inbox_drain --once</code> for vision extraction. Must be vision-capable.</td></tr>
+      <tr><td><code>food_reference.learn_min_logs</code></td><td>2</td><td>Minimum past confirmed food_log entries with the same description before offering to promote to the user's personal food_reference library.</td></tr>
+      <tr><td><code>brief.model</code></td><td>"claude-haiku-4-5-20251001"</td><td>Anthropic model used by <code>monitor/brief.py</code> for generating rest-of-day action suggestions. Defaults to haiku for speed and cost.</td></tr>
     </tbody>
   </table>
 </section>
@@ -794,8 +915,16 @@
       <span class="phase-done">Phase 3B ✓</span>
       <span class="path">Autonomous --once entrypoint with vision extraction</span>
     </div>
-    <p>Migrations 034–035 applied. <code>inbox_drain --once</code> is the complete drain loop: vision extraction (Anthropic API), content clustering, write RPCs, Telegram confirmations. 25 tests passing. <code>ROUTINE-PROMPT.md</code> updated to minimal 3-line RUN-MODE prompt.</p>
+    <p>Migrations 034–035 applied. <code>inbox_drain --once</code> is the complete drain loop: vision extraction (Anthropic API), content clustering, write RPCs, Telegram confirmations. <code>ROUTINE-PROMPT.md</code> updated to minimal 3-line RUN-MODE prompt.</p>
     <p style="margin-top:8px;color:var(--warn)">⚠ Remaining: wire <code>ROUTINE_TRIGGER_URL</code> + <code>ROUTINE_BEARER</code> in Supabase Edge secrets so <code>telegram-webhook</code> actually fires the Routine. Without these, the fire trigger silently no-ops.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-done">Steps 1 &amp; 2 ✓</span>
+      <span class="path">Completeness gates + Viome cross-check + daily brief (v3.7.0–v3.13.0)</span>
+    </div>
+    <p>Migrations 036–041 applied. Completeness gates, force-stage, stage_reason, write-contract audit, food_reference library, per-user Viome guidance. Ingredient-level decomposition in vision prompt. Meal verdict stored on food_logs. <code>monitor/brief.py</code> — structured daily brief sent after every adult food write. 97 unit tests (93 inbox_drain + 4 brief).</p>
   </div>
 
   <div class="card">
