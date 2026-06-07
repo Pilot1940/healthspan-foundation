@@ -496,6 +496,119 @@ def compose_confirmation(kind: str, rpc_status: str, extracted: dict, is_minor: 
     return "✅ Logged."
 
 
+# ── running totals (PostgREST — no psycopg2 in cloud) ────────────────────────
+
+def _load_profile_contexts(identities: list[dict]) -> dict[str, dict]:
+    """Map profile_id → parsed context dict from context/<slug>.context.md.
+    Missing or unreadable context files → empty dict for that profile.
+    """
+    try:
+        from lib.context import load_context
+    except ImportError:
+        return {}
+    result: dict[str, dict] = {}
+    for ident in identities:
+        pid = str(ident.get("profile_id") or "")
+        name = str(ident.get("display_name") or "")
+        if not pid or not name:
+            continue
+        slug = name.strip().lower()
+        try:
+            result[pid] = load_context(slug)
+        except Exception:
+            result[pid] = {}
+    return result
+
+
+def fetch_today_food_totals(db: DbRest, profile_id: str, today: str) -> dict:
+    """Today's food_logs macros via PostgREST. Returns {} on any error (best-effort)."""
+    try:
+        rows = db.select(
+            "food_logs",
+            select="calories,protein_g,carbs_g,fat_g",
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "log_date": f"eq.{today}",
+                "is_day_summary": "not.is.true",
+            },
+        )
+        kcal = round(sum(float(r.get("calories") or 0) for r in rows))
+        protein = round(sum(float(r.get("protein_g") or 0) for r in rows), 1)
+        return {"kcal": kcal, "protein_g": protein, "meals": len(rows)}
+    except Exception:
+        return {}
+
+
+def fetch_today_supplement_counts(db: DbRest, profile_id: str, today: str) -> dict:
+    """Active regimen count vs today's intake_logs. Returns {} on any error or no regimen."""
+    try:
+        regimens = db.select(
+            "supplement_regimens",
+            select="supplement_id",
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "status": "eq.active",
+                "start_date": f"lte.{today}",
+                "or": f"(end_date.is.null,end_date.gte.{today})",
+            },
+        )
+        total = len(regimens)
+        if not total:
+            return {}
+        regimen_ids = {r["supplement_id"] for r in regimens}
+        intakes = db.select(
+            "supplement_intake_logs",
+            select="supplement_id",
+            filters={"profile_id": f"eq.{profile_id}", "taken_on": f"eq.{today}"},
+        )
+        taken = sum(1 for r in intakes if r.get("supplement_id") in regimen_ids)
+        return {"taken": taken, "total": total}
+    except Exception:
+        return {}
+
+
+def _totals_line(
+    totals: dict,
+    supp: dict,
+    target_cal,
+    target_protein_g,
+    is_minor: bool,
+) -> str:
+    """One-line running-total appended to the Telegram confirmation after a food write.
+
+    Minor-safe: no deficit or restriction language.
+    Returns '' when totals is empty (query failed or no rows yet).
+    """
+    if not totals:
+        return ""
+    kcal = totals.get("kcal", 0)
+    protein = totals.get("protein_g", 0)
+
+    if is_minor:
+        line = f"Today: {kcal} kcal · {protein}g protein"
+        # Flag low intake with growth/performance framing only — never "not enough"
+        if target_cal and kcal < 0.6 * float(target_cal):
+            line += " — keep fuelling to stay strong 💪"
+        return line
+
+    # Adult
+    if target_cal:
+        pct = round(100.0 * kcal / float(target_cal)) if target_cal else 0
+        cal_str = f"{kcal} / {int(target_cal)} kcal ({pct}%)"
+    else:
+        cal_str = f"{kcal} kcal"
+
+    if target_protein_g:
+        prot_str = f"{protein} / {int(target_protein_g)}g protein"
+    else:
+        prot_str = f"{protein}g protein"
+
+    line = f"Today: {cal_str} · {prot_str}"
+    if supp and supp.get("total"):
+        line += f" · Supps {supp['taken']}/{supp['total']}"
+    return line
+
+
 # ── main loop ─────────────────────────────────────────────────────────────────
 
 def _process_cluster(
@@ -508,6 +621,10 @@ def _process_cluster(
     chat_is_minor: dict[str, bool],
     token: str,
     summary: dict,
+    *,
+    profile_ctx: dict | None = None,
+    per_chat: dict | None = None,
+    today: str | None = None,
 ) -> None:
     """Extract, write, and confirm one cluster. Updates summary in place."""
     profile_id = cluster[0]["profile_id"]
@@ -540,6 +657,8 @@ def _process_cluster(
         # Recoverable parse failure — stage for review, not a hard fail
         mark_rows(db, _ids(cluster), "staged")
         summary["staged"] += 1
+        if per_chat is not None:
+            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
         msg = "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
         telegram_send(token, chat_id, msg)
         return
@@ -630,14 +749,27 @@ def _process_cluster(
 
     if rpc_status == "inserted":
         summary["written"] += 1
+        if per_chat is not None:
+            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["written"] += 1
     elif rpc_status == "staged":
         summary["staged"] += 1
+        if per_chat is not None:
+            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
     else:
         summary["failed"] += 1
         summary["errors"].append(f"cluster {_ids(cluster)} rpc returned {rpc_status!r}")
 
-    # Telegram confirmation
+    # Telegram confirmation — append running food totals after a successful write
     msg = compose_confirmation(kind, rpc_status, extracted, is_minor)
+    if rpc_status == "inserted" and kind == "food" and today and profile_ctx is not None:
+        ctx = profile_ctx.get(str(profile_id), {})
+        target_cal = (ctx.get("targets") or {}).get("daily_calories")
+        target_prot = (ctx.get("targets") or {}).get("protein_g")
+        totals = fetch_today_food_totals(db, str(profile_id), today)
+        supp = {} if is_minor else fetch_today_supplement_counts(db, str(profile_id), today)
+        tline = _totals_line(totals, supp, target_cal, target_prot, is_minor)
+        if tline:
+            msg = f"{msg}\n{tline}"
     telegram_send(token, chat_id, msg)
 
 
@@ -653,14 +785,17 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
     now_iso = datetime.now(timezone.utc).isoformat()
+    today_date = datetime.now(timezone.utc).date().isoformat()
 
-    # is_minor map for Telegram confirmations
+    # Identity maps for Telegram confirmations and context MD lookup
     identities = db.select(
         "telegram_identities",
-        select="chat_id,is_minor",
+        select="chat_id,is_minor,profile_id,display_name",
         filters={"status": "eq.active"},
     )
     chat_is_minor = {str(r["chat_id"]): bool(r.get("is_minor")) for r in identities}
+    profile_ctx = _load_profile_contexts(identities)
+    per_chat: dict[str, dict] = {}
 
     items = fetch_settled(db, settle_sec)
     summary["fetched"] = len(items)
@@ -706,11 +841,24 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
             _process_cluster(
                 db, cluster, api_key, model, now_iso,
                 conf_threshold, chat_is_minor, token, summary,
+                profile_ctx=profile_ctx, per_chat=per_chat, today=today_date,
             )
         except Exception as exc:
             summary["failed"] += 1
             summary["errors"].append(str(exc))
             mark_rows(db, _ids(cluster), "failed")
+
+    # End-of-run summary — one message per chat that had activity
+    for chat_id_str, stats in per_chat.items():
+        w, s = stats["written"], stats["staged"]
+        if w + s == 0:
+            continue
+        parts: list[str] = []
+        if w:
+            parts.append(f"{w} logged")
+        if s:
+            parts.append(f"{s} to review")
+        telegram_send(token, int(chat_id_str), f"Done — {', '.join(parts)}.")
 
     return summary
 

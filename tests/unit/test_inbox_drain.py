@@ -20,9 +20,12 @@ from lib.db_rest import DbRest
 from monitor.inbox_drain import (
     _image_block,
     _strip_fences,
+    _totals_line,
     build_clusters,
     compose_confirmation,
     content_cluster_ungrouped,
+    fetch_today_food_totals,
+    fetch_today_supplement_counts,
     food_is_complete,
     merge_caption,
     run_once,
@@ -325,13 +328,17 @@ def test_minor_lab_confirmation_no_deficit_language():
 
 # ── run_once ──────────────────────────────────────────────────────────────────
 
+_PC_PROFILE_ID = "21f69003-46f8-4e1c-a928-b1f694ce4aff"
+
+
 def _make_db_for_run_once(extra_responses: list[tuple[int, Any]] | None = None) -> DbRest:
     """Mock DB that returns: identities, inbox items, claim row, then extras.
 
     run_once receives cfg directly — it never calls get_config — so the first
     DB call is telegram_identities.
     """
-    identities = [{"chat_id": 99, "is_minor": False}]
+    identities = [{"chat_id": 99, "is_minor": False,
+                   "profile_id": _PC_PROFILE_ID, "display_name": "PC"}]
     inbox = [_item("r1", caption="chicken")]
     claim_ok = [{"id": "r1", "status": "processing"}]  # claim returns 1 row
 
@@ -351,7 +358,9 @@ def test_run_once_written():
     ])
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send"), \
+         patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
+         patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}):
         summary = run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -636,3 +645,239 @@ def test_unknown_kind_forces_stage_not_prod():
     assert summary["written"] == 0
     rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
     assert rpc["body"]["p_force_stage"] is True
+
+
+# ── fetch_today_food_totals ───────────────────────────────────────────────────
+
+def test_fetch_today_food_totals_sums_rows():
+    """Two food_logs rows → correct kcal/protein sum."""
+    rows = [
+        {"calories": 450, "protein_g": 40, "carbs_g": 20, "fat_g": 12},
+        {"calories": 320, "protein_g": 30, "carbs_g": 18, "fat_g": 6},
+    ]
+    db = _db([(200, rows)])
+    result = fetch_today_food_totals(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result["kcal"] == 770
+    assert result["protein_g"] == 70.0
+    assert result["meals"] == 2
+
+
+def test_fetch_today_food_totals_empty_returns_zeros():
+    """No food_logs rows today → kcal=0, meals=0 (not empty dict)."""
+    db = _db([(200, [])])
+    result = fetch_today_food_totals(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result["kcal"] == 0
+    assert result["meals"] == 0
+
+
+def test_fetch_today_food_totals_null_calories_skipped():
+    """NULL calories (row with no calorie data) → treated as 0."""
+    rows = [{"calories": None, "protein_g": 40, "carbs_g": 0, "fat_g": 0}]
+    db = _db([(200, rows)])
+    result = fetch_today_food_totals(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result["kcal"] == 0
+    assert result["meals"] == 1
+
+
+def test_fetch_today_food_totals_db_error_returns_empty():
+    """DB error (non-200) → returns {} silently (best-effort, never crashes drain)."""
+    db = _db([(500, {"message": "internal error"})])
+    result = fetch_today_food_totals(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result == {}
+
+
+# ── fetch_today_supplement_counts ────────────────────────────────────────────
+
+def test_fetch_today_supplement_counts_taken_and_total():
+    """3 active regimens, 2 taken today → {taken: 2, total: 3}."""
+    ids = ["s1", "s2", "s3"]
+    regimens = [{"supplement_id": sid} for sid in ids]
+    intakes = [{"supplement_id": "s1"}, {"supplement_id": "s2"}]  # s3 not taken
+    db = _db([(200, regimens), (200, intakes)])
+    result = fetch_today_supplement_counts(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result == {"taken": 2, "total": 3}
+
+
+def test_fetch_today_supplement_counts_no_regimens_returns_empty():
+    """No active regimens → {} (nothing to show)."""
+    db = _db([(200, [])])
+    result = fetch_today_supplement_counts(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result == {}
+
+
+def test_fetch_today_supplement_counts_none_taken():
+    """Regimens exist but nothing taken today → taken=0."""
+    db = _db([(200, [{"supplement_id": "s1"}, {"supplement_id": "s2"}]), (200, [])])
+    result = fetch_today_supplement_counts(db, _PC_PROFILE_ID, "2026-06-07")
+    assert result == {"taken": 0, "total": 2}
+
+
+# ── _totals_line ─────────────────────────────────────────────────────────────
+
+def test_totals_line_adult_with_targets():
+    """Adult with targets: shows kcal pct, protein fraction, supp count."""
+    totals = {"kcal": 950, "protein_g": 65.0, "meals": 2}
+    supp = {"taken": 4, "total": 16}
+    line = _totals_line(totals, supp, target_cal=2100, target_protein_g=180, is_minor=False)
+    assert "950 / 2100 kcal" in line
+    assert "45%" in line
+    assert "65.0 / 180g protein" in line
+    assert "Supps 4/16" in line
+
+
+def test_totals_line_adult_no_targets():
+    """Adult without targets: shows raw kcal and protein, still useful."""
+    totals = {"kcal": 800, "protein_g": 55.0, "meals": 2}
+    line = _totals_line(totals, {}, target_cal=None, target_protein_g=None, is_minor=False)
+    assert "800 kcal" in line
+    assert "55.0g protein" in line
+    assert "Supps" not in line
+
+
+def test_totals_line_minor_no_deficit_language():
+    """Minor: shows totals, no target percentage, no deficit/restriction words."""
+    totals = {"kcal": 1200, "protein_g": 45.0, "meals": 3}
+    line = _totals_line(totals, {}, target_cal=2400, target_protein_g=80, is_minor=True)
+    assert "1200 kcal" in line
+    assert "45.0g protein" in line
+    # No adult-style percentage or fraction
+    assert "%" not in line
+    assert "/ 2400" not in line
+    # No deficit/restriction words
+    for w in ("deficit", "restrict", "not enough", "low", "poor", "missing"):
+        assert w not in line.lower(), f"deficit word '{w}' in: {line}"
+
+
+def test_totals_line_minor_low_intake_positive_framing():
+    """Minor with very low kcal: growth/performance framing only — never 'not enough'."""
+    totals = {"kcal": 400, "protein_g": 20.0, "meals": 1}  # 400 < 60% of 2400
+    line = _totals_line(totals, {}, target_cal=2400, target_protein_g=80, is_minor=True)
+    # Must encourage, not shame
+    assert any(w in line.lower() for w in ("fuel", "strong", "energy", "💪")), (
+        f"expected positive framing in: {line}"
+    )
+    for w in ("deficit", "restrict", "not enough", "low", "poor"):
+        assert w not in line.lower(), f"deficit word '{w}' in: {line}"
+
+
+def test_totals_line_empty_totals_returns_empty_string():
+    """Empty totals dict (DB error) → '' so nothing gets appended to the message."""
+    assert _totals_line({}, {}, 2100, 180, is_minor=False) == ""
+
+
+# ── end-of-run summary ────────────────────────────────────────────────────────
+
+def test_run_once_sends_end_summary_written():
+    """After a successful write, run_once sends a 'Done — N logged' summary."""
+    db = _make_db_for_run_once([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),  # mark_rows
+    ])
+    with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
+         patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    calls = [str(c.args) for c in mock_tg.call_args_list]
+    summary_calls = [c for c in calls if "Done" in c]
+    assert len(summary_calls) == 1
+    assert "1 logged" in summary_calls[0]
+    assert "to review" not in summary_calls[0]
+
+
+def test_run_once_sends_end_summary_staged():
+    """A staged item → summary says 'to review', not 'logged'."""
+    incomplete = {**_FOOD_EXTRACTION, "calories": None, "protein_g": None,
+                  "carbs_g": None, "fat_g": None}
+    db = _make_db_for_run_once([
+        (200, {"id": "stg-uuid", "status": "staged"}),
+        (200, []),
+    ])
+    with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    calls = [str(c.args) for c in mock_tg.call_args_list]
+    summary_calls = [c for c in calls if "Done" in c]
+    assert len(summary_calls) == 1
+    assert "1 to review" in summary_calls[0]
+    assert "logged" not in summary_calls[0]
+
+
+def test_run_once_no_summary_on_failure_only():
+    """A hard failure (vision _error) with no writes or stages → no 'Done' message."""
+    error_extraction = {"confidence": 0.0, "_error": "api timeout"}
+    db = _make_db_for_run_once([(200, [])])  # mark_rows
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=error_extraction), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    calls = [str(c.args) for c in mock_tg.call_args_list]
+    assert not any("Done" in c for c in calls)
+
+
+# ── totals appended to food confirmation ─────────────────────────────────────
+
+def test_process_cluster_appends_totals_on_write():
+    """After a food write, the confirmation includes the totals line."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),  # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="protein shake")]
+    totals = {"kcal": 950, "protein_g": 65.0, "meals": 2}
+    ctx = {"targets": {"daily_calories": 2100, "protein_g": 180}}
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.fetch_today_food_totals", return_value=totals), \
+         patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={"taken": 4, "total": 16}), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {},
+                         "tok", summary,
+                         profile_ctx={cluster[0]["profile_id"]: ctx},
+                         today="2026-06-07")
+
+    msg = mock_tg.call_args.args[2]
+    assert "Today:" in msg
+    assert "950 / 2100 kcal" in msg
+    assert "Supps 4/16" in msg
+
+
+def test_process_cluster_no_totals_on_staged():
+    """Staged item → no totals line appended (food not in food_logs yet)."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1")]
+    incomplete = {**_FOOD_EXTRACTION, "calories": None, "protein_g": None,
+                  "carbs_g": None, "fat_g": None}
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
+         patch("monitor.inbox_drain.fetch_today_food_totals") as mock_totals, \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {},
+                         "tok", summary,
+                         profile_ctx={}, today="2026-06-07")
+
+    mock_totals.assert_not_called()
+    msg = mock_tg.call_args.args[2]
+    assert "Today:" not in msg

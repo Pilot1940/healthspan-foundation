@@ -1,5 +1,37 @@
 # HealthSpan Skill — Changelog
 
+## v3.8.0 — Drain richer confirmations: running totals + end-of-run summary (2026-06-07)
+
+- **Running food totals appended to each successful food write.** After `maintainer_ingest_food`
+  returns `inserted`, the drain fetches today's `food_logs` totals via PostgREST and appends a
+  one-line summary to the Telegram confirmation:
+  - Adult: `Today: 950 / 2100 kcal (45%) · 65 / 180g protein · Supps 4/16`
+  - Minor (Dea): `Today: 1200 kcal · 45g protein` — no target percentages, no adult framing;
+    low-intake flag uses growth/performance language only ("keep fuelling to stay strong 💪").
+- **Supplement status included** for non-minor profiles: counts taken vs active regimens today
+  (from `supplement_intake_logs` vs `supplement_regimens`). Two PostgREST calls; best-effort
+  — returns `{}` silently on any error so the confirmation still sends.
+- **Targets from context MD** (`context/<slug>.context.md`). `_load_profile_contexts` reads the
+  file for each active Telegram identity at run start (slug = `display_name.lower()`; e.g. "PC"
+  → `context/pc.context.md`). Graceful on missing file. `daily_calories` and `protein_g` from
+  the `## Targets / norms` section are used as comparison denominators.
+- **`telegram_identities` select extended** to `chat_id,is_minor,profile_id,display_name` so
+  context MDs can be loaded without an extra DB query.
+- **End-of-run summary** — after all clusters processed, one message per chat with any
+  activity: `Done — 2 logged, 1 to review.` No message for failure-only runs.
+- **`_process_cluster` signature**: added keyword-only `profile_ctx`, `per_chat`, `today` —
+  all optional with defaults, so every existing caller and test is unaffected.
+- **New functions** (all PostgREST, no psycopg2):
+  - `_load_profile_contexts(identities) -> dict[str, dict]`
+  - `fetch_today_food_totals(db, profile_id, today) -> dict`
+  - `fetch_today_supplement_counts(db, profile_id, today) -> dict`
+  - `_totals_line(totals, supp, target_cal, target_protein_g, is_minor) -> str`
+- **Tests** (+17, 53 in drain file, 196 total / 9 skipped): `fetch_today_food_totals`
+  (sum, empty, null-calories, DB error); `fetch_today_supplement_counts` (taken/total,
+  no regimens, none taken); `_totals_line` (adult with/without targets, minor no-deficit,
+  minor low-intake positive framing, empty returns ''); end-of-run summary (written,
+  staged, failure-only-no-message); totals appended on write / not on stage.
+
 ## v3.7.0 — Drain extraction fixes + completeness-based food gating (2026-06-07)
 
 Fixes from the first real drain run (2 failed, 3 staged — one a clean extraction wrongly held back).
