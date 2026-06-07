@@ -1,7 +1,10 @@
 # PC — HealthSpan Context
-<!-- v2.1 — 2026-06-04 — Rolled in reviewed 300-Day Plan v3.1: weight target 83 (stretch 80),
-     day-type calorie split + taper rule, VO2 45 long-term / 48 Mera stretch, peptides guardrail,
-     active-PF + bone-stress watch, lean +6kg flagged STRETCH. Supplements HELD for Jun-5 panel. -->
+<!-- v2.2 — 2026-06-07 — Jun 5 Metropolis panels ingested: insulin 28.3 (↓25%), HbA1c 5.6%,
+     fasting glucose 102.71, HsCRP 0.65, Vit D 22.2 (dropping), testosterone 391/20.3,
+     prolactin 28.4 (2x ULN — needs workup), B12 656, Mg 2.18, cortisol 15.1.
+     Supplement-hold gate CLEARED. -->
+<!-- v2.1 — 2026-06-04 — 300-Day Plan v3.1: weight 83 (stretch 80), day-type calorie split,
+     VO2 45 long-term / 48 Mera stretch, peptides guardrail, active-PF + bone-stress watch. -->
 <!-- v2.0 — 2026-06-03 — Updated with DEXA (Jun 2), uVida VO2max + Food (Jun 3) lab results -->
 profile_id: 21f69003-46f8-4e1c-a928-b1f694ce4aff   age: 45   sex: M   is_minor: false
 
@@ -84,13 +87,14 @@ Active 300-day plan (Jun 2026 → Apr 2027) targeting Mera Peak 6,476M summit.
 - next_retest: 2026-08-26
 
 ## Active conditions / contraindications
-- insulin_resistance: fasting insulin 37.7 µIU/mL (Mar 2026) — on Berberine 1500mg/day
+- insulin_resistance: fasting insulin 28.3 µIU/mL (Jun 5, 2026) — ↓25% from 37.7 Mar; still HIGH (ref 2-25). On Berberine 1500mg/day. HbA1c 5.6%, FG 102.71 — approaching prediabetic.
+- prolactin_elevated: 28.4 ng/mL (Jun 5) — persistent ~2x ULN (ref 3-14.7). Was 27.1 Mar. Needs physician workup (MRI pituitary / medication review).
 - l4l5_facet_injury: Mar 2026 — Phase 1 recovery, no spinal loading
 - shin_pain_peroneal: right outer shin, gradual onset at 9+ km/h treadmill (Jun 3)
 - plantar_fasciitis: ACTIVE — daily calf-eccentric + windlass stretch; physio review; PF must trend down within ~4 weeks or CUT XERO volume
 - footwear: XERO + Superfeet Green arch insole for walking; Altra Torin 8 for training deload; no treadmill running until shin pain resolved
 - bone_stress_watch: shin pain + Vit D 25 ng/mL + femur-neck T -1.3/-1.4 + loaded hiking = elevated bone-stress risk — do NOT progress pack weight through shin pain
-- vitamin_d_insufficient: 25 ng/mL (Mar 2026) — on D3 6200 IU/day
+- vitamin_d_insufficient: 22.2 ng/mL (Jun 5, 2026) — DROPPING despite D3 6200 IU/day (was 25 Mar, 11.8 Feb). Absorption issue likely — consider K2/fat co-administration or higher dose.
 - altitude_profile: slow acclimatiser, AMS at 4070M (May 2026), SpO2 85% at altitude
 
 ## Coaching framing
@@ -104,5 +108,5 @@ Active 300-day plan (Jun 2026 → Apr 2027) targeting Mera Peak 6,476M summit.
 - Caloric floor: never recommend eating below BMR 1935 kcal consistently.
 - Never program a caloric deficit during the pre-expedition taper (~3-4 weeks out) or the trek — taper to MAINTENANCE (~2514); never trek in a deficit.
 - peptides: PHYSICIAN-ONLY — unapproved (FDA safety-concern), no human RCTs, WADA-banned; never self-source or inject. Coach role: redirect to a doctor, never advise dosing.
-- Supplement protocol changes are HELD until the Jun-5 panel (plan gates this) — do not add or adjust supplements before then.
+- Supplement protocol changes: Jun-5 panel NOW AVAILABLE (gate cleared 2026-06-07). Adjustments can proceed based on results.
 - Running contraindicated until shin pain resolved — substitute cycling/swimming for VO2max intervals.
