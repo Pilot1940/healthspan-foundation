@@ -16,7 +16,11 @@
       "Bash(python scripts/github_issues.py)",
       "Bash(git push:*)",
       "Bash(python3 scripts/hs_ops.py backup)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(git stash *)",
+      "Bash(grep -v '^$')",
+      "Bash(gh auth *)",
+      "Bash(supabase projects *)"
     ]
   }
 }
