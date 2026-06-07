@@ -23,6 +23,7 @@ from monitor.inbox_drain import (
     build_clusters,
     compose_confirmation,
     content_cluster_ungrouped,
+    food_is_complete,
     merge_caption,
     run_once,
     vision_extract,
@@ -111,14 +112,25 @@ def test_vision_extract_strips_fences():
     assert _strip_fences(fenced) == '{"a": 1}'
 
 
-def test_vision_extract_parse_error_returns_error_dict():
-    """vision_extract returns {confidence: 0, _error: ...} on bad JSON."""
+def test_vision_extract_parse_error_returns_stage_reason():
+    """Bad JSON → {confidence: 0, _stage_reason: ...} so the item is STAGED, not failed."""
     bad_response = {"content": [{"type": "text", "text": "not json at all"}]}
     with patch("monitor.inbox_drain.httpx.post", return_value=_mock_http_resp(bad_response)):
         result = vision_extract("key", "model", [], "", "food", "now")
 
     assert result["confidence"] == 0.0
-    assert "_error" in result
+    assert result.get("_stage_reason") == "vision returned no parseable extraction"
+    assert "_error" not in result
+
+
+def test_vision_extract_empty_body_returns_stage_reason():
+    """Empty/shapeless response body → _stage_reason (fail-safe), never a crash."""
+    empty_response = {}  # no "content" key
+    with patch("monitor.inbox_drain.httpx.post", return_value=_mock_http_resp(empty_response)):
+        result = vision_extract("key", "model", [], "", "food", "now")
+
+    assert result["confidence"] == 0.0
+    assert result.get("_stage_reason") == "vision returned no parseable extraction"
 
 
 def test_vision_extract_api_error_returns_error_dict():
@@ -218,36 +230,38 @@ def test_merge_caption_empty():
 
 # ── inbox_drain: write_food (confidence routing) ──────────────────────────────
 
-def test_write_food_high_confidence_routes_to_prod():
-    """confidence >= threshold → RPC returns inserted → rows marked done."""
+def test_write_food_forwards_force_stage_false():
+    """write_food(force_stage=False) sends p_force_stage=False — RPC decides prod/stage."""
     from monitor.inbox_drain import write_food
 
-    prod_result = {"id": "food-uuid", "status": "inserted"}
-    db = _db([
-        (200, prod_result),    # rpc call
-        (200, []),             # mark_rows PATCH
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),  # rpc call
+        (200, []),                                          # mark_rows PATCH
     ])
     rows = [_item("r1")]
     result = write_food(db, rows, rows[0]["profile_id"],
                         {"meal_type": "lunch", "description": "grilled chicken"},
-                        confidence=0.9, raw_text="grilled chicken")
+                        confidence=0.9, raw_text="grilled chicken", force_stage=False)
     assert result.get("status") == "inserted"
+    rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc["body"]["p_force_stage"] is False
 
 
-def test_write_food_low_confidence_routes_to_staging():
-    """confidence < threshold → RPC returns staged → rows marked staged."""
+def test_write_food_forwards_force_stage_true():
+    """write_food(force_stage=True) sends p_force_stage=True — forces staging."""
     from monitor.inbox_drain import write_food
 
-    stg_result = {"id": "stg-uuid", "status": "staged"}
-    db = _db([
-        (200, stg_result),
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),
         (200, []),
     ])
     rows = [_item("r1")]
     result = write_food(db, rows, rows[0]["profile_id"],
                         {"meal_type": "unknown", "description": "blurry food"},
-                        confidence=0.3, raw_text="blurry")
+                        confidence=0.9, raw_text="blurry", force_stage=True)
     assert result.get("status") == "staged"
+    rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True
 
 
 # ── inbox_drain: write_biomarker / write_supplement unresolved-UUID paths ─────
@@ -350,14 +364,16 @@ def test_run_once_written():
 
 
 def test_run_once_staged():
-    """Low-confidence extraction → staged=1."""
-    low_conf = {**_FOOD_EXTRACTION, "confidence": 0.3}
+    """Incomplete extraction (no calories/macros) → staged=1, regardless of confidence."""
+    incomplete = {**_FOOD_EXTRACTION, "confidence": 0.95,
+                  "calories": None, "protein_g": None, "carbs_g": None,
+                  "fat_g": None, "fiber_g": None}
     db = _make_db_for_run_once([
         (200, {"id": "stg-uuid", "status": "staged"}),
         (200, []),
     ])
 
-    with patch("monitor.inbox_drain.vision_extract", return_value=low_conf), \
+    with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
          patch("monitor.inbox_drain.telegram_send"):
         summary = run_once(db, {
             "push.inbox_settle_sec": "0",
@@ -405,3 +421,218 @@ def test_run_once_empty_inbox():
     assert summary["fetched"] == 0
     assert summary["clustered"] == 0
     assert summary["written"] == 0
+
+
+# ── completeness gate (Bug 3) ─────────────────────────────────────────────────
+
+_COMPLETE_SHAKE = {
+    "meal_type": "snack",
+    "description": "protein shake",
+    "calories": 320,
+    "protein_g": 40,
+    "carbs_g": 18,
+    "fat_g": 6,
+    "fiber_g": 2,
+    "confidence": 0.5,  # low self-reported confidence — must NOT block a complete extraction
+}
+
+_BARE_CAPTION = {
+    "meal_type": "unknown",
+    "description": "had lunch",
+    "calories": None,
+    "protein_g": None,
+    "carbs_g": None,
+    "fat_g": None,
+    "confidence": 0.95,  # high confidence but incomplete — must stage
+}
+
+
+def test_food_is_complete_full_shake_true():
+    """A full-macro shake is complete even at 0.5 self-reported confidence."""
+    assert food_is_complete(_COMPLETE_SHAKE) is True
+
+
+def test_food_is_complete_bare_caption_false():
+    """No calories / no macros → not complete, regardless of high confidence."""
+    assert food_is_complete(_BARE_CAPTION) is False
+
+
+def test_food_is_complete_calories_only_false():
+    """Calories but no macro → not complete."""
+    assert food_is_complete({"description": "rice", "calories": 200}) is False
+
+
+def test_food_is_complete_no_description_false():
+    """Macros + calories but no description → not complete."""
+    assert food_is_complete({"calories": 200, "protein_g": 10}) is False
+
+
+def _db_capture(responses: list[tuple[int, Any]]) -> tuple[DbRest, list[dict]]:
+    """Like _db but records each request's parsed JSON body in the returned list."""
+    captured: list[dict] = []
+    idx = 0
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        nonlocal idx
+        try:
+            captured.append({"url": str(request.url), "body": json.loads(request.content or b"{}")})
+        except Exception:
+            captured.append({"url": str(request.url), "body": None})
+        status, body = responses[idx % len(responses)]
+        idx += 1
+        content = json.dumps(body).encode()
+        return httpx.Response(status, content=content,
+                              headers={"content-type": "application/json"})
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    db = DbRest.__new__(DbRest)
+    db._base = "https://test.supabase.co"
+    db._anon_key = "anon"
+    db._jwt = "jwt"
+    db._client = client
+    return db, captured
+
+
+def test_completeness_gate_complete_shake_autowrites():
+    """The 0.5-confidence full-macro shake must be WRITTEN (force_stage=False)."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),  # rpc
+        (200, []),                                          # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="protein shake")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["written"] == 1
+    assert summary["staged"] == 0
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc_call["body"]["p_force_stage"] is False
+
+
+def test_completeness_gate_bare_caption_stages():
+    """A bare caption (no calories/macros) must STAGE (force_stage=True)."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),  # rpc
+        (200, []),                                       # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="had lunch")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    assert summary["written"] == 0
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc_call["body"]["p_force_stage"] is True
+
+
+# ── list-of-foods write path (Bug 1) ──────────────────────────────────────────
+
+def test_food_list_writes_each_item():
+    """A list of foods (multi-item text) writes one RPC per item, marks cluster once."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),  # rpc item 1
+        (200, {"id": "f2", "status": "inserted"}),  # rpc item 2
+        (200, {"id": "f3", "status": "inserted"}),  # rpc item 3
+        (200, []),                                   # mark_rows (once)
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="shake + fish + rice")]
+
+    food_list = [
+        {"description": "protein shake", "calories": 320, "protein_g": 40, "confidence": 0.9},
+        {"description": "grilled fish", "calories": 400, "protein_g": 60, "confidence": 0.9},
+        {"description": "bowl rice", "calories": 200, "carbs_g": 45, "confidence": 0.9},
+    ]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
+    assert len(rpc_calls) == 3
+    assert summary["written"] == 1  # cluster counts once, all items inserted
+    assert summary["failed"] == 0
+    # one mark_rows PATCH on media_inbox
+    patches = [c for c in captured if "media_inbox" in c["url"]]
+    assert len(patches) == 1
+
+
+def test_food_list_mixed_status_stages_cluster():
+    """If any item in a list stages (none fail), the whole cluster is staged."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),  # complete item
+        (200, {"id": "f2", "status": "staged"}),    # incomplete item → staged
+        (200, []),                                   # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1")]
+
+    food_list = [
+        {"description": "shake", "calories": 320, "protein_g": 40, "confidence": 0.9},
+        {"description": "mystery side", "calories": None, "confidence": 0.9},
+    ]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    assert summary["written"] == 0
+    # second item incomplete → force_stage True
+    rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
+    assert rpc_calls[0]["body"]["p_force_stage"] is False
+    assert rpc_calls[1]["body"]["p_force_stage"] is True
+
+
+# ── empty-vision → staged (Bug 2) ─────────────────────────────────────────────
+
+def test_empty_vision_stages_not_fails():
+    """_stage_reason from vision_extract → cluster STAGED, never failed."""
+    db, captured = _db_capture([
+        (200, []),  # mark_rows PATCH (staged)
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1")]
+
+    stage_result = {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
+    with patch("monitor.inbox_drain.vision_extract", return_value=stage_result), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    assert summary["failed"] == 0
+    # no RPC call — staged before any write
+    assert not [c for c in captured if "rpc" in c["url"]]
+
+
+def test_unknown_kind_forces_stage_not_prod():
+    """A workout/unknown item must STAGE (force_stage=True), never auto-write to prod."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged"}),  # rpc
+        (200, []),                                       # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="workout", caption="ran 5k")]
+
+    # extraction with no kind re-dispatch → falls to the else branch
+    extraction = {"confidence": 0.9, "notes": "ran 5k"}
+    with patch("monitor.inbox_drain.vision_extract", return_value=extraction), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["staged"] == 1
+    assert summary["written"] == 0
+    rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc["body"]["p_force_stage"] is True

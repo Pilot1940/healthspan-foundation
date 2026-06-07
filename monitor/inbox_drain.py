@@ -141,11 +141,32 @@ def _write(db: DbRest, rows: list[dict], rpc_name: str, rpc_args: dict) -> dict:
     return result
 
 
-def write_food(
-    db: DbRest, rows: list[dict], profile_id: str,
-    extracted: dict[str, Any], confidence: float, raw_text: str,
+def food_is_complete(extracted: dict) -> bool:
+    """True when extraction has enough data to auto-write without review.
+
+    Requires description, calories (non-null), and at least one macro.
+    Plausibility bounds on calories are checked DB-side (food_energy_kcal in metric_definitions).
+    """
+    if not extracted.get("description"):
+        return False
+    cals = extracted.get("calories")
+    if cals is None:
+        return False
+    try:
+        float(cals)
+    except (TypeError, ValueError):
+        return False
+    return any(extracted.get(m) is not None for m in ("protein_g", "carbs_g", "fat_g"))
+
+
+def _food_rpc_args(
+    profile_id: str,
+    extracted: dict[str, Any],
+    confidence: float,
+    raw_text: str,
+    force_stage: bool,
 ) -> dict:
-    return _write(db, rows, "maintainer_ingest_food", {
+    return {
         "p_profile_id":  profile_id,
         "p_meal_type":   extracted.get("meal_type"),
         "p_description": extracted.get("description"),
@@ -160,7 +181,17 @@ def write_food(
         "p_foods":       extracted.get("foods"),
         "p_confidence":  confidence,
         "p_raw_text":    raw_text,
-    })
+        "p_force_stage": force_stage,
+    }
+
+
+def write_food(
+    db: DbRest, rows: list[dict], profile_id: str,
+    extracted: dict[str, Any], confidence: float, raw_text: str,
+    force_stage: bool = False,
+) -> dict:
+    return _write(db, rows, "maintainer_ingest_food",
+                  _food_rpc_args(profile_id, extracted, confidence, raw_text, force_stage))
 
 
 def write_biomarker(
@@ -317,8 +348,11 @@ def vision_extract(
 ) -> dict:
     """Call Anthropic Messages API to extract structured data from images + caption.
 
-    Returns a dict with extracted fields + 'confidence'. On failure returns
-    {"confidence": 0.0, "_error": "..."} — caller should route to staging.
+    Returns the parsed extraction — a dict, or a list of food dicts for multi-item text.
+    On a malformed/empty response body returns
+    {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"} so the
+    caller STAGES the item (fail-safe). On HTTP/network failure returns
+    {"confidence": 0.0, "_error": "..."} → caller marks it failed.
 
     Reads HS_ANTHROPIC_API_KEY from the api_key arg (platform reserves ANTHROPIC_API_KEY).
     """
@@ -351,8 +385,9 @@ def vision_extract(
         resp.raise_for_status()
         raw = resp.json()["content"][0]["text"]
         return json.loads(_strip_fences(raw))
-    except json.JSONDecodeError as exc:
-        return {"confidence": 0.0, "_error": f"parse error: {exc}"}
+    except (json.JSONDecodeError, KeyError, IndexError):
+        # Malformed or empty API response body — stage for review, not a hard failure
+        return {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
     except Exception as exc:
         return {"confidence": 0.0, "_error": str(exc)}
 
@@ -496,23 +531,67 @@ def _process_cluster(
     # Vision extraction
     extracted = vision_extract(api_key, model, image_blocks, caption, kind, now_iso)
 
-    if "_error" in extracted:
+    # Guard: vision_extract may return a list (multi-item food) or a dict with
+    # _error/_stage_reason. Normalize before checking sentinel keys.
+    if not isinstance(extracted, dict):
+        # Treat non-dict as a food list — handled in the food branch below
+        pass
+    elif "_stage_reason" in extracted:
+        # Recoverable parse failure — stage for review, not a hard fail
+        mark_rows(db, _ids(cluster), "staged")
+        summary["staged"] += 1
+        msg = "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+        telegram_send(token, chat_id, msg)
+        return
+    elif "_error" in extracted:
         summary["failed"] += 1
         summary["errors"].append(extracted["_error"])
         mark_rows(db, _ids(cluster), "failed")
         return
 
     # Handle "unknown" kind — re-dispatch based on what Claude returned
-    if kind == "unknown" and "kind" in extracted:
+    if isinstance(extracted, dict) and kind == "unknown" and "kind" in extracted:
         kind = extracted.get("kind", "unknown")
         extracted = extracted.get("data", extracted)
 
-    confidence = float(extracted.get("confidence", 0.0))
+    # Only the food branch handles a bare list; for other kinds coerce to the first
+    # dict (or {}) so a shape surprise stages rather than crashing the cluster.
+    if isinstance(extracted, list) and kind != "food":
+        extracted = extracted[0] if extracted and isinstance(extracted[0], dict) else {}
+
+    confidence = float(extracted.get("confidence", 0.0)) if isinstance(extracted, dict) else 0.0
     rpc_status = "failed"
 
     if kind == "food":
-        result = write_food(db, cluster, profile_id, extracted, confidence, raw_text)
-        rpc_status = result.get("status", "failed")
+        # Normalise: model may return a list for multi-item text (e.g. "shake + fish + rice")
+        food_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
+        statuses: list[str] = []
+        for food_item in food_items:
+            if not isinstance(food_item, dict):
+                statuses.append("failed")
+                continue
+            item_conf = float(food_item.get("confidence", confidence))
+            try:
+                res = db.rpc("maintainer_ingest_food", _food_rpc_args(
+                    profile_id, food_item, item_conf, raw_text,
+                    not food_is_complete(food_item),
+                )) or {}
+                statuses.append(res.get("status", "failed"))
+            except Exception as exc:
+                log.error("maintainer_ingest_food failed: %s", exc)
+                statuses.append("failed")
+        # Aggregate: all inserted → done; any staged (none failed) → staged; else failed
+        if not statuses or "failed" in statuses:
+            rpc_status = "failed"
+            mark_rows(db, _ids(cluster), "failed")
+        elif "staged" in statuses:
+            rpc_status = "staged"
+            mark_rows(db, _ids(cluster), "staged")
+        else:
+            rpc_status = "inserted"
+            mark_rows(db, _ids(cluster), "done")
+        # Use first item for confirmation message
+        extracted = food_items[0] if food_items and isinstance(food_items[0], dict) else {}
 
     elif kind in ("lab", "dexa"):
         biomarkers = extracted.get("biomarkers", [])
@@ -541,10 +620,12 @@ def _process_cluster(
         rpc_status = result.get("status", "failed")
 
     else:
-        # workout / truly unknown — stage as food for human review
+        # workout / truly unknown — always stage as food for human review.
+        # force_stage=True is required: maintainer_ingest_food now routes on p_force_stage,
+        # not confidence, so without it a 0.0-confidence unknown item would auto-write to prod.
         extracted.setdefault("meal_type", "unknown")
         extracted.setdefault("description", caption or "unknown item")
-        result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text)
+        result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text, force_stage=True)
         rpc_status = result.get("status", "failed")
 
     if rpc_status == "inserted":

@@ -131,7 +131,7 @@ def get_config(conn, key: str):
 
 def confidence_min(conn) -> float:
     """The minimum confidence to write straight to prod (else → staging)."""
-    return float(get_config(conn, "ingest.confidence_min"))
+    return float(get_config(conn, "ingest.confidence_threshold"))
 
 
 # ----------------------------------------------------------------------------

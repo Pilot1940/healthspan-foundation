@@ -1,5 +1,51 @@
 # HealthSpan Skill — Changelog
 
+## v3.7.0 — Drain extraction fixes + completeness-based food gating (2026-06-07)
+
+Fixes from the first real drain run (2 failed, 3 staged — one a clean extraction wrongly held back).
+
+- **Bug — `'list' object has no attribute 'get'`.** Multi-item text (e.g. "protein shake + 300g
+  grilled fish + 1 bowl rice") makes the model return a **list** of food dicts, but the write path
+  called `.get()` on it as a single dict. `_process_cluster`'s food branch now normalises to a list,
+  calls `maintainer_ingest_food` once per item, and marks the cluster once with an aggregate status
+  (any failed → failed; else any staged → staged; else done).
+- **Bug — empty / non-JSON vision response crashed → failed.** `vision_extract` now returns
+  `{"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}` on
+  `JSONDecodeError | KeyError | IndexError` (malformed or empty body). `_process_cluster` treats
+  `_stage_reason` as a **fail-safe stage**, not a hard fail. HTTP/network errors still return
+  `_error` → failed (unchanged).
+- **Confidence gating → completeness-based (Bug 3).** Self-reported model confidence is unreliable
+  (a full-macro protein shake scored 0.5 and was wrongly staged). New `food_is_complete(extracted)`:
+  auto-write requires `description AND calories AND ≥1 macro (protein_g|carbs_g|fat_g)`; otherwise
+  stage. Confidence is still **recorded** (`p_confidence`), no longer the primary gate. A second
+  plausibility gate on calories (`food_energy_kcal` bounds in `metric_definitions`) runs DB-side in
+  the new RPC — intended as the "1,020 kcal → 20" comma-slip backstop (asserted by construction;
+  to be verified once 036 is applied).
+- **Migration 036 — `maintainer_ingest_food` adds `p_force_stage boolean DEFAULT FALSE`.**
+  DROP + CREATE (param-list change can't use CREATE OR REPLACE). Python's completeness gate sets
+  `p_force_stage`; the RPC routes to `stg_food_log_review` when forced or when calories fall outside
+  the plausibility bound, else to `food_logs`. Auth guard (`is_maintainer() AND has_profile_access()`)
+  copied verbatim — routing changed, not auth. Re-applies full grant posture (`REVOKE FROM PUBLIC`
+  + `REVOKE FROM anon` + `GRANT TO authenticated`) since a fresh CREATE resets to PUBLIC EXECUTE.
+  `NOTIFY pgrst, 'reload schema'` in the tail so PostgREST picks up the new signature.
+- **Collapsed duplicate config keys.** `ingest.confidence_min` removed from `system_config`
+  (migration 036); `lib/contract.confidence_min()` now reads the single canonical
+  `ingest.confidence_threshold`. Both held the same value; readers in `ingest/{food,biomarker,supplement}.py`
+  are unaffected (they call `confidence_min()`, which now points at the surviving key).
+- **Tests (`tests/unit/test_inbox_drain.py`).** `food_is_complete` unit cases (0.5-confidence
+  shake → True, bare caption / calories-only / no-description → False); completeness gate asserts the
+  actual `p_force_stage` value sent to the RPC (shake → False/written, bare caption → True/staged);
+  list-of-foods write path (3 RPCs, 1 mark, all-inserted vs mixed-status); empty-vision → staged not
+  failed; unknown/workout kind → force_stage=True (never auto-writes to prod); `write_food` forwards
+  `force_stage`; `vision_extract` parse-error/empty-body → `_stage_reason`. The two former
+  confidence-routing tests were re-pointed to assert the sent `p_force_stage` (they had become
+  circular — the mock returned the status regardless of routing). 36 pass in the file; full unit
+  suite 179 passed / 9 skipped.
+
+⚠️ **Deploy ordering:** apply migration 036 **before** the new drain code runs against prod —
+the new Python sends `p_force_stage`, which 500s against the old 14-param signature until 036 is live.
+Apply: `python3 scripts/hs_ops.py apply migrations/036_completeness_gate.sql`.
+
 ## v3.6.0 — Telegram ingestion Phase 3B: autonomous drain with vision extraction (2026-06-07)
 
 - **Migration 032 — drain service identity + lock down ingest RPCs.**
