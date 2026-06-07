@@ -286,29 +286,30 @@ Deno.serve(async (req) => {
   const document: any | undefined = msg.document;
   const isMediaMessage = !!(photo?.length || document);
 
-  // Text-only messages: skip media_inbox entirely — fire the routine to send
-  // the current summary and ack. Nothing to stage or review.
+  // Text-only messages: skip media_inbox entirely — dispatch a GH Actions
+  // send-brief workflow for this profile and ack. Nothing to stage or review.
   if (!isMediaMessage) {
     await db.from("telegram_processed_updates").insert({ update_id: updateId });
     await telegramSend(chatId, "📊 Sending your summary...");
 
-    // Fire routine unconditionally (bypass dedup) so the brief is always sent
-    const routineUrl = Deno.env.get("ROUTINE_TRIGGER_URL");
-    if (routineUrl) {
-      const bearer = Deno.env.get("ROUTINE_BEARER") ?? "";
-      const nowMs = Date.now();
-      // Stamp last_fire_at so the dedup gate treats this as a recent fire
-      await db.from("system_config")
-        .update({ value: new Date(nowMs).toISOString(), updated_at: new Date(nowMs).toISOString() })
-        .eq("key", "routine.last_fire_at");
-      const fireTask = fetch(routineUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(bearer ? { "Authorization": `Bearer ${bearer}` } : {}),
+    const ghToken = Deno.env.get("GH_DISPATCH_TOKEN");
+    if (ghToken) {
+      const fireTask = fetch(
+        "https://api.github.com/repos/Pilot1940/healthspan-foundation/dispatches",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${ghToken}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          body: JSON.stringify({
+            event_type: "send-brief",
+            client_payload: { profile_id: profileId },
+          }),
         },
-        body: JSON.stringify({ trigger: "text_message", ts: nowMs, chat_id: chatId, profile_id: profileId }),
-      }).catch(() => {});
+      ).catch(() => {});
       if (typeof EdgeRuntime !== "undefined") {
         EdgeRuntime.waitUntil(fireTask);
       } else {

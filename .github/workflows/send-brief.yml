@@ -1,0 +1,51 @@
+name: Send Brief
+
+on:
+  repository_dispatch:
+    types: [send-brief]
+  workflow_dispatch:
+    inputs:
+      profile_id:
+        description: 'Profile ID to send brief for (leave blank for all active profiles)'
+        required: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      HS_AUTH_EMAIL: ${{ secrets.HS_AUTH_EMAIL }}
+      HS_AUTH_PASSWORD: ${{ secrets.HS_AUTH_PASSWORD }}
+      ANTHROPIC_API_KEY: ${{ secrets.HS_ANTHROPIC_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Send brief — event-driven (specific profile)
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          python3 -m monitor.brief \
+            --profile-id "${{ github.event.client_payload.profile_id }}"
+
+      - name: Send brief — manual (specific profile)
+        if: github.event_name == 'workflow_dispatch' && inputs.profile_id != ''
+        run: |
+          python3 -m monitor.brief \
+            --profile-id "${{ inputs.profile_id }}"
+
+      - name: Send brief — manual (all profiles)
+        if: github.event_name == 'workflow_dispatch' && inputs.profile_id == ''
+        run: python3 -m monitor.brief --all

@@ -103,7 +103,7 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
     try:
         rows = db.select(
             "whoop_cycles",
-            select="cycle_start,recovery_score_pct,hrv_ms,resting_hr_bpm,asleep_duration_min,sleep_performance_pct",
+            select="cycle_start,recovery_score_pct,hrv_ms,resting_hr_bpm,asleep_duration_min,sleep_performance_pct,energy_burned_cal",
             filters={"profile_id": f"eq.{profile_id}"},
             order="cycle_start.desc",
             limit=1,
@@ -119,6 +119,7 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
             "rhr":               r.get("resting_hr_bpm"),
             "sleep_min":         r.get("asleep_duration_min"),
             "sleep_performance": r.get("sleep_performance_pct"),
+            "energy_burned_cal": r.get("energy_burned_cal"),
             "stale":             stale,
         }
     except Exception:
@@ -145,7 +146,7 @@ def _fetch_today_viome_flags(db, profile_id: str, today: str) -> list[dict]:
 
 # ── formatting ────────────────────────────────────────────────────────────────
 
-def _food_section(totals: dict, targets: dict, is_minor: bool) -> str:
+def _food_section(totals: dict, targets: dict, is_minor: bool, energy_burned: int | None = None) -> str:
     if not totals:
         return "Food: no data yet"
     kcal  = totals.get("kcal", 0)
@@ -171,13 +172,18 @@ def _food_section(totals: dict, targets: dict, is_minor: bool) -> str:
     t_prot = targets.get("protein_g")
     t_carbs = targets.get("carbs_g")
     t_fat  = targets.get("fat_g")
-    return (
-        f"Food ({meals} entries):\n"
-        f"  Calories: {_vs(kcal, t_cal, ' kcal')}\n"
-        f"  Protein:  {_vs(prot, t_prot, 'g')}\n"
-        f"  Carbs:    {_vs(carbs, t_carbs, 'g')}\n"
-        f"  Fat:      {_vs(fat, t_fat, 'g')}"
-    )
+    lines = [
+        f"Food ({meals} entries):",
+        f"  Calories: {_vs(kcal, t_cal, ' kcal')}",
+        f"  Protein:  {_vs(prot, t_prot, 'g')}",
+        f"  Carbs:    {_vs(carbs, t_carbs, 'g')}",
+        f"  Fat:      {_vs(fat, t_fat, 'g')}",
+    ]
+    if energy_burned and energy_burned > 0:
+        deficit = energy_burned - kcal
+        sign = "−" if deficit > 0 else "+"
+        lines.append(f"  WHOOP burn: {energy_burned} kcal · net {sign}{abs(deficit)} kcal {'deficit' if deficit > 0 else 'surplus'}")
+    return "\n".join(lines)
 
 
 def _supps_section(supps: list[dict]) -> str:
@@ -347,7 +353,7 @@ def compose_brief(
     viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, today)
 
     model      = str(cfg.get("brief.model", _BRIEF_MODEL)).strip('"')
-    food_txt   = _food_section(food, targets, is_minor)
+    food_txt   = _food_section(food, targets, is_minor, energy_burned=whoop.get("energy_burned_cal"))
     supps_txt  = _supps_section(supps)
     whoop_txt  = _whoop_section(whoop, is_minor)
     viome_txt  = _viome_section(viome_flags)
@@ -376,7 +382,9 @@ def main() -> None:
     from lib.db_rest import DbRest, sign_in
 
     parser = argparse.ArgumentParser(description="Send a daily brief for a profile.")
-    parser.add_argument("--profile-id", required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--profile-id", help="Send brief for a specific profile UUID")
+    group.add_argument("--all", action="store_true", help="Send brief for all active adult profiles")
     parser.add_argument("--today", default=datetime.now(timezone.utc).date().isoformat())
     args = parser.parse_args()
 
@@ -390,15 +398,24 @@ def main() -> None:
             cfg = {r["key"]: r["value"] for r in rows}
         except Exception:
             pass
-        msg = compose_brief(
-            db,
-            profile_id=args.profile_id,
-            cfg=cfg,
-            api_key=os.environ["ANTHROPIC_API_KEY"],
-            token=os.environ["TELEGRAM_BOT_TOKEN"],
-            today=args.today,
-        )
-    print(msg or "(no brief sent — no identity found)")
+
+        api_key = os.environ["ANTHROPIC_API_KEY"]
+        token   = os.environ["TELEGRAM_BOT_TOKEN"]
+
+        if args.all:
+            # Send to all active adult profiles that have a linked Telegram identity
+            identities = db.select(
+                "telegram_identities",
+                select="profile_id",
+                filters={"status": "eq.active", "is_minor": "eq.false"},
+            )
+            profile_ids = [r["profile_id"] for r in identities]
+        else:
+            profile_ids = [args.profile_id]
+
+        for pid in profile_ids:
+            msg = compose_brief(db, profile_id=pid, cfg=cfg, api_key=api_key, token=token, today=args.today)
+            print(msg or f"(no brief sent for {pid})")
 
 
 if __name__ == "__main__":
