@@ -14,7 +14,9 @@
       "Bash(pip install:*)",
       "Bash(python scripts/run_migration.py migrations/001_initial_schema.sql)",
       "Bash(python scripts/github_issues.py)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python3 scripts/hs_ops.py backup)",
+      "Bash(python3 *)"
     ]
   }
 }

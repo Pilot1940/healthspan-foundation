@@ -1,5 +1,58 @@
 # HealthSpan Skill — Changelog
 
+## v3.6.0 — Telegram ingestion Phase 3B: autonomous drain with vision extraction (2026-06-07)
+
+- **Migration 032 — drain service identity + lock down ingest RPCs.**
+  - `family_memberships` rows for `healthspan.drain@chitalkar.com` (UID
+    `1e2084cf-b1c4-484b-8448-33750c4d8e6c`) → PC, Dea, Dev profiles as `owner`.
+    Gives drain service `is_maintainer()` = true and `has_profile_access()` = true for all
+    three profiles, satisfying SECURITY DEFINER RPC guards.
+  - `REVOKE EXECUTE FROM anon` on all three RPCs (Supabase assigns anon grants explicitly;
+    `REVOKE FROM PUBLIC` in migration 031 was insufficient). Verified anon grant count = 0.
+- **Migration 033 — drain identity re-key after account recreation.**
+  - `healthspan.drain@chitalkar.com` deleted + recreated → new UID
+    `06ada8f7-76d7-49bf-90ef-93a9103b8b11`. `ON DELETE CASCADE` removed migration 032 rows.
+    Re-inserted 3 `family_memberships` rows with new UID.
+- **Migration 034 — drain vision model config.**
+  - `drain.vision_model = "claude-sonnet-4-6"` in `system_config`. Read by `inbox_drain`
+    at runtime; no hardcoded model names.
+- **`monitor/inbox_drain.py` — fully autonomous `--once` entrypoint (Phase 3B rewrite).**
+  - New: `vision_extract(api_key, model, image_blocks, caption, kind, now_iso) → dict` — POSTs
+    to `https://api.anthropic.com/v1/messages` using `HS_ANTHROPIC_API_KEY` (platform reserves
+    the plain `ANTHROPIC_API_KEY`). Reads model from `drain.vision_model` system_config.
+    Returns parsed JSON or `{"confidence": 0.0, "_error": "..."}` on failure — always routes
+    to staging rather than crashing the drain.
+  - New: `content_cluster_ungrouped(api_key, model, items) → list[list[dict]]` — text-only
+    API call groups ungrouped inbox items by caption/kind similarity. Single item skips API
+    call. Falls back to singletons on any error.
+  - New: `get_signed_url(db, storage_path)`, `_download_image(url)`, `_image_block(bytes, ct)` —
+    Storage access pipeline. `storage_path=None` items skip gracefully.
+  - New: `telegram_send(token, chat_id, text)` — best-effort, never raises.
+  - New: `compose_confirmation(kind, rpc_status, extracted, is_minor) → str` — minor-safe:
+    no deficit/restriction language when `is_minor=True`; growth/performance framing only.
+  - New: `_process_cluster(...)` — complete single-cluster pipeline: download → vision →
+    UUID lookup → write RPC → mark rows → Telegram confirm. Updates summary dict in place.
+  - New: `run_once(db, cfg, api_key, token) → dict` — full drain loop. Returns
+    `{fetched, clustered, written, staged, failed, errors:[]}`.
+  - New: `__main__` with `argparse --once`: password-grant sign-in, runs `run_once`, prints
+    JSON summary to stdout, exits 0 (no failures) or 1 (any failure).
+- **`docs/ROUTINE-PROMPT.md` — replaced with minimal imperative version.**
+  - Previous: 9-step Routine orchestration guide for an LLM Routine to call.
+  - Now: 3-line RUN-MODE prompt — `python -m monitor.inbox_drain --once`, report JSON,
+    stop on error. No codebase exploration, no file edits, no architectural reasoning.
+- **`tests/unit/test_inbox_drain.py` — 21 tests (expanded from 17). All pass.**
+  - Added: `test_vision_extract_food_parsed`, `test_vision_extract_parse_error_returns_error_dict`,
+    `test_vision_extract_api_error_returns_error_dict`, `test_image_block_shape`.
+  - Added: `test_content_cluster_api_groups_two`, `test_content_cluster_api_keeps_separate`,
+    `test_content_cluster_api_failure_falls_back_to_singletons`.
+  - Added: `test_run_once_written`, `test_run_once_staged`, `test_run_once_failed_on_vision_error`,
+    `test_run_once_empty_inbox`.
+  - Mock strategy: `_mock_http_resp(body)` helper for httpx calls (MagicMock-based, avoids
+    Python 3.14 `httpx.Response(json=...)` unreliability). `_db()` uses
+    `content=json.dumps(body).encode()` + explicit content-type header.
+  - Key fix: `run_once` receives `cfg` directly — first DB call is `telegram_identities`,
+    not `get_config`. Mock response sequences corrected accordingly.
+
 ## v3.5.0 — Telegram ingestion Phase 3A: cloud drain + maintainer-ingest write path (2026-06-07)
 
 - **Migration 031 — media_group_id + system_config seeds + 3 SECURITY DEFINER RPCs.**

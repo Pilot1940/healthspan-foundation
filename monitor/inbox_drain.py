@@ -1,26 +1,27 @@
 """
-inbox_drain — Phase 3A cloud drain for media_inbox.
+inbox_drain — autonomous drain with built-in vision extraction.
 
-Fetch settled pending items, cluster by media_group_id, write via
-SECURITY DEFINER RPCs, mark done/staged.
+Run:  python -m monitor.inbox_drain --once
+Env:  SUPABASE_URL, SUPABASE_ANON_KEY, HS_AUTH_EMAIL, HS_AUTH_PASSWORD,
+      HS_ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
 
-Designed for cloud Routine environments: uses lib.db_rest (httpx only).
-The Routine's LLM handles the extraction step; this module handles
-all DB I/O before and after.
+The --once flag runs the full loop non-interactively:
+  fetch settled pending → atomic claim → download images from Storage →
+  vision extract via Anthropic API → cluster → write via maintainer_ingest_* RPC →
+  mark done/staged → send Telegram confirmation → print JSON summary.
 
-Cluster lifecycle:
-  1. fetch_settled()    — get items older than settle_sec
-  2. claim()            — atomic PATCH (pending → processing); skip if lost
-  3. build_clusters()   — split into album clusters + ungrouped singletons
-  4. <Routine LLM>      — vision-extract each cluster; content-cluster ungrouped
-  5. write_food/biomarker/supplement() — validate via RPC, mark rows done/staged
+No agent reasoning, no interactive steps.
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import httpx
 
 from lib.db_rest import DbRest
 
@@ -28,12 +29,15 @@ log = logging.getLogger(__name__)
 
 _SETTLE_SEC_FALLBACK = 90
 _CONFIDENCE_FALLBACK = 0.7
+_VISION_MODEL_FALLBACK = "claude-sonnet-4-6"
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+_ANTHROPIC_VERSION = "2023-06-01"
 
 
 # ── config ────────────────────────────────────────────────────────────────────
 
 def get_config(db: DbRest) -> dict[str, Any]:
-    """Read all system_config rows as {key: native_value}."""
+    """Read all active system_config rows as {key: value}."""
     rows = db.select("system_config", select="key,value", filters={"is_active": "eq.true"})
     return {r["key"]: r["value"] for r in rows}
 
@@ -45,11 +49,7 @@ def fetch_settled(
     settle_sec: int,
     chat_id: int | None = None,
 ) -> list[dict]:
-    """Return pending media_inbox rows older than settle_sec seconds.
-
-    Older-first order so albums arrive fully before the drain picks them up.
-    Optionally filtered to a single chat_id.
-    """
+    """Return pending media_inbox rows older than settle_sec seconds, oldest first."""
     cutoff = (datetime.now(timezone.utc) - timedelta(seconds=settle_sec)).isoformat()
     filters: dict[str, str] = {
         "status": "eq.pending",
@@ -63,8 +63,7 @@ def fetch_settled(
 def claim(db: DbRest, item_id: str) -> bool:
     """Atomically transition one media_inbox item pending → processing.
 
-    Returns True if this call claimed it; False if another Routine fire
-    already claimed it (idempotency latch).
+    Returns True only if this call won; False means another drain already claimed it.
     """
     return db.claim_inbox_item(item_id)
 
@@ -72,17 +71,7 @@ def claim(db: DbRest, item_id: str) -> bool:
 # ── clustering ────────────────────────────────────────────────────────────────
 
 def build_clusters(items: list[dict]) -> tuple[list[list[dict]], list[dict]]:
-    """Split items into deterministic album clusters and ungrouped singletons.
-
-    Returns:
-        album_clusters — list of lists; each inner list shares a media_group_id
-                         and contains ≥ 2 rows (i.e. confirmed album bursts).
-        ungrouped      — rows with no media_group_id, plus media_group_id
-                         singletons (only one photo arrived; treat separately).
-
-    The Routine LLM handles further content-based clustering of ungrouped items
-    (e.g. front + back of the same label, or two unrelated foods).
-    """
+    """Split items into album clusters (shared media_group_id ≥ 2) and ungrouped."""
     album_map: dict[str, list[dict]] = defaultdict(list)
     no_group: list[dict] = []
 
@@ -95,7 +84,6 @@ def build_clusters(items: list[dict]) -> tuple[list[list[dict]], list[dict]]:
 
     album_clusters = [rows for rows in album_map.values() if len(rows) >= 2]
     singletons = [rows[0] for rows in album_map.values() if len(rows) == 1]
-
     return album_clusters, no_group + singletons
 
 
@@ -123,11 +111,7 @@ def mark_rows(
     status: str,
     result_ref: str | None = None,
 ) -> None:
-    """Bulk-update media_inbox status for all rows in a cluster.
-
-    status values: 'done' (written to prod), 'staged' (written to review),
-                   'failed' (RPC error). Atomic: all-or-nothing per cluster.
-    """
+    """Bulk-update media_inbox status for a cluster."""
     if not row_ids:
         return
     body: dict[str, Any] = {
@@ -136,19 +120,10 @@ def mark_rows(
     }
     if result_ref is not None:
         body["result_ref"] = result_ref
-    db.update(
-        "media_inbox",
-        {"id": f"in.({','.join(row_ids)})"},
-        body,
-    )
+    db.update("media_inbox", {"id": f"in.({','.join(row_ids)})"}, body)
 
 
-def _write(
-    db: DbRest,
-    rows: list[dict],
-    rpc_name: str,
-    rpc_args: dict,
-) -> dict:
+def _write(db: DbRest, rows: list[dict], rpc_name: str, rpc_args: dict) -> dict:
     """Call a SECURITY DEFINER RPC, mark rows, return {id, status}."""
     try:
         result = db.rpc(rpc_name, rpc_args) or {}
@@ -157,24 +132,19 @@ def _write(
         mark_rows(db, _ids(rows), "failed")
         return {}
     rpc_status = result.get("status", "")
-    media_status = "done" if rpc_status == "inserted" else "staged" if rpc_status == "staged" else "failed"
+    media_status = (
+        "done" if rpc_status == "inserted"
+        else "staged" if rpc_status == "staged"
+        else "failed"
+    )
     mark_rows(db, _ids(rows), media_status, str(result.get("id", "")) or None)
     return result
 
 
 def write_food(
-    db: DbRest,
-    rows: list[dict],
-    profile_id: str,
-    extracted: dict[str, Any],
-    confidence: float,
-    raw_text: str,
+    db: DbRest, rows: list[dict], profile_id: str,
+    extracted: dict[str, Any], confidence: float, raw_text: str,
 ) -> dict:
-    """Write food extraction to food_logs (or stg_food_log_review if low-confidence).
-
-    extracted keys: meal_type, description, calories, protein_g, carbs_g,
-                    fat_g, fiber_g, logged_at (ISO), notes, foods (JSON).
-    """
     return _write(db, rows, "maintainer_ingest_food", {
         "p_profile_id":  profile_id,
         "p_meal_type":   extracted.get("meal_type"),
@@ -194,22 +164,13 @@ def write_food(
 
 
 def write_biomarker(
-    db: DbRest,
-    rows: list[dict],
-    profile_id: str,
-    extracted: dict[str, Any],
-    confidence: float,
-    raw_text: str,
+    db: DbRest, rows: list[dict], profile_id: str,
+    extracted: dict[str, Any], confidence: float, raw_text: str,
 ) -> dict:
-    """Write biomarker extraction to biomarkers (or stg_biomarker_review).
-
-    extracted keys: metric_definition_id, value, unit, measured_at (ISO),
-                    notes, extracted_name (human-readable name from OCR).
-    """
     return _write(db, rows, "maintainer_ingest_biomarker", {
         "p_profile_id":            profile_id,
         "p_metric_definition_id":  extracted.get("metric_definition_id"),
-        "p_value":                 extracted["value"],
+        "p_value":                 extracted.get("value"),
         "p_unit":                  extracted.get("unit"),
         "p_measured_at":           extracted.get("measured_at"),
         "p_source":                "telegram",
@@ -221,18 +182,9 @@ def write_biomarker(
 
 
 def write_supplement(
-    db: DbRest,
-    rows: list[dict],
-    profile_id: str,
-    extracted: dict[str, Any],
-    confidence: float,
-    raw_text: str,
+    db: DbRest, rows: list[dict], profile_id: str,
+    extracted: dict[str, Any], confidence: float, raw_text: str,
 ) -> dict:
-    """Write supplement intake to supplement_intake_logs (or stg_supplement_intake_review).
-
-    extracted keys: supplement_id, dose_amount, dose_unit, taken_at (ISO),
-                    notes, name (extracted text name for staging).
-    """
     return _write(db, rows, "maintainer_ingest_supplement", {
         "p_profile_id":     profile_id,
         "p_supplement_id":  extracted.get("supplement_id"),
@@ -247,10 +199,9 @@ def write_supplement(
     })
 
 
-# ── lookups (for Routine LLM to resolve names → UUIDs) ───────────────────────
+# ── lookups ───────────────────────────────────────────────────────────────────
 
 def lookup_metric(db: DbRest, query: str) -> list[dict]:
-    """Search metric_definitions by name (ilike). Returns id, name, display_name, unit."""
     return db.select(
         "metric_definitions",
         select="id,name,display_name,unit",
@@ -260,7 +211,6 @@ def lookup_metric(db: DbRest, query: str) -> list[dict]:
 
 
 def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
-    """Search supplements by name (ilike). Returns id, name, display_name, default_unit."""
     return db.select(
         "supplements",
         select="id,name,display_name,default_unit",
@@ -269,30 +219,457 @@ def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
     )
 
 
+# ── storage ───────────────────────────────────────────────────────────────────
+
+def get_signed_url(db: DbRest, storage_path: str, expires_in: int = 300) -> str | None:
+    """Create a signed URL for a private health-media Storage object."""
+    try:
+        resp = db._client.post(
+            f"{db._base}/storage/v1/object/sign/health-media/{storage_path}",
+            json={"expiresIn": expires_in},
+            headers=db._h(),
+        )
+        resp.raise_for_status()
+        signed = resp.json().get("signedURL")
+        if signed:
+            return db._base + "/storage/v1" + signed if signed.startswith("/") else signed
+        return None
+    except Exception:
+        return None
+
+
+def _download_image(url: str) -> tuple[bytes, str] | None:
+    """Download image bytes from a signed URL. Returns (bytes, content_type) or None."""
+    try:
+        r = httpx.get(url, timeout=30.0, follow_redirects=True)
+        r.raise_for_status()
+        ct = r.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+        return r.content, ct
+    except Exception:
+        return None
+
+
+def _image_block(data: bytes, content_type: str) -> dict:
+    """Build an Anthropic vision content block from raw image bytes."""
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": content_type,
+            "data": base64.b64encode(data).decode(),
+        },
+    }
+
+
+# ── vision ────────────────────────────────────────────────────────────────────
+
+_VISION_PROMPTS: dict[str, str] = {
+    "food": (
+        'Extract food log data. Return JSON only:\n'
+        '{"meal_type":"breakfast|lunch|dinner|snack|supplement|unknown",'
+        '"description":"brief description",'
+        '"calories":integer_or_null,"protein_g":null,"carbs_g":null,"fat_g":null,"fiber_g":null,'
+        '"foods":[{"name":"...","amount":null,"unit":null,"calories":null}],'
+        '"logged_at":"ISO-8601 (use NOW if not visible)",'
+        '"notes":null,"confidence":0.0_to_1.0}'
+    ),
+    "lab": (
+        'Extract biomarker measurements from this lab result. Return JSON only:\n'
+        '{"biomarkers":[{"extracted_name":"exact name","value":number,"unit":"string",'
+        '"measured_at":"ISO-8601 or null","notes":null,"confidence":0.0_to_1.0}]}'
+    ),
+    "dexa": (
+        'Extract DEXA / body composition measurements. Return JSON only:\n'
+        '{"biomarkers":[{"extracted_name":"metric name","value":number,"unit":"string",'
+        '"measured_at":"ISO-8601 or null","notes":null,"confidence":0.0_to_1.0}]}'
+    ),
+    "supplement": (
+        'Extract supplement intake. Return JSON only:\n'
+        '{"name":"supplement name","dose_amount":null,"dose_unit":null,'
+        '"taken_at":"ISO-8601 (use NOW if not stated)","notes":null,"confidence":0.0_to_1.0}'
+    ),
+    "unknown": (
+        'Classify and extract health data. Return JSON only:\n'
+        '{"kind":"food|lab|supplement|workout|unknown","data":{...kind-specific fields...},'
+        '"confidence":0.0_to_1.0}'
+    ),
+}
+
+
+def _strip_fences(text: str) -> str:
+    """Remove markdown code fences Claude sometimes adds despite instructions."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:])
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    return text
+
+
+def vision_extract(
+    api_key: str,
+    model: str,
+    image_blocks: list[dict],
+    caption: str,
+    kind: str,
+    now_iso: str,
+) -> dict:
+    """Call Anthropic Messages API to extract structured data from images + caption.
+
+    Returns a dict with extracted fields + 'confidence'. On failure returns
+    {"confidence": 0.0, "_error": "..."} — caller should route to staging.
+
+    Reads HS_ANTHROPIC_API_KEY from the api_key arg (platform reserves ANTHROPIC_API_KEY).
+    """
+    prompt = _VISION_PROMPTS.get(kind, _VISION_PROMPTS["unknown"]).replace("NOW", now_iso)
+
+    content: list[dict] = [*image_blocks]
+    if caption:
+        content.append({"type": "text", "text": f"Caption: {caption}"})
+    content.append({"type": "text", "text": prompt})
+
+    try:
+        resp = httpx.post(
+            _ANTHROPIC_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": _ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 1024,
+                "system": (
+                    "You are a health data extraction assistant. "
+                    "Respond with valid JSON only. No prose, no markdown fences."
+                ),
+                "messages": [{"role": "user", "content": content}],
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"]
+        return json.loads(_strip_fences(raw))
+    except json.JSONDecodeError as exc:
+        return {"confidence": 0.0, "_error": f"parse error: {exc}"}
+    except Exception as exc:
+        return {"confidence": 0.0, "_error": str(exc)}
+
+
+def content_cluster_ungrouped(
+    api_key: str,
+    model: str,
+    items: list[dict],
+) -> list[list[dict]]:
+    """Group ungrouped items by content similarity using a text-only API call.
+
+    Returns list of clusters (each a list of items). Single item → [[item]].
+    Items not mentioned by the API become singletons.
+    """
+    if len(items) <= 1:
+        return [[item] for item in items]
+
+    item_descs = "\n".join(
+        f"{i+1}. id={item['id']} kind={item.get('kind','?')} "
+        f"caption={str(item.get('caption') or '')[:100]!r}"
+        for i, item in enumerate(items)
+    )
+    id_list = [item["id"] for item in items]
+
+    try:
+        resp = httpx.post(
+            _ANTHROPIC_URL,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": _ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+            json={
+                "model": model,
+                "max_tokens": 512,
+                "system": "You group health data items. Respond with valid JSON only.",
+                "messages": [{
+                    "role": "user",
+                    "content": (
+                        f"Group these {len(items)} health items. "
+                        "Items showing the SAME product, meal, or measurement go together. "
+                        "When ambiguous, keep separate. "
+                        f'Return JSON only: {{"groups": [["id1","id2"],["id3"],...]}}\n\n'
+                        f"Items:\n{item_descs}\n\nAvailable IDs: {id_list}"
+                    ),
+                }],
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        parsed = json.loads(_strip_fences(resp.json()["content"][0]["text"]))
+        id_to_item = {item["id"]: item for item in items}
+        seen: set[str] = set()
+        clusters: list[list[dict]] = []
+        for group in parsed.get("groups", []):
+            cluster = [id_to_item[g] for g in group if g in id_to_item and g not in seen]
+            if cluster:
+                clusters.append(cluster)
+                seen.update(r["id"] for r in cluster)
+        for item in items:
+            if item["id"] not in seen:
+                clusters.append([item])
+        return clusters
+    except Exception:
+        return [[item] for item in items]
+
+
+# ── telegram ──────────────────────────────────────────────────────────────────
+
+def telegram_send(token: str, chat_id: int, text: str) -> None:
+    """Best-effort Telegram sendMessage. Never raises."""
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=10.0,
+        )
+    except Exception:
+        pass
+
+
+def compose_confirmation(kind: str, rpc_status: str, extracted: dict, is_minor: bool) -> str:
+    """Compose Telegram confirmation. Minor-safe: no deficit/restriction language."""
+    if kind == "food" and rpc_status in ("inserted", "staged"):
+        desc = extracted.get("description") or "meal"
+        kcal = extracted.get("calories")
+        kcal_str = f" — {kcal} kcal" if kcal else ""
+        if rpc_status == "staged":
+            return "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+        return (
+            f"📊 Tracked: {desc}{kcal_str}. Nice! 💪" if is_minor
+            else f"✅ Logged: {desc}{kcal_str}."
+        )
+    if kind in ("lab", "dexa"):
+        n = len(extracted.get("biomarkers", [])) or 1
+        if is_minor:
+            return f"📊 {n} measurement{'s' if n > 1 else ''} tracked. 💪"
+        return f"✅ {n} biomarker{'s' if n > 1 else ''} logged."
+    if kind == "supplement":
+        name = extracted.get("name") or "supplement"
+        if is_minor:
+            return f"📊 {name} tracked."
+        return f"✅ {name} logged."
+    if rpc_status == "staged":
+        return "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+    return "✅ Logged."
+
+
+# ── main loop ─────────────────────────────────────────────────────────────────
+
+def _process_cluster(
+    db: DbRest,
+    cluster: list[dict],
+    api_key: str,
+    model: str,
+    now_iso: str,
+    conf_threshold: float,
+    chat_is_minor: dict[str, bool],
+    token: str,
+    summary: dict,
+) -> None:
+    """Extract, write, and confirm one cluster. Updates summary in place."""
+    profile_id = cluster[0]["profile_id"]
+    chat_id = cluster[0]["chat_id"]
+    is_minor = chat_is_minor.get(str(chat_id), False)
+    kind = cluster[0].get("kind") or "unknown"
+    caption = merge_caption(cluster)
+    raw_text = caption
+
+    # Download images
+    image_blocks: list[dict] = []
+    for row in cluster:
+        path = row.get("storage_path")
+        if path:
+            url = get_signed_url(db, path)
+            if url:
+                img = _download_image(url)
+                if img:
+                    image_blocks.append(_image_block(*img))
+
+    # Vision extraction
+    extracted = vision_extract(api_key, model, image_blocks, caption, kind, now_iso)
+
+    if "_error" in extracted:
+        summary["failed"] += 1
+        summary["errors"].append(extracted["_error"])
+        mark_rows(db, _ids(cluster), "failed")
+        return
+
+    # Handle "unknown" kind — re-dispatch based on what Claude returned
+    if kind == "unknown" and "kind" in extracted:
+        kind = extracted.get("kind", "unknown")
+        extracted = extracted.get("data", extracted)
+
+    confidence = float(extracted.get("confidence", 0.0))
+    rpc_status = "failed"
+
+    if kind == "food":
+        result = write_food(db, cluster, profile_id, extracted, confidence, raw_text)
+        rpc_status = result.get("status", "failed")
+
+    elif kind in ("lab", "dexa"):
+        biomarkers = extracted.get("biomarkers", [])
+        all_ok = True
+        for bio in biomarkers:
+            # Resolve metric_definition_id by extracted_name
+            matches = lookup_metric(db, bio.get("extracted_name", ""))
+            if matches:
+                bio["metric_definition_id"] = matches[0]["id"]
+            else:
+                bio["confidence"] = 0.0  # force staging — maintainer resolves
+            result = write_biomarker(db, cluster, profile_id, bio, float(bio.get("confidence", 0.0)), raw_text)
+            if result.get("status") not in ("inserted", "staged"):
+                all_ok = False
+        rpc_status = "inserted" if all_ok and biomarkers else "staged"
+
+    elif kind == "supplement":
+        name = extracted.get("name", "")
+        matches = lookup_supplement_by_name(db, name) if name else []
+        if matches:
+            extracted["supplement_id"] = matches[0]["id"]
+        else:
+            extracted["confidence"] = 0.0  # force staging — maintainer resolves
+            confidence = 0.0
+        result = write_supplement(db, cluster, profile_id, extracted, confidence, raw_text)
+        rpc_status = result.get("status", "failed")
+
+    else:
+        # workout / truly unknown — stage as food for human review
+        extracted.setdefault("meal_type", "unknown")
+        extracted.setdefault("description", caption or "unknown item")
+        result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text)
+        rpc_status = result.get("status", "failed")
+
+    if rpc_status == "inserted":
+        summary["written"] += 1
+    elif rpc_status == "staged":
+        summary["staged"] += 1
+    else:
+        summary["failed"] += 1
+        summary["errors"].append(f"cluster {_ids(cluster)} rpc returned {rpc_status!r}")
+
+    # Telegram confirmation
+    msg = compose_confirmation(kind, rpc_status, extracted, is_minor)
+    telegram_send(token, chat_id, msg)
+
+
+def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
+    """Full drain loop. Returns JSON-serialisable summary dict."""
+    summary: dict[str, Any] = {
+        "fetched": 0, "clustered": 0,
+        "written": 0, "staged": 0, "failed": 0,
+        "errors": [],
+    }
+
+    settle_sec = int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
+    conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
+    model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # is_minor map for Telegram confirmations
+    identities = db.select(
+        "telegram_identities",
+        select="chat_id,is_minor",
+        filters={"status": "eq.active"},
+    )
+    chat_is_minor = {str(r["chat_id"]): bool(r.get("is_minor")) for r in identities}
+
+    items = fetch_settled(db, settle_sec)
+    summary["fetched"] = len(items)
+    if not items:
+        return summary
+
+    # Album clusters (deterministic) + content clusters (per-chat API call)
+    album_clusters, ungrouped = build_clusters(items)
+
+    by_chat: dict[str, list[dict]] = defaultdict(list)
+    for item in ungrouped:
+        by_chat[str(item["chat_id"])].append(item)
+
+    content_clusters: list[list[dict]] = []
+    for chat_items in by_chat.values():
+        content_clusters.extend(content_cluster_ungrouped(api_key, model, chat_items))
+
+    all_clusters = album_clusters + content_clusters
+    summary["clustered"] = len(all_clusters)
+
+    for cluster in all_clusters:
+        # Atomic claim — all rows or none
+        claimed: list[str] = []
+        skipped = False
+        for row in cluster:
+            if claim(db, row["id"]):
+                claimed.append(row["id"])
+            else:
+                skipped = True
+                break
+
+        if skipped:
+            # Release any rows we claimed back to pending
+            if claimed:
+                db.update(
+                    "media_inbox",
+                    {"id": f"in.({','.join(claimed)})", "status": "eq.processing"},
+                    {"status": "pending"},
+                )
+            continue
+
+        try:
+            _process_cluster(
+                db, cluster, api_key, model, now_iso,
+                conf_threshold, chat_is_minor, token, summary,
+            )
+        except Exception as exc:
+            summary["failed"] += 1
+            summary["errors"].append(str(exc))
+            mark_rows(db, _ids(cluster), "failed")
+
+    return summary
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import json
+    import argparse
     import os
     import sys
 
     from lib.db_rest import sign_in
 
+    parser = argparse.ArgumentParser(description="HealthSpan inbox drain")
+    parser.add_argument("--once", action="store_true", help="Run full drain loop and exit")
+    args = parser.parse_args()
+
     url = os.environ["SUPABASE_URL"]
     anon = os.environ["SUPABASE_ANON_KEY"]
     email = os.environ["HS_AUTH_EMAIL"]
     pwd = os.environ["HS_AUTH_PASSWORD"]
+    api_key = os.environ["HS_ANTHROPIC_API_KEY"]
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 
     jwt = sign_in(url, anon, email, pwd)
+
     with DbRest(url, anon, jwt) as db:
         cfg = get_config(db)
+
+        if args.once:
+            summary = run_once(db, cfg, api_key, token)
+            print(json.dumps(summary))
+            sys.exit(0 if summary["failed"] == 0 else 1)
+
+        # Default: dry-run summary (no writes)
         settle = int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
         items = fetch_settled(db, settle)
-        albums, ungrouped = build_clusters(items)
-        print(f"Settled: {len(items)} items | {len(albums)} album clusters | {len(ungrouped)} ungrouped")
-        for cluster in albums:
-            cap = merge_caption(cluster)
-            ids = _ids(cluster)
-            print(f"  Album {cluster[0].get('media_group_id')}: {len(cluster)} rows, caption={cap!r}")
+        album_clusters, ungrouped = build_clusters(items)
+        print(f"Settled: {len(items)} items | {len(album_clusters)} album clusters | {len(ungrouped)} ungrouped")
+        for cluster in album_clusters:
+            print(f"  Album {cluster[0].get('media_group_id')}: {len(cluster)} rows, caption={merge_caption(cluster)!r}")
         for item in ungrouped:
             print(f"  Ungrouped id={item['id']} kind={item.get('kind')} caption={str(item.get('caption',''))[:60]!r}")
