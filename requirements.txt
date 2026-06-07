@@ -6,6 +6,7 @@ supabase==2.10.0
 httpx<0.28            # supabase 2.10 needs httpx<0.28 (0.28 removed the `proxies` kwarg gotrue/postgrest pass)
 PyJWT==2.12.1         # pin away from the OS-managed PyJWT 2.7.0 whose RECORD conflicts on reinstall
 python-dotenv==1.0.0
+anthropic==0.107.0    # vision extraction in ingest/food.py, whoop_screenshot.py, brief.py
 
 # --- optional [direct_role] — local Postgres path only; NOT needed for the App path ---
 # A plain `pip install -r requirements.txt` SKIPS this (the `extra` marker is false outside
