@@ -1,5 +1,55 @@
 # HealthSpan Skill — Changelog
 
+## v3.13.0 — Ingredient-level Viome analysis + daily brief composer (2026-06-07)
+
+**Composite dishes now decomposed into ingredients for Viome cross-check; worst-case meal verdict stored on food_logs; new `monitor/brief.py` sends a structured daily brief after every food write.**
+
+### Vision prompt (inbox_drain.py)
+- `_VISION_PROMPTS["food"]` extended: Thai/Indian/composite dishes must be decomposed into constituent ingredients in `foods[]`. Explicit instruction to surface: coconut milk/oil/flesh, dairy (ghee/paneer/butter/cream/cheese), alliums (onion/garlic/leek), high-sugar fruits, fatty meat cuts.
+- Example: "Thai green curry" → `foods=[{name:"coconut milk",...},{name:"green curry paste",...},...]`
+
+### Meal verdict (inbox_drain.py)
+- `compute_meal_verdict(verdicts)` — worst-case logic: avoid > minimize > superfood > clean. Returns `(verdict_str, flagged_items_list)`. Minimize items included in flags when verdict=avoid.
+- After food insert, one `db.update("food_logs", ...)` stores `verdict` + `flags[]` on the inserted row(s). Best-effort (logs warning, never raises).
+- `inserted_ids` list tracks UUIDs of all successfully inserted food_log rows in the cluster loop.
+- `_viome_verdict_lines` reformatted: avoid → `"⚠️ {item} — AVOID{reason}"` (was `"⚠️ {item} is on your AVOID list"`).
+
+### Daily brief (`monitor/brief.py` — new file)
+- `compose_brief(db, profile_id, cfg, api_key, token, today) → str`
+  - Looks up Telegram chat_id + is_minor from `telegram_identities`.
+  - Loads profile targets from `lib.context.load_context`.
+  - **Food section**: full macro totals (kcal, protein, carbs, fat, meals) vs targets with remaining; minor framing.
+  - **Supplements section**: active regimen by timing slot (morning/lunch/dinner/bedtime/anytime); ✅ taken / ⬜ not taken; current slot marked with ←.
+  - **WHOOP section**: recovery%, HRV ms, RHR bpm, sleep h:mm; stale flag if `cycle_start < today`.
+  - **Viome section** (adult only): today's food_logs rows with verdict ≠ 'clean'; surfaces flags[] for avoid/minimize + superfoods.
+  - **Actions section**: 2-4 concrete rest-of-day suggestions from Claude (model: `brief.model` system_config key, default claude-haiku-4-5-20251001). Minor-safe prompt.
+  - Sends via `telegram_send` (lazy import from inbox_drain, no circular import at module level).
+- `_fetch_food_full` — full macro query (kcal + protein + carbs + fat; replaces inbox_drain's protein-only helper).
+- `_fetch_supplement_status` — regimen + supplement name + today's intakes in three queries.
+- `_fetch_whoop` — most recent `whoop_cycles` row with staleness flag.
+- `_fetch_today_viome_flags` — today's food_logs where verdict not null and ≠ 'clean'.
+
+### Hook in run_once (inbox_drain.py)
+- After end-of-run summary messages: for each adult profile that had ≥1 food write (`per_chat[chat_id]["written"] > 0`), calls `compose_brief()` best-effort (import error → silent skip, exception → log warning only).
+
+### CLI
+- `python -m monitor.brief --profile-id <uuid> [--today YYYY-MM-DD]`
+
+### Tests (8 new — 97 total across 2 files)
+**tests/unit/test_inbox_drain.py** (4 new — 93 total):
+- `test_green_curry_decomposes_to_coconut_milk`: foods[] with coconut milk → lookup_viome_verdicts called with "coconut milk" as candidate.
+- `test_meal_verdict_worst_case_avoid_wins`: avoid + minimize verdicts → verdict='avoid', flags include both items.
+- `test_meal_verdict_minimize_when_no_avoid`: minimize-only verdicts → verdict='minimize'.
+- `test_meal_verdict_clean_when_no_flags`: empty verdicts → verdict='clean', flags=[].
+
+**tests/unit/test_brief.py** (4 new — 4 total):
+- `test_brief_composes_from_mocked_data`: full compose_brief flow with mocked DB; verifies telegram_send called, message contains food totals + WHOOP + supplement data.
+- `test_brief_no_data_paths`: no telegram identity → returns '' and does not call telegram_send.
+- `test_supplement_remaining_regimen_minus_taken`: _supps_section shows correct ✅/⬜ markers and taken count.
+- `test_minor_framing_in_brief`: is_minor=True → no Viome section in message; is_minor forwarded to _call_claude_actions.
+
+---
+
 ## v3.12.0 — Smart food resolution: macro reference + per-user Viome cross-check (2026-06-07)
 
 **Shared macro library + per-profile Viome guidance; drain now resolves known foods to trusted macros.**

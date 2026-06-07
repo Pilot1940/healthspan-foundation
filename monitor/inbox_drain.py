@@ -400,7 +400,10 @@ def lookup_past_food_macros(
 
 
 def _viome_verdict_lines(verdicts: list[dict]) -> str:
-    """Compose Viome cross-check lines for the Telegram confirmation (adult only)."""
+    """Compose Viome cross-check lines for the Telegram confirmation (adult only).
+
+    Each line cites the specific offending ingredient so the user knows what to avoid.
+    """
     parts: list[str] = []
     for v in verdicts:
         item = (v.get("item") or "").strip()
@@ -408,12 +411,48 @@ def _viome_verdict_lines(verdicts: list[dict]) -> str:
         reason = (v.get("reason") or "").strip()
         suffix = f": {reason}" if reason else "."
         if cls == "avoid":
-            parts.append(f"⚠️ {item} is on your AVOID list{suffix}")
+            parts.append(f"⚠️ {item} — AVOID{suffix}")
         elif cls == "minimize":
             parts.append(f"⚠️ {item} — minimize{suffix}")
         elif cls == "superfood":
             parts.append(f"✅ {item} is a superfood for you{suffix}")
     return "\n".join(parts)
+
+
+def compute_meal_verdict(verdicts: list[dict]) -> tuple[str, list[str]]:
+    """Compute a worst-case meal verdict from viome lookup results.
+
+    Precedence: avoid > minimize > superfood > clean.
+    Returns (verdict_str, flagged_items_list).
+
+    'avoid'    — any ingredient is on the avoid list
+    'minimize' — at least one ingredient should be minimized (no avoids)
+    'superfood'— at least one superfood present, no avoid/minimize
+    'clean'    — no flagged items
+    """
+    avoid_items: list[str] = []
+    minimize_items: list[str] = []
+    superfood_items: list[str] = []
+
+    for v in verdicts:
+        item = (v.get("item") or "").strip()
+        cls = v.get("effective_classification") or ""
+        if not item:
+            continue
+        if cls == "avoid":
+            avoid_items.append(item)
+        elif cls == "minimize":
+            minimize_items.append(item)
+        elif cls == "superfood":
+            superfood_items.append(item)
+
+    if avoid_items:
+        return "avoid", avoid_items + minimize_items
+    if minimize_items:
+        return "minimize", minimize_items
+    if superfood_items:
+        return "superfood", superfood_items
+    return "clean", []
 
 
 # ── storage ───────────────────────────────────────────────────────────────────
@@ -468,7 +507,15 @@ _VISION_PROMPTS: dict[str, str] = {
         '"calories":integer_or_null,"protein_g":null,"carbs_g":null,"fat_g":null,"fiber_g":null,'
         '"foods":[{"name":"...","amount":null,"unit":null,"calories":null}],'
         '"logged_at":"ISO-8601 (use NOW if not visible)",'
-        '"notes":null,"confidence":0.0_to_1.0}'
+        '"notes":null,"confidence":0.0_to_1.0}\n\n'
+        'IMPORTANT: Thai, Indian, and composite dishes often hide Avoid/Minimize items — '
+        'always decompose into constituent ingredients in the foods[] array. '
+        'List each significant ingredient as a separate foods[] entry with its name '
+        '(e.g. "Thai green curry" → foods=[{name:"coconut milk",...},{name:"green curry paste",...},'
+        '{name:"vegetables",...},{name:"fish sauce",...}]). '
+        'For meat dishes, note the cut if visible (e.g. "fatty beef", "lean chicken breast"). '
+        'Explicitly surface: coconut (milk/oil/flesh), dairy (ghee/paneer/butter/cream/cheese), '
+        'alliums (onion/garlic/leek), high-sugar fruits, fatty cuts.'
     ),
     "lab": (
         'Extract biomarker measurements from this lab result. Return JSON only:\n'
@@ -860,11 +907,14 @@ def _process_cluster(
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
+    meal_verdict: str = "clean"
+    meal_flags: list[str] = []
 
     if kind == "food":
         # Normalise: model may return a list for multi-item text (e.g. "shake + fish + rice")
         food_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
         statuses: list[str] = []
+        inserted_ids: list[str] = []   # food_logs.id for rows we successfully inserted
         food_stage_reason: str | None = None  # first stage_reason from any staged RPC result
         has_ref_miss = False  # any item without a food_reference hit
         for food_item in food_items:
@@ -896,6 +946,8 @@ def _process_cluster(
                 )) or {}
                 s = res.get("status", "failed")
                 statuses.append(s)
+                if s == "inserted" and res.get("id"):
+                    inserted_ids.append(str(res["id"]))
                 if s == "staged" and food_stage_reason is None:
                     food_stage_reason = res.get("stage_reason") or item_stage_reason
             except Exception as exc:
@@ -928,6 +980,18 @@ def _process_cluster(
                         viome_candidates.append(c.strip())
             if viome_candidates:
                 viome_verdicts = lookup_viome_verdicts(db, viome_candidates, str(profile_id))
+
+            # Compute meal verdict and store on food_logs (best-effort)
+            meal_verdict, meal_flags = compute_meal_verdict(viome_verdicts)
+            if inserted_ids:
+                try:
+                    db.update(
+                        "food_logs",
+                        {"id": f"in.({','.join(inserted_ids)})"},
+                        {"verdict": meal_verdict, "flags": meal_flags},
+                    )
+                except Exception as exc:
+                    log.warning("verdict UPDATE on food_logs failed: %s", exc)
 
         # Learn-from-past offer — only when we had no reference hit and food was written
         if rpc_status == "inserted" and has_ref_miss and not is_minor:
@@ -1131,6 +1195,25 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
         if s:
             parts.append(f"{s} to review")
         telegram_send(token, int(chat_id_str), f"Done — {', '.join(parts)}.")
+
+    # Compose and send daily brief — best-effort, once per adult profile that had a food write
+    # Import here to avoid circular imports at module level
+    written_adult_profiles: set[str] = {
+        str(r["profile_id"])
+        for r in identities
+        if not r.get("is_minor")
+        and per_chat.get(str(r["chat_id"]), {}).get("written", 0) > 0
+    }
+    if written_adult_profiles:
+        try:
+            from monitor.brief import compose_brief
+            for pid in written_adult_profiles:
+                try:
+                    compose_brief(db, pid, cfg, api_key, token, today_date)
+                except Exception as exc:
+                    log.warning("compose_brief failed for %s: %s", pid, exc)
+        except ImportError:
+            pass  # brief module not yet available — silently skip
 
     return summary
 

@@ -1600,3 +1600,71 @@ def test_learn_from_past_offer_when_no_reference():
     assert "3" in msg, f"count ({past_macros['count']}) not in offer: {msg}"
     # learn_min_logs was forwarded (mock was called)
     assert mock_past.called
+
+
+# ── compute_meal_verdict (Step 2 — ingredient-level Viome) ───────────────────
+
+def test_green_curry_decomposes_to_coconut_milk():
+    """When vision returns coconut milk in foods[], lookup_viome_verdicts is called
+    with 'coconut milk' as a candidate — confirming the decomposition pipeline works."""
+    db, _ = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),   # verdict UPDATE
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+
+    green_curry = {
+        **_FOOD_EXTRACTION,
+        "description": "Thai green curry",
+        "foods": [
+            {"name": "coconut milk", "amount": 200, "unit": "ml", "calories": 360},
+            {"name": "chicken", "amount": 150, "unit": "g", "calories": 250},
+        ],
+    }
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=green_curry), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]) as mock_viome, \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, [_item("r1", caption="thai green curry")],
+                         "key", "model", "now", 0.7, {}, "tok", summary)
+
+    candidates = mock_viome.call_args[0][1]
+    assert "coconut milk" in [c.lower() for c in candidates], (
+        f"coconut milk must be a viome candidate; got: {candidates}"
+    )
+
+
+def test_meal_verdict_worst_case_avoid_wins():
+    """When verdicts include both avoid and minimize, verdict='avoid' and flags include both."""
+    from monitor.inbox_drain import compute_meal_verdict
+    verdicts = [
+        {"item": "coconut milk", "effective_classification": "avoid", "reason": ""},
+        {"item": "onion", "effective_classification": "minimize", "reason": ""},
+        {"item": "blueberry", "effective_classification": "superfood", "reason": ""},
+    ]
+    verdict, flags = compute_meal_verdict(verdicts)
+    assert verdict == "avoid"
+    assert "coconut milk" in flags
+    assert "onion" in flags
+
+
+def test_meal_verdict_minimize_when_no_avoid():
+    """When verdicts have minimize but no avoid, verdict='minimize'."""
+    from monitor.inbox_drain import compute_meal_verdict
+    verdicts = [
+        {"item": "onion", "effective_classification": "minimize", "reason": ""},
+        {"item": "garlic", "effective_classification": "minimize", "reason": ""},
+    ]
+    verdict, flags = compute_meal_verdict(verdicts)
+    assert verdict == "minimize"
+    assert set(flags) == {"onion", "garlic"}
+
+
+def test_meal_verdict_clean_when_no_flags():
+    """Empty viome verdicts → verdict='clean', flags=[]."""
+    from monitor.inbox_drain import compute_meal_verdict
+    verdict, flags = compute_meal_verdict([])
+    assert verdict == "clean"
+    assert flags == []
