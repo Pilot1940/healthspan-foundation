@@ -27,11 +27,12 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–033 written, pending apply** — Telegram ingestion Phase 1–3A +
-  drain service identity. Apply in order: 029 (telegram tables + RLS), 030 (push_log
-  dedup_value + system_config push thresholds), 031 (maintainer-ingest RPCs +
-  media_group_id + settle config), 032 (drain identity family_memberships + anon
-  REVOKE), 033 (re-key drain identity after account recreation).
+- **Migrations 029–035 written** — Telegram ingestion Phase 1–3B + drain identity.
+  029–034 applied. **035 pending apply** — re-keys drain service identity to
+  `healthspan.drainer@chitalkar.com` (was `healthspan.drain@chitalkar.com`).
+  Apply: `python3 scripts/hs_ops.py apply migrations/035_drain_identity_drainer.sql`.
+- **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
+  UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
   webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
   `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
