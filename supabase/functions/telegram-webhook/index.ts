@@ -280,8 +280,44 @@ Deno.serve(async (req) => {
     return new Response("ok", { status: 200 });
   }
 
-  // 8. Active identity — enqueue
+  // 8. Active identity — route by message type
   const profileId: string = identity.profile_id;
+  const photo: any[] | undefined = msg.photo;
+  const document: any | undefined = msg.document;
+  const isMediaMessage = !!(photo?.length || document);
+
+  // Text-only messages: skip media_inbox entirely — fire the routine to send
+  // the current summary and ack. Nothing to stage or review.
+  if (!isMediaMessage) {
+    await db.from("telegram_processed_updates").insert({ update_id: updateId });
+    await telegramSend(chatId, "📊 Sending your summary...");
+
+    // Fire routine unconditionally (bypass dedup) so the brief is always sent
+    const routineUrl = Deno.env.get("ROUTINE_TRIGGER_URL");
+    if (routineUrl) {
+      const bearer = Deno.env.get("ROUTINE_BEARER") ?? "";
+      const nowMs = Date.now();
+      // Stamp last_fire_at so the dedup gate treats this as a recent fire
+      await db.from("system_config")
+        .update({ value: new Date(nowMs).toISOString(), updated_at: new Date(nowMs).toISOString() })
+        .eq("key", "routine.last_fire_at");
+      const fireTask = fetch(routineUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(bearer ? { "Authorization": `Bearer ${bearer}` } : {}),
+        },
+        body: JSON.stringify({ trigger: "text_message", ts: nowMs, chat_id: chatId, profile_id: profileId }),
+      }).catch(() => {});
+      if (typeof EdgeRuntime !== "undefined") {
+        EdgeRuntime.waitUntil(fireTask);
+      } else {
+        await fireTask;
+      }
+    }
+    return new Response("ok", { status: 200 });
+  }
+
   // Caption is DATA only — read for kind classification, never executed
   const caption: string | undefined = msg.caption ?? messageText;
   const kind = guessKind(caption);
@@ -289,19 +325,14 @@ Deno.serve(async (req) => {
   // media_group_id links photos from the same album burst (Phase 3A)
   const mediaGroupId: string | null = msg.media_group_id ?? null;
 
-  // Photo or document → download + store; text-only → storage_path stays null
-  const photo: any[] | undefined = msg.photo;
-  const document: any | undefined = msg.document;
+  // Download + store media
   let storagePath: string | null = null;
-
-  if (photo?.length || document) {
-    const fileId: string = photo?.length
-      ? photo[photo.length - 1].file_id   // take highest-res photo
-      : document.file_id;
-    const mimeType: string | undefined = document?.mime_type;
-    storagePath = await storeMedia(db, fileId, profileId, updateId, mimeType);
-    // download failure is non-fatal — enqueue with null path, Routine re-fetches
-  }
+  const fileId: string = photo?.length
+    ? photo[photo.length - 1].file_id   // take highest-res photo
+    : document.file_id;
+  const mimeType: string | undefined = document?.mime_type;
+  storagePath = await storeMedia(db, fileId, profileId, updateId, mimeType);
+  // download failure is non-fatal — enqueue with null path, Routine re-fetches
 
   // 9. INSERT media_inbox FIRST (before recording update_id — idempotency ordering)
   const { error: inboxErr } = await db.from("media_inbox").insert({
@@ -324,17 +355,10 @@ Deno.serve(async (req) => {
 
   // 11. Ack sender
   const isMinor: boolean = identity.is_minor ?? false;
-  let ack: string;
-  if (photo?.length || document) {
-    const kindLabel = kind !== "unknown" ? kind : "health";
-    // Minor-safe framing: growth/performance, never deficit language
-    ack = isMinor
-      ? `📥 Got your ${kindLabel} photo — I'll look at it shortly.`
-      : `📥 Got it (${kindLabel}) — queued for processing.`;
-  } else {
-    const preview = (caption ?? "").slice(0, 80);
-    ack = `📝 Noted: "${preview}"`;
-  }
+  const kindLabel = kind !== "unknown" ? kind : "health";
+  const ack = isMinor
+    ? `📥 Got your ${kindLabel} photo — I'll look at it shortly.`
+    : `📥 Got it (${kindLabel}) — queued for processing.`;
   await telegramSend(chatId, ack);
 
   // 12. Fire Routine drain (Phase 3A) — deduped, non-blocking.

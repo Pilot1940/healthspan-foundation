@@ -86,3 +86,23 @@ Deno.test("guessKind: prompt injection attempt is just a string", () => {
   // The function classifies it; LLM sees it as data only (not a command)
   assertNotEquals(kind, undefined);
 });
+
+// ── Text-only message routing ─────────────────────────────────────────────────
+// Conversational text messages must NOT be classified as a media kind —
+// they should be treated as summary-trigger requests, not enqueued to media_inbox.
+
+Deno.test("guessKind: 'goodnight' → unknown (not a media kind)", () => {
+  assertEquals(guessKind("goodnight"), "unknown");
+});
+
+Deno.test("guessKind: 'good morning' → unknown", () => {
+  assertEquals(guessKind("good morning"), "unknown");
+});
+
+Deno.test("guessKind: 'thanks' → unknown", () => {
+  assertEquals(guessKind("thanks"), "unknown");
+});
+
+Deno.test("guessKind: '?' → unknown", () => {
+  assertEquals(guessKind("?"), "unknown");
+});
