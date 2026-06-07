@@ -881,3 +881,158 @@ def test_process_cluster_no_totals_on_staged():
     mock_totals.assert_not_called()
     msg = mock_tg.call_args.args[2]
     assert "Today:" not in msg
+
+
+# ── persist stage_reason ──────────────────────────────────────────────────────
+
+def test_mark_rows_includes_stage_reason_in_patch():
+    """mark_rows with stage_reason writes it to the PATCH body."""
+    from monitor.inbox_drain import mark_rows
+
+    db, captured = _db_capture([(200, [])])
+    mark_rows(db, ["r1", "r2"], "staged", stage_reason="incomplete: missing calories or macros")
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["stage_reason"] == "incomplete: missing calories or macros"
+    assert patch_call["body"]["status"] == "staged"
+
+
+def test_mark_rows_omits_stage_reason_when_none():
+    """mark_rows without stage_reason does not include the key in the PATCH body."""
+    from monitor.inbox_drain import mark_rows
+
+    db, captured = _db_capture([(200, [])])
+    mark_rows(db, ["r1"], "done")
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert "stage_reason" not in patch_call["body"]
+
+
+def test_stage_reason_vision_parse_failure():
+    """_stage_reason from vision_extract → stage_reason written to media_inbox."""
+    db, captured = _db_capture([
+        (200, []),  # mark_rows PATCH
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1")]
+
+    stage_result = {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
+    with patch("monitor.inbox_drain.vision_extract", return_value=stage_result), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["status"] == "staged"
+    assert patch_call["body"]["stage_reason"] == "vision returned no parseable extraction"
+
+
+def test_stage_reason_vision_error():
+    """_error from vision_extract → error message written as stage_reason on failed media_inbox."""
+    db, captured = _db_capture([(200, [])])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1")]
+
+    with patch("monitor.inbox_drain.vision_extract",
+               return_value={"confidence": 0.0, "_error": "connection timeout"}), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["status"] == "failed"
+    assert patch_call["body"]["stage_reason"] == "connection timeout"
+
+
+def test_stage_reason_incomplete_food():
+    """Incomplete food extraction → p_stage_reason sent to RPC and propagated to media_inbox."""
+    # RPC echoes back the stage_reason (as DB would)
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged",
+               "stage_reason": "incomplete: missing calories or macros"}),
+        (200, []),  # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="had lunch")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc_call["body"]["p_stage_reason"] == "incomplete: missing calories or macros"
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["status"] == "staged"
+    assert patch_call["body"]["stage_reason"] == "incomplete: missing calories or macros"
+
+
+def test_stage_reason_implausible_kcal_from_rpc():
+    """DB-side kcal gate fires: RPC returns stage_reason → propagated to media_inbox."""
+    kcal_reason = "implausible calories: 15000 kcal (must be 25–12000)"
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged", "stage_reason": kcal_reason}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    # High-kcal but otherwise complete extraction — p_force_stage=False; DB gate fires
+    implausible = {**_FOOD_EXTRACTION, "calories": 15000}
+    cluster = [_item("r1", caption="mega meal")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=implausible), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    # p_force_stage must be False — complete extraction, Python doesn't force stage
+    assert rpc_call["body"]["p_force_stage"] is False
+    # p_stage_reason is None (Python didn't know it would be staged)
+    assert rpc_call["body"]["p_stage_reason"] is None
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["status"] == "staged"
+    assert patch_call["body"]["stage_reason"] == kcal_reason
+
+
+def test_stage_reason_unknown_kind():
+    """workout/unknown kind → stage_reason includes the kind name."""
+    db, captured = _db_capture([
+        (200, {"id": "stg-uuid", "status": "staged",
+               "stage_reason": "unknown kind: workout"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", kind="workout", caption="ran 5k")]
+
+    with patch("monitor.inbox_drain.vision_extract",
+               return_value={"confidence": 0.9, "notes": "ran 5k"}), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc_call["body"]["p_stage_reason"] == "unknown kind: workout"
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["stage_reason"] == "unknown kind: workout"
+
+
+def test_stage_reason_absent_on_successful_write():
+    """Successful write (inserted) → stage_reason NOT present in media_inbox PATCH."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="protein shake")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    patch_call = next(c for c in captured if "media_inbox" in c["url"])
+    assert patch_call["body"]["status"] == "done"
+    assert "stage_reason" not in patch_call["body"]

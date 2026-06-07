@@ -110,6 +110,7 @@ def mark_rows(
     row_ids: list[str],
     status: str,
     result_ref: str | None = None,
+    stage_reason: str | None = None,
 ) -> None:
     """Bulk-update media_inbox status for a cluster."""
     if not row_ids:
@@ -120,6 +121,8 @@ def mark_rows(
     }
     if result_ref is not None:
         body["result_ref"] = result_ref
+    if stage_reason is not None:
+        body["stage_reason"] = stage_reason
     db.update("media_inbox", {"id": f"in.({','.join(row_ids)})"}, body)
 
 
@@ -129,7 +132,7 @@ def _write(db: DbRest, rows: list[dict], rpc_name: str, rpc_args: dict) -> dict:
         result = db.rpc(rpc_name, rpc_args) or {}
     except Exception as exc:
         log.error("RPC %s failed: %s", rpc_name, exc)
-        mark_rows(db, _ids(rows), "failed")
+        mark_rows(db, _ids(rows), "failed", stage_reason=str(exc))
         return {}
     rpc_status = result.get("status", "")
     media_status = (
@@ -137,7 +140,8 @@ def _write(db: DbRest, rows: list[dict], rpc_name: str, rpc_args: dict) -> dict:
         else "staged" if rpc_status == "staged"
         else "failed"
     )
-    mark_rows(db, _ids(rows), media_status, str(result.get("id", "")) or None)
+    stage_reason = result.get("stage_reason") or None
+    mark_rows(db, _ids(rows), media_status, str(result.get("id", "")) or None, stage_reason)
     return result
 
 
@@ -165,23 +169,25 @@ def _food_rpc_args(
     confidence: float,
     raw_text: str,
     force_stage: bool,
+    stage_reason: str | None = None,
 ) -> dict:
     return {
-        "p_profile_id":  profile_id,
-        "p_meal_type":   extracted.get("meal_type"),
-        "p_description": extracted.get("description"),
-        "p_calories":    extracted.get("calories"),
-        "p_protein_g":   extracted.get("protein_g"),
-        "p_carbs_g":     extracted.get("carbs_g"),
-        "p_fat_g":       extracted.get("fat_g"),
-        "p_fiber_g":     extracted.get("fiber_g"),
-        "p_logged_at":   extracted.get("logged_at"),
-        "p_source":      "telegram",
-        "p_notes":       extracted.get("notes"),
-        "p_foods":       extracted.get("foods"),
-        "p_confidence":  confidence,
-        "p_raw_text":    raw_text,
-        "p_force_stage": force_stage,
+        "p_profile_id":    profile_id,
+        "p_meal_type":     extracted.get("meal_type"),
+        "p_description":   extracted.get("description"),
+        "p_calories":      extracted.get("calories"),
+        "p_protein_g":     extracted.get("protein_g"),
+        "p_carbs_g":       extracted.get("carbs_g"),
+        "p_fat_g":         extracted.get("fat_g"),
+        "p_fiber_g":       extracted.get("fiber_g"),
+        "p_logged_at":     extracted.get("logged_at"),
+        "p_source":        "telegram",
+        "p_notes":         extracted.get("notes"),
+        "p_foods":         extracted.get("foods"),
+        "p_confidence":    confidence,
+        "p_raw_text":      raw_text,
+        "p_force_stage":   force_stage,
+        "p_stage_reason":  stage_reason,
     }
 
 
@@ -189,9 +195,11 @@ def write_food(
     db: DbRest, rows: list[dict], profile_id: str,
     extracted: dict[str, Any], confidence: float, raw_text: str,
     force_stage: bool = False,
+    stage_reason: str | None = None,
 ) -> dict:
     return _write(db, rows, "maintainer_ingest_food",
-                  _food_rpc_args(profile_id, extracted, confidence, raw_text, force_stage))
+                  _food_rpc_args(profile_id, extracted, confidence, raw_text,
+                                 force_stage, stage_reason))
 
 
 def write_biomarker(
@@ -655,7 +663,7 @@ def _process_cluster(
         pass
     elif "_stage_reason" in extracted:
         # Recoverable parse failure — stage for review, not a hard fail
-        mark_rows(db, _ids(cluster), "staged")
+        mark_rows(db, _ids(cluster), "staged", stage_reason=extracted["_stage_reason"])
         summary["staged"] += 1
         if per_chat is not None:
             per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
@@ -665,7 +673,7 @@ def _process_cluster(
     elif "_error" in extracted:
         summary["failed"] += 1
         summary["errors"].append(extracted["_error"])
-        mark_rows(db, _ids(cluster), "failed")
+        mark_rows(db, _ids(cluster), "failed", stage_reason=extracted["_error"])
         return
 
     # Handle "unknown" kind — re-dispatch based on what Claude returned
@@ -685,17 +693,24 @@ def _process_cluster(
         # Normalise: model may return a list for multi-item text (e.g. "shake + fish + rice")
         food_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
         statuses: list[str] = []
+        food_stage_reason: str | None = None  # first stage_reason from any staged RPC result
         for food_item in food_items:
             if not isinstance(food_item, dict):
                 statuses.append("failed")
                 continue
             item_conf = float(food_item.get("confidence", confidence))
+            is_complete = food_is_complete(food_item)
+            item_stage_reason = None if is_complete else "incomplete: missing calories or macros"
             try:
                 res = db.rpc("maintainer_ingest_food", _food_rpc_args(
                     profile_id, food_item, item_conf, raw_text,
-                    not food_is_complete(food_item),
+                    not is_complete,
+                    item_stage_reason,
                 )) or {}
-                statuses.append(res.get("status", "failed"))
+                s = res.get("status", "failed")
+                statuses.append(s)
+                if s == "staged" and food_stage_reason is None:
+                    food_stage_reason = res.get("stage_reason") or item_stage_reason
             except Exception as exc:
                 log.error("maintainer_ingest_food failed: %s", exc)
                 statuses.append("failed")
@@ -705,7 +720,7 @@ def _process_cluster(
             mark_rows(db, _ids(cluster), "failed")
         elif "staged" in statuses:
             rpc_status = "staged"
-            mark_rows(db, _ids(cluster), "staged")
+            mark_rows(db, _ids(cluster), "staged", stage_reason=food_stage_reason)
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
@@ -744,7 +759,8 @@ def _process_cluster(
         # not confidence, so without it a 0.0-confidence unknown item would auto-write to prod.
         extracted.setdefault("meal_type", "unknown")
         extracted.setdefault("description", caption or "unknown item")
-        result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text, force_stage=True)
+        result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text,
+                            force_stage=True, stage_reason=f"unknown kind: {kind}")
         rpc_status = result.get("status", "failed")
 
     if rpc_status == "inserted":

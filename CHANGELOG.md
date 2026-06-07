@@ -1,5 +1,31 @@
 # HealthSpan Skill — Changelog
 
+## v3.9.0 — Drain: persist stage_reason on media_inbox + stg_food_log_review (2026-06-07)
+
+- **`media_inbox.stage_reason text`** column added (migration 037). Every `mark_rows` call for a
+  staged or failed item now writes a human-readable explanation — e.g.
+  `"incomplete: missing calories or macros"`, `"implausible calories: 15000 kcal (must be 25–12000)"`,
+  `"vision returned no parseable extraction"`, `"unknown kind: workout"`, `"connection timeout"`.
+- **`stg_food_log_review.stage_reason text`** column added. The `maintainer_ingest_food` RPC
+  (now 16 params, adds `p_stage_reason text DEFAULT NULL`) writes the reason into the staging
+  row so the future daily Telegram review-summary can show WHY each item needs review.
+- **DB-side kcal gate** now generates its own reason string
+  (`"implausible calories: N kcal (must be 25–12000)"`) and returns it in the jsonb result.
+  Python reads it and propagates to `media_inbox.stage_reason`.
+- **Reason provenance** — clear ownership:
+  - Python-determined (completeness gate) → `p_stage_reason="incomplete: missing calories or macros"` sent to RPC
+  - DB-determined (kcal plausibility) → `p_stage_reason=NULL`; DB computes and returns in jsonb
+  - Vision parse failure → `"vision returned no parseable extraction"` (existing sentinel, now persisted)
+  - Hard error → error message string written to `stage_reason` on the `failed` row
+  - Unknown kind → `"unknown kind: {kind}"` sent to RPC
+- **`mark_rows()`** gains `stage_reason: str | None = None`; only adds the key to the PATCH
+  body when non-None — no change to existing callers that don't pass it.
+- **`_write()`** extracts `stage_reason` from RPC jsonb result and passes to `mark_rows`.
+- **`_food_rpc_args()` / `write_food()`** gain `stage_reason=None` param.
+- **Migration 037** (`037_stage_reason.sql`): adds both columns + rebuilds 16-param fn + verify block.
+- **Tests** (+8, 61 total in drain file): `mark_rows` includes/omits stage_reason; vision parse
+  failure, vision error, incomplete food, DB kcal gate, unknown kind, successful write (absent).
+
 ## v3.8.0 — Drain richer confirmations: running totals + end-of-run summary (2026-06-07)
 
 - **Running food totals appended to each successful food write.** After `maintainer_ingest_food`
