@@ -310,6 +310,112 @@ def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
     )
 
 
+def _food_reference_candidates(caption: str, food_item: dict) -> list[str]:
+    """Build ordered candidate list for food_reference lookup.
+    Caption first (user-typed brand name is most reliable), then vision description,
+    then individual ingredient names from foods[].
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    raw_candidates = (
+        [caption or ""]
+        + [food_item.get("description") or ""]
+        + [f.get("name") or "" for f in food_item.get("foods") or []]
+    )
+    for s in raw_candidates:
+        s = s.strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            result.append(s)
+    return result
+
+
+def lookup_food_reference(db: DbRest, candidates: list[str], profile_id: str) -> dict | None:
+    """Try each candidate name against the food_reference table via RPC.
+    Personal entries (matching profile_id) take priority over global ones — enforced in SQL.
+    Returns the first matching row or None.
+    """
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            rows = db.rpc("lookup_food_reference", {"p_name": name, "p_profile_id": profile_id}) or []
+            if not isinstance(rows, list):
+                rows = [rows] if isinstance(rows, dict) and rows.get("name") else []
+            for row in rows:
+                if isinstance(row, dict) and row.get("name") and row.get("calories") is not None:
+                    return row
+        except Exception:
+            return None
+    return None
+
+
+def lookup_viome_verdicts(db: DbRest, candidates: list[str], profile_id: str) -> list[dict]:
+    """Check effective_food_guidance for all candidate names for this profile.
+    Returns a list of {item, effective_classification, reason} for avoid/minimize/superfood.
+    Uses a SECURITY DEFINER RPC so the drainer account fetches per-profile guidance correctly.
+    """
+    items = [c.strip() for c in candidates if c and c.strip()]
+    if not items:
+        return []
+    try:
+        rows = db.rpc("lookup_viome_verdicts", {"p_items": items, "p_profile_id": profile_id}) or []
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
+def lookup_past_food_macros(
+    db: DbRest, description: str, profile_id: str, min_logs: int
+) -> dict | None:
+    """Check food_logs for past confirmed entries matching this description.
+    Returns a macro summary dict if ≥ min_logs found; None otherwise.
+    min_logs comes from system_config 'food_reference.learn_min_logs' (Rule #1).
+    """
+    if not description:
+        return None
+    try:
+        rows = db.select(
+            "food_logs",
+            select="calories,protein_g,carbs_g,fat_g",
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "description": f"ilike.{description}",
+                "calories": "not.is.null",
+            },
+            limit=10,
+        )
+        if not rows or len(rows) < min_logs:
+            return None
+        count = len(rows)
+        return {
+            "calories": round(sum(float(r.get("calories") or 0) for r in rows) / count),
+            "protein_g": round(sum(float(r.get("protein_g") or 0) for r in rows) / count, 1),
+            "carbs_g":   round(sum(float(r.get("carbs_g")   or 0) for r in rows) / count, 1),
+            "fat_g":     round(sum(float(r.get("fat_g")     or 0) for r in rows) / count, 1),
+            "count": count,
+        }
+    except Exception:
+        return None
+
+
+def _viome_verdict_lines(verdicts: list[dict]) -> str:
+    """Compose Viome cross-check lines for the Telegram confirmation (adult only)."""
+    parts: list[str] = []
+    for v in verdicts:
+        item = (v.get("item") or "").strip()
+        cls  = v.get("effective_classification") or ""
+        reason = (v.get("reason") or "").strip()
+        suffix = f": {reason}" if reason else "."
+        if cls == "avoid":
+            parts.append(f"⚠️ {item} is on your AVOID list{suffix}")
+        elif cls == "minimize":
+            parts.append(f"⚠️ {item} — minimize{suffix}")
+        elif cls == "superfood":
+            parts.append(f"✅ {item} is a superfood for you{suffix}")
+    return "\n".join(parts)
+
+
 # ── storage ───────────────────────────────────────────────────────────────────
 
 def get_signed_url(db: DbRest, storage_path: str, expires_in: int = 300) -> str | None:
@@ -695,6 +801,7 @@ def _process_cluster(
     profile_ctx: dict | None = None,
     per_chat: dict | None = None,
     today: str | None = None,
+    learn_min_logs: int = 2,
 ) -> None:
     """Extract, write, and confirm one cluster. Updates summary in place."""
     profile_id = cluster[0]["profile_id"]
@@ -751,15 +858,33 @@ def _process_cluster(
     confidence = float(extracted.get("confidence", 0.0)) if isinstance(extracted, dict) else 0.0
     rpc_status = "failed"
 
+    viome_verdicts: list[dict] = []
+    learn_offer: str = ""
+
     if kind == "food":
         # Normalise: model may return a list for multi-item text (e.g. "shake + fish + rice")
         food_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
         statuses: list[str] = []
         food_stage_reason: str | None = None  # first stage_reason from any staged RPC result
+        has_ref_miss = False  # any item without a food_reference hit
         for food_item in food_items:
             if not isinstance(food_item, dict):
                 statuses.append("failed")
                 continue
+
+            # Food reference resolution: caption → description → ingredient names
+            candidates = _food_reference_candidates(raw_text, food_item)
+            ref = lookup_food_reference(db, candidates, str(profile_id))
+            if ref:
+                food_item["calories"]   = ref["calories"]
+                food_item["protein_g"]  = ref["protein_g"]
+                food_item["carbs_g"]    = ref["carbs_g"]
+                food_item["fat_g"]      = ref["fat_g"]
+                if ref.get("fiber_g") is not None:
+                    food_item["fiber_g"] = ref["fiber_g"]
+            else:
+                has_ref_miss = True
+
             item_conf = float(food_item.get("confidence", confidence))
             is_complete = food_is_complete(food_item)
             item_stage_reason = None if is_complete else "incomplete: missing calories or macros"
@@ -776,6 +901,7 @@ def _process_cluster(
             except Exception as exc:
                 log.error("maintainer_ingest_food failed: %s", exc)
                 statuses.append("failed")
+
         # Aggregate: all inserted → done; any staged (none failed) → staged; else failed
         if not statuses or "failed" in statuses:
             rpc_status = "failed"
@@ -786,6 +912,38 @@ def _process_cluster(
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
+
+        # Viome cross-check — collect all ingredient + description candidates across items
+        if rpc_status == "inserted" and not is_minor:
+            viome_candidates: list[str] = []
+            seen_vc: set[str] = set()
+            for fi in food_items:
+                if not isinstance(fi, dict):
+                    continue
+                for c in ([f.get("name") or "" for f in (fi.get("foods") or [])]
+                           + [fi.get("description") or ""]):
+                    cl = c.strip().lower()
+                    if cl and cl not in seen_vc:
+                        seen_vc.add(cl)
+                        viome_candidates.append(c.strip())
+            if viome_candidates:
+                viome_verdicts = lookup_viome_verdicts(db, viome_candidates, str(profile_id))
+
+        # Learn-from-past offer — only when we had no reference hit and food was written
+        if rpc_status == "inserted" and has_ref_miss and not is_minor:
+            for fi in food_items:
+                if not isinstance(fi, dict):
+                    continue
+                desc = fi.get("description") or ""
+                if desc:
+                    past = lookup_past_food_macros(db, desc, str(profile_id), learn_min_logs)
+                    if past:
+                        learn_offer = (
+                            f"💡 Logged '{desc}' {past['count']}× before — "
+                            "use /learn to add it to your food library."
+                        )
+                        break
+
         # Use first item for confirmation message
         extracted = food_items[0] if food_items and isinstance(food_items[0], dict) else {}
 
@@ -862,6 +1020,17 @@ def _process_cluster(
 
     # Telegram confirmation — append running food totals after a successful write
     msg = compose_confirmation(kind, rpc_status, extracted, is_minor)
+
+    # Viome cross-check lines (food, inserted, adult only)
+    if kind == "food" and rpc_status == "inserted" and not is_minor and viome_verdicts:
+        vlines = _viome_verdict_lines(viome_verdicts)
+        if vlines:
+            msg = f"{msg}\n{vlines}"
+
+    # Learn-from-past offer (food, inserted, no reference hit, adult only)
+    if kind == "food" and rpc_status == "inserted" and not is_minor and learn_offer:
+        msg = f"{msg}\n{learn_offer}"
+
     if rpc_status == "inserted" and kind == "food" and today and profile_ctx is not None:
         ctx = profile_ctx.get(str(profile_id), {})
         target_cal = (ctx.get("targets") or {}).get("daily_calories")
@@ -885,6 +1054,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
     settle_sec = int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
+    learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(timezone.utc).date().isoformat()
 
@@ -943,6 +1113,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str) -> dict:
                 db, cluster, api_key, model, now_iso,
                 conf_threshold, chat_is_minor, token, summary,
                 profile_ctx=profile_ctx, per_chat=per_chat, today=today_date,
+                learn_min_logs=learn_min_logs,
             )
         except Exception as exc:
             summary["failed"] += 1

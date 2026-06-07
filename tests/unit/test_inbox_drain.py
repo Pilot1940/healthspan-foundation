@@ -360,6 +360,8 @@ def test_run_once_written():
     ])
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}):
@@ -385,6 +387,8 @@ def test_run_once_staged():
     ])
 
     with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         summary = run_once(db, {
             "push.inbox_settle_sec": "0",
@@ -515,6 +519,8 @@ def test_completeness_gate_complete_shake_autowrites():
     cluster = [_item("r1", caption="protein shake")]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -535,6 +541,8 @@ def test_completeness_gate_bare_caption_stages():
     cluster = [_item("r1", caption="had lunch")]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -565,6 +573,8 @@ def test_food_list_writes_each_item():
     ]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -594,6 +604,8 @@ def test_food_list_mixed_status_stages_cluster():
     ]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -776,6 +788,8 @@ def test_run_once_sends_end_summary_written():
         (200, []),  # mark_rows
     ])
     with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}), \
          patch("monitor.inbox_drain.telegram_send") as mock_tg:
@@ -801,6 +815,8 @@ def test_run_once_sends_end_summary_staged():
         (200, []),
     ])
     with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send") as mock_tg:
         run_once(db, {
             "push.inbox_settle_sec": "0",
@@ -847,6 +863,8 @@ def test_process_cluster_appends_totals_on_write():
     ctx = {"targets": {"daily_calories": 2100, "protein_g": 180}}
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value=totals), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={"taken": 4, "total": 16}), \
          patch("monitor.inbox_drain.telegram_send") as mock_tg:
@@ -874,6 +892,8 @@ def test_process_cluster_no_totals_on_staged():
                   "carbs_g": None, "fat_g": None}
 
     with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals") as mock_totals, \
          patch("monitor.inbox_drain.telegram_send") as mock_tg:
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {},
@@ -959,6 +979,8 @@ def test_stage_reason_incomplete_food():
     cluster = [_item("r1", caption="had lunch")]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -984,6 +1006,8 @@ def test_stage_reason_implausible_kcal_from_rpc():
     cluster = [_item("r1", caption="mega meal")]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=implausible), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1032,6 +1056,8 @@ def test_stage_reason_absent_on_successful_write():
     cluster = [_item("r1", caption="protein shake")]
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1254,6 +1280,8 @@ def test_unknown_kind_reclassified_as_food_list():
         ],
     }
     with patch("monitor.inbox_drain.vision_extract", return_value=classified), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send"):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1384,3 +1412,191 @@ def test_food_rpc_args_source_is_telegram():
         0.9, "chicken 400 kcal", False,
     )
     assert args["p_source"] == "telegram"
+
+
+# ── 041 food_reference + viome cross-check ────────────────────────────────────
+
+_HOORAY_VISION = {
+    "meal_type": "drink",
+    "description": "strawberry protein shake",
+    "calories": 180,   # vision estimate — will be overridden by reference
+    "protein_g": 20.0,
+    "carbs_g": 15.0,
+    "fat_g": 3.0,
+    "fiber_g": 1.0,
+    "foods": [{"name": "strawberry shake", "amount": 340, "unit": "ml", "calories": 180}],
+    "logged_at": "2026-06-07T08:00:00Z",
+    "confidence": 0.7,
+}
+
+_HOORAY_REF_ROW = {
+    "id": "ref-uuid-hooray",
+    "name": "Hooray Strawberry Shake",
+    "calories": 250,
+    "protein_g": 31.0,
+    "carbs_g": 22.0,
+    "fat_g": 4.0,
+    "fiber_g": 0.0,
+    "serving_desc": "340ml shake",
+    "brand": "Hooray",
+    "verified": True,
+    "is_global": True,
+}
+
+
+def test_hooray_resolves_global_macros():
+    """When food_reference returns Hooray, vision macros are replaced with reference macros
+    before calling maintainer_ingest_food. Verifies caption 'Hooray' triggers the match."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),  # maintainer_ingest_food
+        (200, []),                                          # mark_rows
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="Hooray")]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_HOORAY_VISION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=_HOORAY_REF_ROW) as mock_ref, \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.telegram_send"):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    # lookup_food_reference was called with candidates that include the caption "Hooray"
+    call_candidates = mock_ref.call_args[0][1]  # second positional arg is candidates list
+    assert "Hooray" in call_candidates, f"caption 'Hooray' must be in candidates; got: {call_candidates}"
+
+    # The RPC was called with reference macros, NOT vision estimates
+    rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
+    assert rpc_call["body"]["p_calories"] == 250, "calories must come from reference, not vision"
+    assert rpc_call["body"]["p_protein_g"] == 31.0
+    assert rpc_call["body"]["p_carbs_g"] == 22.0
+    assert rpc_call["body"]["p_fat_g"] == 4.0
+    assert summary["written"] == 1
+
+
+def test_viome_avoid_food_flags_in_confirmation():
+    """When viome_verdict returns 'avoid', the Telegram message includes a warning.
+    Scope isolation (PC's coconut-milk verdict not appearing for Dea) is enforced by SQL;
+    this test verifies the correct profile_id is forwarded to the RPC and warning is shown."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+
+    coconut_dish = {**_FOOD_EXTRACTION, "description": "Thai green curry",
+                    "foods": [{"name": "coconut milk", "amount": 100, "unit": "ml", "calories": 180}]}
+    avoid_verdict = [{"item": "coconut milk", "effective_classification": "avoid",
+                      "reason": "Viome: inflammatory for your gut profile"}]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=coconut_dish), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=avoid_verdict) as mock_viome, \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, cluster := [_item("r1", caption="thai curry")],
+                         "key", "model", "now", 0.7, {}, "tok", summary)
+
+    # Correct profile_id forwarded
+    viome_call_profile = mock_viome.call_args[0][2]
+    assert viome_call_profile == _PC_PROFILE_ID
+
+    msg = mock_tg.call_args.args[2]
+    assert "⚠️" in msg, f"avoid warning missing from: {msg}"
+    assert "coconut milk" in msg.lower(), f"ingredient name missing from: {msg}"
+    assert "AVOID" in msg, f"AVOID classification missing from: {msg}"
+
+
+def test_viome_superfood_flags_positive_in_confirmation():
+    """superfood verdict → positive ✅ line in Telegram confirmation (not a warning)."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+
+    blueberry_dish = {**_FOOD_EXTRACTION, "description": "blueberry bowl",
+                      "foods": [{"name": "blueberry", "amount": 100, "unit": "g", "calories": 57}]}
+    superfood_verdict = [{"item": "blueberry", "effective_classification": "superfood",
+                          "reason": "antioxidant — top 10 for your profile"}]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=blueberry_dish), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=superfood_verdict), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, [_item("r1", caption="blueberry bowl")],
+                         "key", "model", "now", 0.7, {}, "tok", summary)
+
+    msg = mock_tg.call_args.args[2]
+    assert "✅" in msg, f"superfood positive marker missing from: {msg}"
+    assert "blueberry" in msg.lower()
+    assert "⚠️" not in msg, f"avoid warning must NOT appear for superfood: {msg}"
+
+
+def test_viome_verdict_suppressed_for_minor():
+    """Viome guidance (avoid/superfood) must NOT appear in messages to minors."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+
+    minor_item = {**_item("r1"), "chat_id": 42}
+    avoid_verdict = [{"item": "papaya", "effective_classification": "avoid", "reason": "fructose"}]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=avoid_verdict), \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, [minor_item], "key", "model", "now", 0.7,
+                         {"42": True}, "tok", summary)
+
+    msg = mock_tg.call_args.args[2]
+    assert "⚠️" not in msg, f"avoid warning must not appear for minors: {msg}"
+    assert "AVOID" not in msg
+
+
+def test_food_reference_candidates_caption_first():
+    """Caption is the first candidate for food_reference lookup.
+    Ensures brand names typed by the user (e.g. 'Hooray') are tried before vision description."""
+    from monitor.inbox_drain import _food_reference_candidates
+    food_item = {
+        "description": "strawberry protein shake",
+        "foods": [{"name": "strawberry", "amount": 1, "unit": "cup", "calories": 50}],
+    }
+    candidates = _food_reference_candidates("Hooray", food_item)
+    assert candidates[0] == "Hooray", f"caption must be first candidate; got: {candidates}"
+    assert "strawberry protein shake" in candidates
+    assert "strawberry" in candidates
+    # No duplicates (case-insensitive)
+    lower = [c.lower() for c in candidates]
+    assert len(lower) == len(set(lower))
+
+
+def test_learn_from_past_offer_when_no_reference():
+    """When no food_reference match but ≥2 past confirmed logs, offer to promote."""
+    db, captured = _db_capture([
+        (200, {"id": "food-uuid", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="papaya salad")]
+
+    past_macros = {"calories": 185, "protein_g": 2.5, "carbs_g": 30.0, "fat_g": 1.0, "count": 3}
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.lookup_past_food_macros", return_value=past_macros) as mock_past, \
+         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary,
+                         learn_min_logs=2)
+
+    msg = mock_tg.call_args.args[2]
+    assert "💡" in msg, f"learn offer missing from: {msg}"
+    assert "3" in msg, f"count ({past_macros['count']}) not in offer: {msg}"
+    # learn_min_logs was forwarded (mock was called)
+    assert mock_past.called

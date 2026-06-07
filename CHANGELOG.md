@@ -1,5 +1,60 @@
 # HealthSpan Skill — Changelog
 
+## v3.12.0 — Smart food resolution: macro reference + per-user Viome cross-check (2026-06-07)
+
+**Shared macro library + per-profile Viome guidance; drain now resolves known foods to trusted macros.**
+
+### food_reference table (migration 041)
+- New table: `food_reference` — shared macro library. `profile_id IS NULL` = global (visible to all); `profile_id = <uuid>` = user's personal library.
+- Columns: name, aliases[], serving_desc, calories, protein_g, carbs_g, fat_g, fiber_g, brand, profile_id, source, verified.
+- Two partial unique indexes (case-insensitive): `food_reference_global_name` + `food_reference_personal_name`.
+- RLS: global rows readable by all authenticated; personal rows by the owning profile only; write restricted to personal rows via authenticated (global = service_role only).
+- `verified=true` = curated/trusted entry; `verified=false` = user-promoted (learn-from-past).
+- Seed: **Hooray Strawberry Shake** (global, verified) — 340ml, 250 kcal, 31g P, 22g C, 4g F.
+
+### Per-user Viome model (migration 041)
+- `food_guidance` now has `profile_id UUID NULL REFERENCES profiles(id)`. `NULL` = global (family-wide); a UUID = belongs to that profile only.
+- **All 86 existing rows** migrated to the maintainer profile (PC) dynamically via `profiles.is_maintainer = true` — no hardcoded UUID.
+- `effective_food_guidance` view updated: added `AND (fg.profile_id IS NULL OR fg.profile_id = p.id)` filter so Dea's guidance excludes PC's Viome rows and vice versa.
+- Old RLS `food_guidance_read` (`USING (true)`) replaced: global rows visible to all; personal rows to owner only.
+- Design decision: nullable `profile_id` FK over a `scope TEXT` column (consistent with `food_reference`; FK + CASCADE enforces referential integrity).
+
+### SECURITY DEFINER lookup RPCs (migration 041)
+- `lookup_food_reference(p_name text, p_profile_id uuid)` — case-insensitive name/alias match; personal before global.
+- `lookup_viome_verdicts(p_items text[], p_profile_id uuid)` — per-profile avoid/minimize/superfood lookup. DEFINER required because `effective_food_guidance` is `security_invoker=true`; calling it as the drainer service account would ignore the profile's personal guidance.
+- `promote_food_to_reference(p_name, p_profile_id, macros…)` — upsert user-scope entry; ready for learn-from-past webhook handler (deferred — see below).
+- `system_config` key `food_reference.learn_min_logs = 2` (Rule #1: no hardcoded thresholds).
+
+### Drain changes (`monitor/inbox_drain.py`)
+- `_food_reference_candidates(caption, food_item)` — builds ordered candidate list: caption first (user-typed brand), then vision description, then ingredient names from `foods[]`.
+- `lookup_food_reference(db, candidates, profile_id)` — tries each candidate via RPC, returns first valid hit or None.
+- `lookup_viome_verdicts(db, candidates, profile_id)` — bulk check via RPC, returns list of {item, effective_classification, reason}.
+- `_viome_verdict_lines(verdicts)` — composes ⚠️ (avoid/minimize) or ✅ (superfood) lines for Telegram.
+- `lookup_past_food_macros(db, description, profile_id, min_logs)` — checks `food_logs` for confirmed past entries; threshold from system_config.
+- `_process_cluster` food branch:
+  - For each food_item: try `lookup_food_reference` first; if hit, replace vision macros with reference macros.
+  - After loop: collect all ingredient + description candidates → single `lookup_viome_verdicts` call.
+  - If rpc_status=inserted, verdicts → append verdict lines to Telegram confirmation (adult only).
+  - If no reference hit + inserted: check past logs → append learn offer if ≥ min_logs (adult only).
+- `_process_cluster` signature: added `learn_min_logs: int = 2` keyword arg.
+- `run_once`: reads `food_reference.learn_min_logs` from cfg; passes to `_process_cluster`.
+
+### Tests (6 new — 89 total)
+- `test_hooray_resolves_global_macros`: caption "Hooray" triggers lookup; reference macros (250/31/22/4) replace vision estimates; correct macros reach the RPC.
+- `test_viome_avoid_food_flags_in_confirmation`: avoid verdict → ⚠️ + ingredient name + "AVOID" in Telegram message; correct profile_id forwarded.
+- `test_viome_superfood_flags_positive_in_confirmation`: superfood → ✅ line; no ⚠️.
+- `test_viome_verdict_suppressed_for_minor`: Viome guidance not surfaced to minor chats.
+- `test_food_reference_candidates_caption_first`: caption is candidates[0]; no duplicates.
+- `test_learn_from_past_offer_when_no_reference`: no ref hit + past macros → 💡 offer with count in message.
+- **Note on scope isolation**: per-user isolation (PC's Viome not applied to Dea) is enforced by the `food_guidance.profile_id` FK + `effective_food_guidance` view filter + `lookup_viome_verdicts` SECURITY DEFINER SQL. The Python tests verify correct `profile_id` forwarding; actual RLS enforcement is a DB-level guarantee tested at the SQL layer.
+
+### Learn-from-past (deferred)
+- Drain detects and informs (💡 offer in Telegram message).
+- `promote_food_to_reference` RPC is ready.
+- The interactive `/learn` command (webhook handler for the actual promotion) is deferred to a follow-on PR once the Telegram webhook command parser is extended.
+
+---
+
 ## v3.11.0 — Write-contract audit: fix all RPC→table constraint gaps (2026-06-07)
 
 **Proactive audit of all three RPC INSERT paths against live table constraints.**
