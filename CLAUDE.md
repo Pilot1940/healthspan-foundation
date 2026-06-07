@@ -27,8 +27,8 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–038 all written and applied** — Telegram ingestion Phase 1–3B + drain
-  identity + completeness gate + stage_reason + supplement/biomarker alignment. 035
+- **Migrations 029–039 all written and applied** — Telegram ingestion Phase 1–3B + drain
+  identity + completeness gate + stage_reason + supplement/biomarker alignment + taken_on fix. 035
   re-keyed drain identity to `healthspan.drainer@chitalkar.com`. **036 (applied
   2026-06-07)** added `p_force_stage` to `maintainer_ingest_food` + DB-side kcal gate.
   **037 (applied 2026-06-07)** added `stage_reason` to `media_inbox` +
@@ -39,6 +39,8 @@
   `stg_supplement_intake_review`; biomarker has DB-side `plausible_min/max` gate;
   drain now uses per-kind completeness gates (`supplement_is_complete`,
   `biomarker_is_complete`) + improved `unknown` prompt with per-kind schemas.
+  **039 (applied 2026-06-07)** fixed `maintainer_ingest_supplement` — removed `taken_on`
+  from INSERT (GENERATED column, 428C9 error); kept in ON CONFLICT target.
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
@@ -46,9 +48,10 @@
   `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
   `supabase functions deploy whoop-webhook --no-verify-jwt`.
 - **`lib/contract.write` skips GENERATED columns** on INSERT/UPDATE while keeping them
-  as `ON CONFLICT` targets. Note: `supplement_intake_logs.taken_on` is a plain nullable
-  `date` column in the live DB (not GENERATED); migration 038 sets it explicitly as
-  `(taken_at AT TIME ZONE 'UTC')::date` to satisfy the unique index.
+  as `ON CONFLICT` targets. `supplement_intake_logs.taken_on` IS `GENERATED ALWAYS AS
+  ((taken_at AT TIME ZONE 'UTC')::date)` — confirmed on live DB. Migration 039 removed
+  it from the `maintainer_ingest_supplement` INSERT (was causing error 428C9); it is
+  still used as the ON CONFLICT target, auto-populated by Postgres from `taken_at`.
 - **66 tables** (35 active / 31 empty), 7 views, 126 FKs (0 orphans). Full inventory +
   dormant-table classification: `docs/HEALTH-CHECK-2026-06-03.md`.
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,

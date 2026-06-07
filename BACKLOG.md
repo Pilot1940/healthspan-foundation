@@ -44,6 +44,20 @@ Add items via PR or Cowork session.
 
 ---
 
+## #3 — supplement_intake_logs.source CHECK constraint missing 'telegram' — **OPEN**
+
+**Severity:** HIGH · **Owner:** CC · **Status:** OPEN — discovered during 039 live verification.
+
+**Where it bites:** `supplement_intake_logs_source_check` allows only `['manual','journal','skill','csv','photo']`.
+The drain's `_supplement_rpc_args()` sends `p_source='telegram'`, so any `force_stage=False`
+supplement write from the Telegram drain will fail with a `CHECK constraint` violation.
+In practice: every supplement that passes the completeness gate will fail silently at the DB level.
+
+**Fix:** Migration 040 — `ALTER TABLE supplement_intake_logs DROP CONSTRAINT supplement_intake_logs_source_check; ALTER TABLE supplement_intake_logs ADD CONSTRAINT supplement_intake_logs_source_check CHECK (source = ANY (ARRAY['manual','journal','skill','csv','photo','telegram']));`
+Also applies to `biomarkers.source` if it has a similar constraint (verify first).
+
+---
+
 ## Done / shipped reference
 - v3.2 (2026-06-05): supabase_client auth fix, lazy psycopg2, pinned cold-start, schema-map freshness, 924-char description. Webhook duration/zone-pct/sleep-fields fix deployed; prior-cycle refresh live.
 - Pending elsewhere: migration 016c schema-comment completion (35 unmapped tables) — prompt already with CC.

@@ -1,5 +1,26 @@
 # HealthSpan Skill — Changelog
 
+## v3.10.1 — Fix: supplement RPC 428C9 (GENERATED taken_on) (2026-06-07)
+
+- **Root cause:** `supplement_intake_logs.taken_on` is `GENERATED ALWAYS AS ((taken_at AT TIME ZONE 'UTC')::date)`.
+  Migration 038 included `taken_on` in the INSERT column list and VALUES — PostgreSQL error 428C9
+  ("cannot insert into a generated column") on every non-staged supplement write.
+- **Migration 039** (`039_supplement_rpc_fix_generated_taken_on.sql`): drops and recreates
+  `maintainer_ingest_supplement` with `taken_on` removed from INSERT column list and VALUES.
+  `taken_on` is retained as the ON CONFLICT target (valid for GENERATED columns). `taken_at`
+  continues to drive the expression; `taken_on` is auto-populated by Postgres.
+- **No biomarker equivalent** — `biomarkers` table has no GENERATED columns; no change needed.
+- **Verify block** in migration asserts: `"taken_at, source"` adjacent (no `taken_on` between them)
+  and `taken_on` present in `ON CONFLICT` target.
+- **Live verified** via psql: `force_stage=FALSE` call → `{status: "inserted", taken_on: "2019-12-01"}`;
+  no 428C9.
+- **Integration tests** added in `tests/integration/test_supplement_biomarker_rpc.py` (skip when
+  `HS_AUTH_EMAIL`/`HS_AUTH_PASSWORD` absent): INSERT path asserts `taken_on` auto-populated;
+  staging path asserts `stage_reason` written.
+  - Note: integration test uses `source='manual'` — `supplement_intake_logs_source_check` allows
+    only `['manual','journal','skill','csv','photo']`; drain's `'telegram'` source would fail
+    this constraint on the INSERT path (separate issue, not part of 039).
+
 ## v3.10.0 — Drain: supplement + biomarker alignment (2026-06-07)
 
 - **Root cause fixed:** live 400 on `maintainer_ingest_supplement`. Two failure modes in the
