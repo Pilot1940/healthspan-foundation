@@ -208,7 +208,7 @@ def write_biomarker(
     """
     return _write(db, rows, "maintainer_ingest_biomarker", {
         "p_profile_id":            profile_id,
-        "p_metric_definition_id":  extracted["metric_definition_id"],
+        "p_metric_definition_id":  extracted.get("metric_definition_id"),
         "p_value":                 extracted["value"],
         "p_unit":                  extracted.get("unit"),
         "p_measured_at":           extracted.get("measured_at"),
@@ -235,7 +235,7 @@ def write_supplement(
     """
     return _write(db, rows, "maintainer_ingest_supplement", {
         "p_profile_id":     profile_id,
-        "p_supplement_id":  extracted["supplement_id"],
+        "p_supplement_id":  extracted.get("supplement_id"),
         "p_dose_amount":    extracted.get("dose_amount"),
         "p_dose_unit":      extracted.get("dose_unit"),
         "p_taken_at":       extracted.get("taken_at"),

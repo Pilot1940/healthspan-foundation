@@ -20,13 +20,18 @@
 - **Cache**: Redis
 - **Language**: Python
 
-## Current State (2026-06-04)
+## Current State (2026-06-07)
 
 - **Migrations 024–028 all applied** (024 drop-backup, 025 query_audit reshape, 026 drop 8
   dead SaaS tables, 027 supplement source vocab +photo, 028 drop 4 more fossils —
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
+- **Migrations 029–033 written, pending apply** — Telegram ingestion Phase 1–3A +
+  drain service identity. Apply in order: 029 (telegram tables + RLS), 030 (push_log
+  dedup_value + system_config push thresholds), 031 (maintainer-ingest RPCs +
+  media_group_id + settle config), 032 (drain identity family_memberships + anon
+  REVOKE), 033 (re-key drain identity after account recreation).
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
   webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
   `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:

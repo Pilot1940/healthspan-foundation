@@ -198,6 +198,44 @@ def test_write_food_low_confidence_routes_to_staging():
     assert result.get("status") == "staged"
 
 
+# ── inbox_drain: write_biomarker / write_supplement unresolved-UUID paths ─────
+
+def test_write_biomarker_missing_metric_id_does_not_raise():
+    """When lookup_metric finds no match, extracted has no metric_definition_id.
+    write_biomarker must not KeyError — it should pass None and let the RPC decide."""
+    from monitor.inbox_drain import write_biomarker
+
+    rpc_result = {"id": "stg-uuid", "status": "staged"}
+    db = _db([
+        (200, rpc_result),
+        (200, []),
+    ])
+    rows = [_make_item("r1", kind="lab")]
+    # extracted dict intentionally has no 'metric_definition_id' key
+    result = write_biomarker(db, rows, rows[0]["profile_id"],
+                             {"extracted_name": "Glucose", "value": 95, "unit": "mg/dL"},
+                             confidence=0.8, raw_text="Glucose 95")
+    assert isinstance(result, dict)
+
+
+def test_write_supplement_missing_supplement_id_does_not_raise():
+    """When lookup_supplement_by_name finds no match, extracted has no supplement_id.
+    write_supplement must not KeyError — it should pass None and let the RPC decide."""
+    from monitor.inbox_drain import write_supplement
+
+    rpc_result = {"id": "stg-uuid", "status": "staged"}
+    db = _db([
+        (200, rpc_result),
+        (200, []),
+    ])
+    rows = [_make_item("r1", kind="supplement")]
+    # extracted dict intentionally has no 'supplement_id' key
+    result = write_supplement(db, rows, rows[0]["profile_id"],
+                              {"name": "Unknown Herb", "dose_amount": 500, "dose_unit": "mg"},
+                              confidence=0.6, raw_text="Unknown Herb 500mg")
+    assert isinstance(result, dict)
+
+
 # ── minor framing: no deficit words in any Routine confirmation ───────────────
 
 _DEFICIT_WORDS = ["low", "poor", "bad", "deficit", "restrict", "not enough", "missing"]
