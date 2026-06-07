@@ -1314,3 +1314,73 @@ def test_unknown_kind_stays_unknown_stages_with_could_not_classify():
     assert summary["staged"] == 1
     rpc = next(c for c in captured if "maintainer_ingest_food" in c["url"])
     assert rpc["body"]["p_stage_reason"] == "could not classify"
+
+
+# ── 040 write-contract audit ──────────────────────────────────────────────────
+
+def test_food_vision_prompt_has_no_unknown_meal_type():
+    """_VISION_PROMPTS['food'] must not offer 'unknown' as a meal_type option.
+    'unknown' is not in food_logs_meal_type_check; offering it causes CHECK violations.
+    """
+    from monitor.inbox_drain import _VISION_PROMPTS
+    prompt = _VISION_PROMPTS["food"]
+    # 'unknown' must not appear as a meal_type value (it could still appear in prose)
+    assert "meal_type" in prompt, "food prompt should still instruct on meal_type"
+    # The prompt uses 'breakfast|lunch|dinner|...' format — check 'unknown' not in that list
+    import re as _re
+    m = _re.search(r'"meal_type":"([^"]+)"', prompt)
+    assert m, "food prompt should have meal_type example"
+    meal_type_options = m.group(1).split("|")
+    assert "unknown" not in meal_type_options, (
+        f"'unknown' must not be a meal_type option — it fails food_logs_meal_type_check. "
+        f"Got: {meal_type_options}"
+    )
+
+
+def test_food_vision_prompt_meal_types_all_valid():
+    """All meal_type options in the food prompt must be in food_logs_meal_type_check."""
+    from monitor.inbox_drain import _VISION_PROMPTS
+    import re as _re
+    valid = {"breakfast", "lunch", "dinner", "snack", "drink", "supplement"}
+    m = _re.search(r'"meal_type":"([^"]+)"', _VISION_PROMPTS["food"])
+    assert m
+    for opt in m.group(1).split("|"):
+        assert opt in valid, (
+            f"meal_type '{opt}' not in food_logs_meal_type_check valid set {valid}"
+        )
+
+
+def test_supplement_rpc_args_source_is_telegram():
+    """_supplement_rpc_args always sends source='telegram' — the drain source."""
+    from monitor.inbox_drain import _supplement_rpc_args
+    args = _supplement_rpc_args(
+        "profile-1",
+        {"supplement_id": "supp-uuid", "dose_amount": 500, "dose_unit": "mg"},
+        0.9, "berberine 500mg", False,
+    )
+    assert args["p_source"] == "telegram", (
+        "supplement RPC source must be 'telegram' — the drain source; "
+        "supplement_intake_logs.source CHECK must include 'telegram' (migration 040)"
+    )
+
+
+def test_biomarker_rpc_args_source_is_telegram():
+    """_biomarker_rpc_args always sends source='telegram'."""
+    from monitor.inbox_drain import _biomarker_rpc_args
+    args = _biomarker_rpc_args(
+        "profile-1",
+        {"metric_definition_id": "metric-uuid", "value": 98.0, "unit": "mg/dL"},
+        0.9, "glucose 98", False,
+    )
+    assert args["p_source"] == "telegram"
+
+
+def test_food_rpc_args_source_is_telegram():
+    """_food_rpc_args always sends source='telegram'."""
+    from monitor.inbox_drain import _food_rpc_args
+    args = _food_rpc_args(
+        "profile-1",
+        {"meal_type": "lunch", "description": "chicken", "calories": 400},
+        0.9, "chicken 400 kcal", False,
+    )
+    assert args["p_source"] == "telegram"

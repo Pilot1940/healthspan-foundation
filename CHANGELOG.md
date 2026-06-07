@@ -1,5 +1,34 @@
 # HealthSpan Skill — Changelog
 
+## v3.11.0 — Write-contract audit: fix all RPC→table constraint gaps (2026-06-07)
+
+**Proactive audit of all three RPC INSERT paths against live table constraints.**
+
+| Gap | Table | Constraint | Drain value | Fix |
+|-----|-------|-----------|-------------|-----|
+| supplement source CHECK missing 'telegram' | supplement_intake_logs | `source_check` | `'telegram'` | 040: add 'telegram' to CHECK |
+| supplement_id NOT NULL, no RPC guard | supplement_intake_logs | NOT NULL | `None` if no lookup | 040: DB guard → stage with reason |
+| supplement RETURN used `p_stage_reason` not `v_stage_reason` | — | — | — | 040: use `v_stage_reason` |
+| metric_definition_id NOT NULL, no RPC guard | biomarkers | NOT NULL | `None` if unresolved | 040: DB guard → stage with reason |
+| value NOT NULL, no RPC guard | biomarkers | NOT NULL | `None` if unresolved | 040: DB guard → stage with reason |
+| meal_type CHECK excludes 'unknown' | food_logs | `meal_type_check` | AI could return `'unknown'` | 040: DB guard → stage; Python: remove 'unknown' from food prompt |
+| description NOT NULL, no RPC guard | food_logs | NOT NULL | `None` if missing | 040: DB guard → stage |
+
+- **Migration 040** (`040_write_contract_audit.sql`):
+  1. `supplement_intake_logs.source_check`: DROP + re-ADD with `'telegram'` in array
+  2. `maintainer_ingest_supplement` (040): local `v_stage/v_stage_reason`; supplement_id NULL guard; fixed RETURN to emit `v_stage_reason`
+  3. `maintainer_ingest_biomarker` (040): metric_definition_id + value NULL guards (before plausibility gate)
+  4. `maintainer_ingest_food` (040): description NULL guard + meal_type guard (`NOT IN valid set AND NOT NULL → stage`)
+  - Verify block asserts all 4 changes are present in live DB
+- **Python** (`monitor/inbox_drain.py`): `_VISION_PROMPTS["food"]` meal_type changed from `breakfast|lunch|dinner|snack|supplement|unknown` → `breakfast|lunch|dinner|snack|drink|supplement` (matches the CHECK exactly; 'unknown' was causing CHECK violations)
+- **Integration tests** (5 new in `tests/integration/test_supplement_biomarker_rpc.py`):
+  - `test_040_telegram_source_inserts_real_row` for all 3 RPCs — would have caught source CHECK gaps on any table
+  - `test_040_null_supplement_id_db_guard_stages` — supplement NULL ID guard
+  - `test_040_null_metric_id_db_guard_stages` — biomarker NULL metric guard
+  - `test_040_invalid_meal_type_db_guard_stages` — food 'unknown' meal_type guard
+  - `test_040_null_description_db_guard_stages` — food NULL description guard
+- **Unit tests** (5 new, 83 total): food prompt meal_type options all-valid; source='telegram' in all 3 `_rpc_args` helpers
+
 ## v3.10.1 — Fix: supplement RPC 428C9 (GENERATED taken_on) (2026-06-07)
 
 - **Root cause:** `supplement_intake_logs.taken_on` is `GENERATED ALWAYS AS ((taken_at AT TIME ZONE 'UTC')::date)`.

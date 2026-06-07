@@ -27,10 +27,10 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–039 all written and applied** — Telegram ingestion Phase 1–3B + drain
-  identity + completeness gate + stage_reason + supplement/biomarker alignment + taken_on fix. 035
-  re-keyed drain identity to `healthspan.drainer@chitalkar.com`. **036 (applied
-  2026-06-07)** added `p_force_stage` to `maintainer_ingest_food` + DB-side kcal gate.
+- **Migrations 029–040 all written and applied** — Telegram ingestion Phase 1–3B + drain
+  identity + completeness gate + stage_reason + supplement/biomarker alignment + taken_on fix +
+  write-contract audit. 035 re-keyed drain identity to `healthspan.drainer@chitalkar.com`.
+  **036 (applied 2026-06-07)** added `p_force_stage` to `maintainer_ingest_food` + DB-side kcal gate.
   **037 (applied 2026-06-07)** added `stage_reason` to `media_inbox` +
   `stg_food_log_review`. **038 (applied 2026-06-07)** rebuilt
   `maintainer_ingest_supplement` + `maintainer_ingest_biomarker` to mirror food pattern:
@@ -41,6 +41,11 @@
   `biomarker_is_complete`) + improved `unknown` prompt with per-kind schemas.
   **039 (applied 2026-06-07)** fixed `maintainer_ingest_supplement` — removed `taken_on`
   from INSERT (GENERATED column, 428C9 error); kept in ON CONFLICT target.
+  **040 (applied 2026-06-07)** write-contract audit: added `'telegram'` to
+  `supplement_intake_logs.source_check`; DB-side NOT NULL guards in supplement
+  (supplement_id), biomarker (metric_definition_id, value), and food (description,
+  meal_type CHECK) RPCs; fixed supplement RETURN to emit `v_stage_reason` not
+  `p_stage_reason`; removed `'unknown'` from food vision prompt meal_type options.
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`

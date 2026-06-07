@@ -44,17 +44,12 @@ Add items via PR or Cowork session.
 
 ---
 
-## #3 — supplement_intake_logs.source CHECK constraint missing 'telegram' — **OPEN**
+## #3 — supplement_intake_logs.source CHECK constraint missing 'telegram' — **DONE (040)**
 
-**Severity:** HIGH · **Owner:** CC · **Status:** OPEN — discovered during 039 live verification.
-
-**Where it bites:** `supplement_intake_logs_source_check` allows only `['manual','journal','skill','csv','photo']`.
-The drain's `_supplement_rpc_args()` sends `p_source='telegram'`, so any `force_stage=False`
-supplement write from the Telegram drain will fail with a `CHECK constraint` violation.
-In practice: every supplement that passes the completeness gate will fail silently at the DB level.
-
-**Fix:** Migration 040 — `ALTER TABLE supplement_intake_logs DROP CONSTRAINT supplement_intake_logs_source_check; ALTER TABLE supplement_intake_logs ADD CONSTRAINT supplement_intake_logs_source_check CHECK (source = ANY (ARRAY['manual','journal','skill','csv','photo','telegram']));`
-Also applies to `biomarkers.source` if it has a similar constraint (verify first).
+**Severity:** HIGH · **Owner:** CC · **Status:** SHIPPED — migration 040, 2026-06-07.
+Full write-contract audit also fixed: supplement supplement_id NULL guard, biomarker
+metric_definition_id/value NULL guards, food meal_type/description guards. biomarkers.source
+has no CHECK (verified) — no change needed there.
 
 ---
 

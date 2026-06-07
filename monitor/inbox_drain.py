@@ -357,7 +357,7 @@ def _image_block(data: bytes, content_type: str) -> dict:
 _VISION_PROMPTS: dict[str, str] = {
     "food": (
         'Extract food log data. Return JSON only:\n'
-        '{"meal_type":"breakfast|lunch|dinner|snack|supplement|unknown",'
+        '{"meal_type":"breakfast|lunch|dinner|snack|drink|supplement",'
         '"description":"brief description",'
         '"calories":integer_or_null,"protein_g":null,"carbs_g":null,"fat_g":null,"fiber_g":null,'
         '"foods":[{"name":"...","amount":null,"unit":null,"calories":null}],'
