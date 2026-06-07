@@ -1,8 +1,8 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-06 16:43 UTC.
-> generated_at: 2026-06-06T16:43:28Z
+> Generated 2026-06-07 03:08 UTC.
+> generated_at: 2026-06-07T03:08:19Z
 > coverage: 59 of 59 public base tables documented.
 
 ## `profiles`
@@ -654,6 +654,7 @@ _Durable inbound queue: one row per Telegram photo/text from an active identity.
 | `created_at` | timestamp with time zone | Enqueue timestamp (timestamptz). Use for Routine SLA monitoring — not Telegram send time. |
 | `processed_at` | timestamp with time zone | Timestamp the Routine finished processing (timestamptz). NULL = not yet processed. |
 | `result_ref` | uuid | UUID of the downstream row written by the Routine (food_logs.id, biomarkers.id, etc.). NULL until status = done. |
+| `media_group_id` | text | Telegram media_group_id shared by photos in the same album burst. NULL for single photos or text messages. Rows sharing this value are drained as one cluster (one extraction, one log entry). |
 
 ## `program_phases`
 _Ordered phases within a training_program (base / build / peak / taper...). UNIQUE(program_id, ordinal)._
@@ -694,6 +695,7 @@ _Outbound Telegram push idempotency + debounce ledger. One row per push attempt 
 | `subject_id` | text | The entity being pushed about (whoop_id, media_inbox.id as text, date string). Combined with push_type + profile_id for debounce. NULL for category-level pushes. |
 | `sent_at` | timestamp with time zone | Timestamp the push was attempted (timestamptz). Debounce window anchor. |
 | `status` | text | Delivery outcome: sent \| failed \| suppressed (inside debounce window or quiet hours). TRAP: suppressed is intentional — do not count as an error in monitoring. |
+| `dedup_value` | numeric | Metric value at push time (recovery_score_pct for recovery pushes, activity_strain for workouts). Used by the debounce/material-change check: a re-score within the debounce window only re-pushes if ABS(current − dedup_value) >= push.material_change_pct. NULL for non-numeric push types (dead_man, media_done). TRAP: the DB upsert has already overwritten the whoop row by the time the check runs — read dedup_value from the most-recent push_log row for (profile, type, subject), not from the live table. |
 
 ## `query_audit`
 _Skill read-audit log: one row per skill query (lib.views.run_view = catalog, lib.sql_guard.run_adhoc_audited = adhoc). MAINTAINER-ONLY RLS SELECT (022) — non-maintainers see 0 rows. kind CHECK catalog|adhoc. Written non-blocking via lib.sql_guard.log_query._

@@ -1,5 +1,5 @@
-// telegram-webhook — Phase 1 ingestion: auth, dedup, media→Storage, enqueue.
-// Does NOT call the Routine (Phase 3 wires the trigger). Just enqueue + ack 200.
+// telegram-webhook — Phase 1 + 3A ingestion: auth, dedup, media→Storage, enqueue, Routine fire.
+// Phase 3A adds: media_group_id capture (album clustering) + Routine fire-trigger (deduped).
 //
 // Auth model: service_role (same as whoop-webhook). No user session in an inbound webhook.
 // Secrets read: TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET,
@@ -82,6 +82,53 @@ async function alertMaintainer(db: SupabaseClient, unknownChatId: number, previe
     ? `⚠️ Unknown chat ${unknownChatId} tried to connect. First msg: "${preview.slice(0, 60)}". Mint a link code to onboard them.`
     : `⚠️ Unknown chat ${unknownChatId} tried to connect. Mint a link code to onboard them.`;
   await telegramSend(identity.chat_id, msg);
+}
+
+// ── Routine fire-trigger (Phase 3A) ────────────────────────────────────────────
+//
+// Fires the Routine drain at most once per routine.fire_dedup_sec (default 300s).
+// Dedup uses an atomic compare-and-set PATCH on system_config.updated_at so
+// concurrent webhook fires cannot double-fire within the window.
+// Requires secrets: ROUTINE_TRIGGER_URL, ROUTINE_BEARER (optional).
+// Runs inside EdgeRuntime.waitUntil — never delays the 200 response.
+
+async function maybeFireRoutine(db: SupabaseClient): Promise<void> {
+  const routineUrl = Deno.env.get("ROUTINE_TRIGGER_URL");
+  if (!routineUrl) return;
+
+  // Read dedup window from system_config
+  const { data: cfgRows } = await db
+    .from("system_config")
+    .select("key,value")
+    .in("key", ["routine.fire_dedup_sec"])
+    .eq("is_active", true);
+
+  const dedupSec = Number(cfgRows?.find((r: any) => r.key === "routine.fire_dedup_sec")?.value ?? 300);
+  const nowMs = Date.now();
+  const cutoff = new Date(nowMs - dedupSec * 1000).toISOString();
+  const nowIso = new Date(nowMs).toISOString();
+
+  // Atomic compare-and-set: update only if last fire was ≥ dedupSec ago.
+  // updated_at is timestamptz — reliable comparison; value stores human-readable ISO.
+  const { data: won } = await db
+    .from("system_config")
+    .update({ value: nowIso, updated_at: nowIso })
+    .eq("key", "routine.last_fire_at")
+    .eq("is_active", true)
+    .lt("updated_at", cutoff)
+    .select("id");
+
+  if (!won?.length) return; // another fire won the race (or row not found)
+
+  const bearer = Deno.env.get("ROUTINE_BEARER") ?? "";
+  await fetch(routineUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(bearer ? { "Authorization": `Bearer ${bearer}` } : {}),
+    },
+    body: JSON.stringify({ trigger: "telegram_webhook", ts: nowMs }),
+  });
 }
 
 // ── Telegram file download + Storage upload ─────────────────────────────────────
@@ -239,6 +286,9 @@ Deno.serve(async (req) => {
   const caption: string | undefined = msg.caption ?? messageText;
   const kind = guessKind(caption);
 
+  // media_group_id links photos from the same album burst (Phase 3A)
+  const mediaGroupId: string | null = msg.media_group_id ?? null;
+
   // Photo or document → download + store; text-only → storage_path stays null
   const photo: any[] | undefined = msg.photo;
   const document: any | undefined = msg.document;
@@ -260,6 +310,7 @@ Deno.serve(async (req) => {
     kind,
     storage_path: storagePath,
     caption: caption ?? null,
+    media_group_id: mediaGroupId,
     status: "pending",
   });
 
@@ -285,6 +336,15 @@ Deno.serve(async (req) => {
     ack = `📝 Noted: "${preview}"`;
   }
   await telegramSend(chatId, ack);
+
+  // 12. Fire Routine drain (Phase 3A) — deduped, non-blocking.
+  // waitUntil keeps the isolate alive after the 200 is sent.
+  const fireTask = maybeFireRoutine(db).catch(() => {});
+  if (typeof EdgeRuntime !== "undefined") {
+    EdgeRuntime.waitUntil(fireTask);
+  } else {
+    await fireTask;
+  }
 
   return new Response("ok", { status: 200 });
 });

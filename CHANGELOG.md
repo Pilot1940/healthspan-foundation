@@ -1,5 +1,66 @@
 # HealthSpan Skill — Changelog
 
+## v3.5.0 — Telegram ingestion Phase 3A: cloud drain + maintainer-ingest write path (2026-06-07)
+
+- **Migration 031 — media_group_id + system_config seeds + 3 SECURITY DEFINER RPCs.**
+  - `media_inbox.media_group_id text NULL` — Telegram album burst identifier. Rows sharing this
+    value are drained as one cluster (one extraction → one log entry). Commented for SCHEMA-MAP.
+  - 4 new `system_config` rows: `push.inbox_settle_sec=90` (settle delay before drain picks up
+    an item, ensuring album bursts arrive fully), `ingest.confidence_threshold=0.7` (LLM confidence
+    gate for prod vs staging), `routine.last_fire_at` (epoch initial value, CAS dedup key for
+    Routine fires), `routine.fire_dedup_sec=300` (min seconds between consecutive Routine fires).
+  - `maintainer_ingest_food(p_profile_id, …)` — SECURITY DEFINER, SEARCH_PATH=public. Guard:
+    `is_maintainer() AND has_profile_access(p_profile_id)` (verified: PC satisfies both for Dea).
+    High confidence → `food_logs` plain INSERT (no ON CONFLICT — Telegram entries have no
+    `source_log_path`, partial unique index does not apply; idempotency via atomic inbox claim).
+    Low confidence → `stg_food_log_review`. Returns `{id, status: "inserted"|"staged"}`.
+  - `maintainer_ingest_biomarker(p_profile_id, …)` — Upserts on `(profile_id, metric_definition_id,
+    measured_at)`. Staging to `stg_biomarker_review` on low confidence.
+  - `maintainer_ingest_supplement(p_profile_id, …)` — Upserts on `(profile_id, supplement_id,
+    taken_on, source)`. `taken_on` is a GENERATED column — never written directly; computed from
+    `taken_at AT TIME ZONE 'UTC'`. Staging to `stg_supplement_intake_review` on low confidence.
+  - All three: `REVOKE EXECUTE FROM PUBLIC; GRANT EXECUTE TO authenticated`.
+  - Verify DO block asserts: column present, 3 RPCs found, 4 config rows exist.
+- **`lib/db_rest.py` — httpx PostgREST client for cloud Routines (NEW).**
+  - Auth: `sign_in(url, anon_key, email, password)` → password-grant JWT. No service_role.
+  - `DbRest`: `select / insert / update / rpc / claim_inbox_item`. Context-manager.
+  - `claim_inbox_item(id)`: PATCH with `status=eq.pending` filter + `Prefer: return=representation`.
+    Returns True only if ≥ 1 row returned — the only caller that wins the atomic update.
+  - Cloud constraint: no psycopg2 (TCP 6543 blocked) and no supabase-py (cffi/cryptography
+    native module fails). Raw HTTPS via httpx is the only viable path.
+- **`monitor/inbox_drain.py` — Routine drain logic (NEW).**
+  - `fetch_settled(db, settle_sec)`: pending items older than `push.inbox_settle_sec`.
+  - `claim(db, item_id)`: delegates to `db_rest.claim_inbox_item`.
+  - `build_clusters(items)`: album clusters (shared `media_group_id` ≥ 2 rows) + ungrouped.
+    Singletons and no-group items go to ungrouped for Routine LLM content-clustering.
+  - `merge_caption(rows)`: deduplicates captions across a cluster.
+  - `write_food / write_biomarker / write_supplement`: call SECURITY DEFINER RPC, mark all
+    cluster rows done/staged atomically. RPC error → rows marked `failed`.
+  - `mark_rows(db, ids, status, result_ref)`: bulk PATCH with `id=in.(…)` filter.
+  - `lookup_metric / lookup_supplement_by_name`: REST ilike for name→UUID resolution.
+  - CLI: `python -m monitor.inbox_drain` — prints cluster summary.
+- **`supabase/functions/telegram-webhook/index.ts` — Phase 3A additions.**
+  - Captures `msg.media_group_id` → `media_inbox.media_group_id` on every enqueue.
+  - `maybeFireRoutine(db)`: atomic CAS PATCH on `system_config.routine.last_fire_at.updated_at`
+    (only updates if `updated_at < now - fire_dedup_sec`). Winner POSTs to `ROUTINE_TRIGGER_URL`
+    (env secret). Loser skips silently. Wrapped in `EdgeRuntime.waitUntil` — never delays 200.
+    `ROUTINE_BEARER` optional auth header for trigger endpoint.
+- **`docs/ROUTINE-PROMPT.md` — self-contained Routine orchestration prompt (NEW).**
+  - Covers: all 9 steps (setup → fetch → claim → signed URL → extraction → UUID resolution →
+    write/stage → content-clustering → confirmation). Extraction prompts for food / lab / supplement.
+  - Error handling table. Minor-safe framing rules. Idempotency guarantees documented.
+  - Ready to paste as Routine system prompt once `ROUTINE_TRIGGER_URL` is wired.
+- **`tests/unit/test_inbox_drain.py` — 17 unit tests (NEW). All pass.**
+  - `httpx.MockTransport` — no live DB or HTTP. Tests: claim won/lost, select/insert/rpc,
+    build_clusters (album/singleton/two-unrelated/mixed), merge_caption, write_food
+    (high-confidence → inserted, low-confidence → staged), minor-framing assertions (3 scenarios),
+    get_config dict shape.
+- **`docs/CODE-MANIFEST.html` — updated for Phase 3A.** New cards: migration 031,
+  lib/db_rest.py, monitor/inbox_drain.py, test_inbox_drain.py, ROUTINE-PROMPT.md.
+  Threshold table extended with 4 Phase 3A `system_config` keys. Open items updated.
+- **Deployed:** `telegram-webhook` redeployed with media_group_id + fire-trigger
+  (64.97 kB). `whoop-webhook` no-change bundle confirmed.
+
 ## v3.4.1 — whoop-webhook: EdgeRuntime.waitUntil for push background task (2026-06-07)
 
 - **`supabase/functions/whoop-webhook/index.ts`** — reliability fix for Phase 2 push block.

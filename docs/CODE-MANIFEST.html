@@ -158,7 +158,7 @@
 
 <header>
   <h1>HealthSpan — Code Manifest</h1>
-  <p>Telegram ingestion Phase 2 · v3.4.0 · 2026-06-07 · Supabase <code style="font-family:monospace;background:#22263a;padding:1px 6px;border-radius:3px;font-size:0.8rem">dsnydskkjwziynwmzfkh</code></p>
+  <p>Telegram ingestion Phase 3A · v3.5.0 · 2026-06-07 · Supabase <code style="font-family:monospace;background:#22263a;padding:1px 6px;border-radius:3px;font-size:0.8rem">dsnydskkjwziynwmzfkh</code></p>
 </header>
 
 <main>
@@ -181,8 +181,8 @@
   <div class="infra-grid">
     <div class="infra-card">
       <h3>Supabase (PostgreSQL + RLS)</h3>
-      <p>Primary data store. All tables have RLS. Service-role used by Edge fns; restricted <code>healthspan_app</code> role used by Routines.</p>
-      <div class="detail">DB: dsnydskkjwziynwmzfkh · 59 tables (54 active)</div>
+      <p>Primary data store. All tables have RLS. Service-role used by Edge fns; restricted <code>healthspan_app</code> role used by Routines. SECURITY DEFINER RPCs used for maintainer cross-profile writes from cloud Routine.</p>
+      <div class="detail">DB: dsnydskkjwziynwmzfkh · 59 tables (54 active) · 3 SECURITY DEFINER RPCs</div>
     </div>
     <div class="infra-card">
       <h3>Supabase Edge Functions (Deno)</h3>
@@ -254,6 +254,24 @@
     </ul>
   </div>
 
+  <div class="card">
+    <div class="card-header">
+      <span class="badge sql">SQL</span>
+      <span class="path">migrations/031_maintainer_ingest.sql</span>
+      <span class="new-tag">Phase 3A</span>
+    </div>
+    <p>Adds <code>media_inbox.media_group_id</code> for album clustering, 4 system_config rows, and 3 SECURITY DEFINER RPCs for maintainer cross-profile writes from the cloud Routine.</p>
+    <ul>
+      <li><code>media_inbox.media_group_id text NULL</code> — Telegram album burst ID. Rows sharing this value are drained as one cluster → one extraction → one log entry.</li>
+      <li>4 <code>system_config</code> seeds: <code>push.inbox_settle_sec=90</code>, <code>ingest.confidence_threshold=0.7</code>, <code>routine.last_fire_at</code> (epoch — fire dedup CAS), <code>routine.fire_dedup_sec=300</code>.</li>
+      <li><code>maintainer_ingest_food(p_profile_id, …)</code> — SECURITY DEFINER. Guard: <code>is_maintainer() AND has_profile_access(p_profile_id)</code>. High-confidence → <code>food_logs</code> plain INSERT; low → <code>stg_food_log_review</code>. Returns <code>{id, status}</code>.</li>
+      <li><code>maintainer_ingest_biomarker(p_profile_id, …)</code> — Upserts on <code>(profile_id, metric_definition_id, measured_at)</code>; stages on low confidence.</li>
+      <li><code>maintainer_ingest_supplement(p_profile_id, …)</code> — Upserts on <code>(profile_id, supplement_id, taken_on, source)</code>; <code>taken_on</code> is GENERATED so not written directly.</li>
+      <li>All three: <code>REVOKE EXECUTE FROM PUBLIC; GRANT EXECUTE TO authenticated</code>.</li>
+      <li>Verify DO block: asserts column, 3 functions, 4 config rows.</li>
+    </ul>
+  </div>
+
   <!-- Edge Functions -->
   <h3 style="font-size:0.8rem;color:var(--accent);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Edge Functions (Deno/TypeScript)</h3>
 
@@ -286,16 +304,18 @@
       <span class="badge ts">TS</span>
       <span class="badge edge">Edge Fn</span>
       <span class="path">supabase/functions/telegram-webhook/index.ts</span>
+      <span class="new-tag">Phase 3A updated</span>
     </div>
-    <p>Inbound Telegram message handler. Auth, dedup, media→Storage, enqueue.</p>
+    <p>Inbound Telegram message handler. Auth, dedup, media→Storage, enqueue, Routine fire-trigger.</p>
     <ul>
       <li><code>verifySecretToken()</code> — constant-time <code>X-Telegram-Bot-Api-Secret-Token</code> check.</li>
       <li><code>guessKind(caption)</code> — keyword classifier for food/workout/lab/dexa/unknown. Caption is DATA only — never executed.</li>
       <li><code>storeMedia()</code> — Telegram <code>getFile</code> → download → upload to <code>health-media</code> private bucket.</li>
       <li>Link-code activation: <code>/start &lt;code&gt;</code> or bare code validates against <code>telegram_link_codes</code>.</li>
       <li>Identity lookup: <code>chat_id → telegram_identities → profile_id</code>. Unknown → onboarding + maintainer alert. Revoked → reject.</li>
-      <li>Enqueue: <code>media_inbox</code> INSERT first; <code>telegram_processed_updates</code> INSERT only after (idempotency ordering).</li>
+      <li>Enqueue: captures <code>msg.media_group_id</code> into <code>media_inbox.media_group_id</code> (Phase 3A album clustering). INSERT first; processed_updates INSERT only after (idempotency ordering).</li>
       <li>Minor-safe ack framing when <code>is_minor=true</code>.</li>
+      <li><code>maybeFireRoutine(db)</code> — Phase 3A. Atomic compare-and-set PATCH on <code>system_config.routine.last_fire_at</code>: only fires if winner of race AND ≥ <code>routine.fire_dedup_sec</code> (300s) since last fire. POSTs to <code>ROUTINE_TRIGGER_URL</code> (secret). Runs in <code>EdgeRuntime.waitUntil</code> — never delays the 200.</li>
     </ul>
   </div>
 
@@ -348,6 +368,25 @@
   <div class="card">
     <div class="card-header">
       <span class="badge py">PY</span>
+      <span class="path">monitor/inbox_drain.py</span>
+      <span class="new-tag">Phase 3A new</span>
+    </div>
+    <p>Cloud Routine drain for <code>media_inbox</code>. Fetch settled items → cluster → claim → Routine LLM extracts → write via SECURITY DEFINER RPCs → mark done/staged. Uses <code>lib.db_rest</code> (httpx only — no psycopg2).</p>
+    <ul>
+      <li><code>fetch_settled(db, settle_sec)</code> — returns pending items older than <code>push.inbox_settle_sec</code>. Older-first so album bursts arrive complete.</li>
+      <li><code>claim(db, item_id)</code> — atomic PATCH <code>pending → processing</code>; returns False if another Routine fire won the race.</li>
+      <li><code>build_clusters(items)</code> — splits into album clusters (shared <code>media_group_id</code>, ≥ 2 rows) and ungrouped singletons. Routine LLM further clusters ungrouped by content.</li>
+      <li><code>merge_caption(rows)</code> — deduplicates distinct captions from a cluster with ' | ' separator.</li>
+      <li><code>write_food / write_biomarker / write_supplement</code> — call respective SECURITY DEFINER RPC; mark all cluster rows done/staged atomically on return.</li>
+      <li><code>mark_rows(db, ids, status, result_ref)</code> — bulk PATCH on <code>media_inbox</code>.</li>
+      <li><code>lookup_metric / lookup_supplement_by_name</code> — REST ilike lookups for name→UUID resolution before RPC call.</li>
+      <li>CLI: <code>python -m monitor.inbox_drain</code> — prints settled item count + cluster breakdown.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
       <span class="path">monitor/reconcile.py</span>
       <span class="new-tag">Phase 2 new</span>
     </div>
@@ -379,6 +418,24 @@
 
   <!-- Lib -->
   <h3 style="font-size:0.8rem;color:var(--muted);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Library (Python)</h3>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge py">PY</span>
+      <span class="path">lib/db_rest.py</span>
+      <span class="new-tag">Phase 3A new</span>
+    </div>
+    <p>httpx-based PostgREST REST client for cloud Routine environments where psycopg2 and supabase-py are unavailable (native modules blocked). No service_role — authenticates as a normal user via password-grant JWT.</p>
+    <ul>
+      <li><code>sign_in(url, anon_key, email, password) → str</code> — password-grant OAuth against Supabase Auth; returns JWT access_token.</li>
+      <li><code>DbRest.select(table, select, filters, limit, order)</code> — GET /rest/v1/{table}.</li>
+      <li><code>DbRest.insert(table, row, prefer_return)</code> — POST; returns created row when prefer_return=True.</li>
+      <li><code>DbRest.update(table, filters, body, prefer_return)</code> — PATCH with PostgREST filter params.</li>
+      <li><code>DbRest.rpc(func_name, args)</code> — POST /rest/v1/rpc/{func_name} for SECURITY DEFINER calls.</li>
+      <li><code>DbRest.claim_inbox_item(id)</code> — atomic PATCH <code>status=eq.pending → processing</code> with <code>Prefer: return=representation</code>; returns True only if this call won (0 returned rows = already claimed by another fire).</li>
+      <li>Context-manager support (<code>with DbRest(...) as db:</code>).</li>
+    </ul>
+  </div>
 
   <div class="card">
     <div class="card-header">
@@ -471,6 +528,31 @@
     <p>Deno unit tests for telegram-webhook helpers: <code>verifySecretToken</code>, <code>guessKind</code>, injection safety.</p>
   </div>
 
+  <div class="card">
+    <div class="card-header">
+      <span class="badge test">TEST</span>
+      <span class="badge py">PY</span>
+      <span class="path">tests/unit/test_inbox_drain.py</span>
+      <span class="new-tag">Phase 3A new</span>
+    </div>
+    <p>17 unit tests for Phase 3A <code>monitor/inbox_drain.py</code> + <code>lib/db_rest.py</code> — all mocked via <code>httpx.MockTransport</code>, no live DB or HTTP needed.</p>
+    <ul>
+      <li><span class="ok">✓</span> claim: returns True when row updated (won race)</li>
+      <li><span class="ok">✓</span> claim: returns False when 0 rows returned (lost race)</li>
+      <li><span class="ok">✓</span> select / insert / rpc round-trips via mock transport</li>
+      <li><span class="ok">✓</span> build_clusters: shared media_group_id → one album cluster</li>
+      <li><span class="ok">✓</span> build_clusters: single mgid row → ungrouped</li>
+      <li><span class="ok">✓</span> build_clusters: two unrelated items → two ungrouped</li>
+      <li><span class="ok">✓</span> build_clusters: album + singletons coexist</li>
+      <li><span class="ok">✓</span> merge_caption: deduplicates identical captions</li>
+      <li><span class="ok">✓</span> merge_caption: handles empty/null captions</li>
+      <li><span class="ok">✓</span> write_food: high confidence → inserted status</li>
+      <li><span class="ok">✓</span> write_food: low confidence → staged status</li>
+      <li><span class="ok">✓</span> minor framing: food / lab / staged — no deficit words</li>
+      <li><span class="ok">✓</span> get_config returns correct key dict</li>
+    </ul>
+  </div>
+
   <!-- Config / Ops -->
   <h3 style="font-size:0.8rem;color:var(--muted);margin:24px 0 8px;text-transform:uppercase;letter-spacing:.06em">Config &amp; Ops</h3>
 
@@ -497,6 +579,15 @@
       <span class="path" style="margin-left:8px">docs/SCHEMA-MAP.md</span>
     </div>
     <p>CHANGELOG tracks every version with full detail. CLAUDE.md has the non-negotiable rules. SCHEMA-MAP is auto-generated from <code>pg_description</code>.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="badge conf">DOC</span>
+      <span class="path">docs/ROUTINE-PROMPT.md</span>
+      <span class="new-tag">Phase 3A new</span>
+    </div>
+    <p>Self-contained Routine orchestration prompt. Paste as system prompt into the cloud Routine. Covers: setup (auth via db_rest), fetch+cluster, claim, Storage signed URL, per-kind extraction prompts (food/lab/supplement), name→UUID resolution, write-or-stage, content-clustering ungrouped items, Telegram confirmation, minor-safe framing rules, and error handling table.</p>
   </div>
 </section>
 
@@ -542,7 +633,7 @@
 
 <!-- ── PUSH THRESHOLDS ────────────────────────────────────────────────────── -->
 <section>
-  <h2>Push Thresholds (system_config — migration 030)</h2>
+  <h2>system_config Thresholds (migrations 030 + 031)</h2>
   <table class="push-table">
     <thead>
       <tr>
@@ -559,6 +650,10 @@
       <tr><td><code>push.dead_man_hours</code></td><td>36</td><td>Hours of no WHOOP data before dead-man alert to PC. Anchor: <code>records_upserted &gt; 0</code>.</td></tr>
       <tr><td><code>push.reconcile_default_hours</code></td><td>48</td><td>Default reconcile window. Widens per profile if last sync is older.</td></tr>
       <tr><td><code>push.reconcile_max_widen_hours</code></td><td>168</td><td>Max reconcile window cap (7 days). Prevents unbounded backfill on dormant profiles.</td></tr>
+      <tr><td><code>push.inbox_settle_sec</code></td><td>90</td><td>Seconds after creation before drain processes an item. Ensures album bursts fully arrive first (Phase 3A).</td></tr>
+      <tr><td><code>ingest.confidence_threshold</code></td><td>0.7</td><td>Minimum LLM confidence to write directly to prod tables. Below → staging review table.</td></tr>
+      <tr><td><code>routine.last_fire_at</code></td><td>(epoch)</td><td>ISO-8601 last Routine fire timestamp. Epoch initial value → first message always fires. Atomic CAS dedup key.</td></tr>
+      <tr><td><code>routine.fire_dedup_sec</code></td><td>300</td><td>Min seconds between Routine fires from telegram-webhook. Prevents duplicate runs from rapid messages.</td></tr>
     </tbody>
   </table>
 </section>
@@ -569,10 +664,18 @@
 
   <div class="card">
     <div class="card-header">
-      <span class="phase-tag">Phase 3</span>
-      <span class="path">Cloud Routine — vision extraction</span>
+      <span class="phase-tag">Phase 3A ✓</span>
+      <span class="path">Cloud Routine — drain write path LIVE</span>
     </div>
-    <p>Photo vision → contract validate → unattended-write → Telegram confirmation. Routine trigger not yet wired in <code>telegram-webhook</code>.</p>
+    <p>Phase 3A is merged to main and deployed. Routine prompt is at <code>docs/ROUTINE-PROMPT.md</code>. Pending: activate the Routine in Claude Code with <code>ROUTINE_TRIGGER_URL</code> + <code>ROUTINE_BEARER</code> secrets wired in Supabase Edge config.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="phase-tag">Phase 3B</span>
+      <span class="path">Command grammar (on-demand queries)</span>
+    </div>
+    <p>"recovery?", "log 6g creatine", "weight 84.2", "undo last" — light command parser in telegram-webhook before enqueue step.</p>
   </div>
 
   <div class="card">
