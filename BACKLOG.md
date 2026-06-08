@@ -72,6 +72,39 @@ sleep, supplements adherence, biomarker + weight trends) as a rendered image or 
 
 ---
 
+## #5 — Telegram clarification loop before LLM processes — **NEW, design wanted**
+
+**Severity:** MED · **Owner:** PC (design) → CC (build) · **Status:** OPEN.
+
+**Idea:** When an inbound ingestion is ambiguous or incomplete, Telegram itself should **ask the
+user back for the missing details** (in-chat reply), and only **after** the user answers does the
+LLM finalise the record. Turns today's silent "stage to `stg_*_review` for the maintainer" path
+into an interactive, conversational clarification round-trip before write.
+
+**Where it bites:** the completeness gate (mig 036/038) currently *holds* incomplete items in
+staging with a `stage_reason` and waits for PC to drain them manually. The user who sent the photo/
+text gets no prompt and no chance to supply the one missing field (e.g. portion size, meal type,
+biomarker units) in the moment — so good data sits blocked.
+
+**Proposed flow:** ingest → completeness/plausibility gate fails → instead of (or alongside)
+staging, bot replies in Telegram with a **specific** question ("How many eggs? What time did you
+take the magnesium?") → user reply lands as a follow-up message → correlated back to the pending
+`media_inbox` / staging row → LLM re-processes with the new detail → writes to production.
+
+**Open design questions:**
+1. Correlation — how to tie the user's reply to the right pending item (reply-to-message-id,
+   a short pending-item token in the bot's question, or "most-recent-incomplete-for-this-chat")?
+2. Scope of questions — only the gate's `stage_reason` fields, or let the LLM ask anything it
+   needs? Cap rounds (e.g. max 2 clarifications) to avoid loops.
+3. Timeout / fallback — if the user never answers, after N hours fall back to today's staging-for-
+   maintainer behaviour so nothing is lost.
+4. State — track clarification state on `media_inbox` (new `awaiting_reply` status + question text)
+   vs a small `ingest_clarifications` table.
+5. Multi-item albums — ask once per ambiguous item, or batch the questions into one message?
+6. Reuse the existing per-kind completeness gates (`*_is_complete`) to decide *when* to ask.
+
+---
+
 ## Done / shipped reference
 - v3.2 (2026-06-05): supabase_client auth fix, lazy psycopg2, pinned cold-start, schema-map freshness, 924-char description. Webhook duration/zone-pct/sleep-fields fix deployed; prior-cycle refresh live.
 - Pending elsewhere: migration 016c schema-comment completion (35 unmapped tables) — prompt already with CC.
