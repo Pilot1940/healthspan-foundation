@@ -96,17 +96,36 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   synced_date). Backfilled: 519 workouts, 580 cycles, 625 sleeps for PC (2020-01-01→now).
   **046 (applied 2026-06-08)** `claim_inbox_cluster(uuid[])` RPC — atomic cluster claim
   using `FOR UPDATE` lock + all-or-nothing UPDATE; SECURITY INVOKER, granted to authenticated.
+  **047 (applied 2026-06-08)** reverts `fn_media_inbox_notify` to NO auth header (vault
+  unreachable from pg_net → 401 stalls); trigger-drain runs no-auth (safe — only fires a GH
+  dispatch). **048 (applied 2026-06-08)** seeds `app.timezone='Asia/Bangkok'` in `system_config`.
+- **LLM-routed text (2026-06-08, telegram-webhook v15 + inbox_drain)**: the regex gate is GONE.
+  ALL text-only Telegram messages enqueue to `media_inbox` (kind=unknown); the drain's `unknown`
+  prompt classifies each as a LOG (food/supplement/biomarker, **multi-item**) or `{kind:"brief"}`.
+  Brief requests compose inline at end-of-run (`run_once` → `compose_brief`). Supplements match on
+  `display_name` and **default their dose from the user's active regimen** (`lookup_regimen_dose`),
+  so "i took D3, K2, B12, magnesium citrate, omega-3" auto-logs all five. Vision now reads packaged
+  nutrition labels (incl. Thai). `guessKind` survives only as a photo-caption hint.
+- **Daily brief = LOCAL day (2026-06-08, brief.py)**: "today" is the `app.timezone` day computed as a
+  UTC window over `logged_at`/`taken_at` (not the UTC-derived `log_date`/`taken_on`). Fixes the
+  07:00-ICT rollover + UTC display. Every brief also runs `refresh_recent` first (WHOOP refresh-on-
+  interaction); WHOOP staleness is elapsed-time (>30h), tz-safe. ⚠️ Write-side `log_date`/`taken_on`
+  are still UTC-derived — non-brief consumers of those columns aren't yet tz-localized (backlog).
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **Event-driven drain pipeline**: Telegram photo → `media_inbox` INSERT → pg_net trigger
   `fn_media_inbox_notify` → `trigger-drain` Edge function (15s dedup via system_config CAS)
   → GitHub `repository_dispatch` `inbox-drain` → GH Actions → `monitor/inbox_drain.py --settle-sec 5`.
-  Text messages → `telegram-webhook` → GH `repository_dispatch` `send-brief` → `monitor/brief.py`.
+  **Text messages** also enqueue to `media_inbox` (no regex routing); the drain's LLM decides
+  log-vs-brief and either writes the data or composes the brief inline. `send-brief.yml` remains for
+  cron/manual briefs (`workflow_dispatch -f profile_id=…`).
 - **WHOOP sync**: `ingest/whoop_sync.py` — `sync_profile()` runs workouts + cycles + sleeps +
   body_measurements for each profile. `--backfill` from 2020-01-01. `refresh_recent()` for
   brief pre-sync. Score state tracked: SCORED / PENDING_SCORE / UNSCORABLE — brief shows ⏳
   for pending, ❌ for unscorable. WHOOP body endpoint: height_m, weight_kg, max_heart_rate.
-  ⚠️ whoop-webhook needs redeploy: `supabase functions deploy whoop-webhook --no-verify-jwt`.
+  whoop-webhook redeployed 2026-06-08 (v13, `*.deleted` handling). WHOOP_CLIENT_ID/SECRET are GH
+  secrets + in inbox-drain.yml + send-brief.yml so `refresh_recent` has creds in CI. No scheduled
+  WHOOP cron yet — webhook + refresh-on-interaction cover it (backlog #8).
 - **`lib/contract.write` skips GENERATED columns** on INSERT/UPDATE while keeping them
   as `ON CONFLICT` targets. `supplement_intake_logs.taken_on` IS `GENERATED ALWAYS AS
   ((taken_at AT TIME ZONE 'UTC')::date)` — confirmed on live DB. Migration 039 removed

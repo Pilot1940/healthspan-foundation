@@ -24,6 +24,10 @@
 - Staleness flag fixed: elapsed-time (>30h since `cycle_start`), tz-safe — was a UTC-date compare that falsely flagged a just-after-local-midnight cycle as ">24h old".
 - `whoop-webhook` redeployed (`*.deleted` handling); `WHOOP_CLIENT_ID/SECRET` added to CI.
 
+### Timezone (migration 048, `brief.py`)
+- The daily brief's "today" is now the LOCAL day in `app.timezone` (`system_config`, seeded `Asia/Bangkok`), computed as a UTC window over `logged_at`/`taken_at`. Fixes the old UTC-date boundary that rolled over at 07:00 ICT (dropping 00:00–07:00 meals) and displayed times in UTC.
+- Write-side `log_date`/`taken_on` remain UTC-derived (backlog #9).
+
 ## v3.13.0 — Ingredient-level Viome analysis + daily brief composer (2026-06-07)
 
 **Composite dishes now decomposed into ingredients for Viome cross-check; worst-case meal verdict stored on food_logs; new `monitor/brief.py` sends a structured daily brief after every food write.**

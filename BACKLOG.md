@@ -178,7 +178,25 @@ on-interaction refresh.
 
 ---
 
+## #9 — Localise `log_date` / `taken_on` at WRITE time — **OPEN, low**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN.
+
+Migration 048 + `brief.py` make the **brief** use the local day (`app.timezone`) via a `logged_at`
+window. But `maintainer_ingest_food` still writes `log_date = (logged_at AT TIME ZONE 'UTC')::date`,
+and `supplement_intake_logs.taken_on` is `GENERATED ALWAYS AS ((taken_at AT TIME ZONE 'UTC')::date)`.
+So any **non-brief** consumer that filters by `log_date`/`taken_on` (skill ad-hoc queries, analysis
+modules) still sees a UTC day boundary. To fully localise: update the food RPC to compute `log_date`
+from `app.timezone`, and change the `taken_on` generated expression (drop/recreate the column — do it
+carefully; it's an `ON CONFLICT` target). Not urgent — the brief (main surface) is correct.
+
+---
+
 ## Done / shipped reference
+- **2026-06-08 — Brief is the LOCAL day + food-log corrections.** Migration 048 seeds
+  `app.timezone='Asia/Bangkok'`; `brief.py` computes "today" as a local-day UTC window over
+  `logged_at`/`taken_at` (fixes 07:00-ICT rollover + UTC display). Was surfaced by a meal logged with
+  a future timestamp (22:45 ICT) — corrected, and meal_type/portions fixed on request.
 - **2026-06-08 — WHOOP refresh-on-interaction + staleness fix.** No scheduled pull existed; data
   aged through the day and the stale flag wrongly compared cycle_start's UTC *date* to today
   (00:06 IST = 18:36 UTC prior day → false ">24h old"). Now: every brief refreshes WHOOP first

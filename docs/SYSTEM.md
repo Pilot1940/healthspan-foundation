@@ -524,11 +524,16 @@ error), renders minor-safe text, calls Claude (Haiku — default
 `claude-haiku-4-5-20251001`, overridable via `system_config` key `brief.model`) for the
 rest-of-day actions, sends over Telegram, and returns the message text.
 
+**"Today" is the LOCAL day** (migration 048): `_local_day(cfg)` reads `app.timezone` from
+`system_config` and bounds the day as a UTC window over `logged_at`/`taken_at`, so a Thailand
+user's day no longer rolls over at 07:00 ICT. **Refresh-on-interaction**: `compose_brief` calls
+`refresh_recent` (WHOOP) first — best-effort — so an on-demand brief reflects the latest cycle.
+
 | Section | Content | Rules |
 |---|---|---|
 | **Food** | kcal / protein / carbs / fat vs targets; plus WHOOP burn + deficit **only when WHOOP data is non-stale** | Targets come from the profile's context MD, never population norms |
 | **Supplements** | Grouped by timing slot, ✅ (taken) / ⬜ (pending) per item | — |
-| **WHOOP** | Recovery / HRV / sleep; **score_state aware** — ⏳ for `PENDING_SCORE`, ❌ for `UNSCORABLE` (never a misleading 0); sleep cycle count + disturbance count | Stale data (`cycle_start` < today) is still shown but flagged |
+| **WHOOP** | Recovery / HRV / sleep; **score_state aware** — ⏳ for `PENDING_SCORE`, ❌ for `UNSCORABLE` (never a misleading 0); sleep cycle count + disturbance count | Stale = `cycle_start` >30h old (elapsed-time, tz-safe — not a UTC-date compare); still shown but flagged |
 | **Viome** | avoid / minimize / superfood flags for today's foods | **Suppressed entirely for minor profiles** |
 | **Rest-of-day actions** | 2–4 Claude-generated (Haiku) next actions | Empty string on Claude failure (best-effort, never aborts the brief) |
 
@@ -736,7 +741,8 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 044 | food_guidance_drop_old_unique | Drops stale `food_guidance_item_classification_scope_key` UNIQUE; adds `food_guidance_global_item_class` partial index for global rows. |
 | 045 | whoop_schema_expansion | Full WHOOP v2 field coverage on cycles (8), sleeps (7), workouts (8); new `whoop_body_measurements` table; all additive/nullable. |
 | 046 | claim_inbox_cluster_atomic | `claim_inbox_cluster(uuid[])` — atomic all-or-nothing cluster claim (`FOR UPDATE`, no SKIP LOCKED); SECURITY INVOKER. |
-| 047 | fix_media_inbox_notify | Reverts `fn_media_inbox_notify` to anon-key-from-`system_config` header (vault lookup returned NULL in pg_net context, causing 401 stalls). |
+| 047 | fix_media_inbox_notify | Reverts `fn_media_inbox_notify` to NO auth header (vault lookup returned NULL in pg_net context, causing 401 stalls). trigger-drain runs no-auth. |
+| 048 | app_timezone | Seeds `app.timezone='Asia/Bangkok'` in `system_config`. The daily brief computes "today" as a LOCAL-day UTC window over `logged_at`/`taken_at` instead of the UTC-derived `log_date`/`taken_on` (fixes the 07:00-ICT day rollover + UTC display). |
 
 ---
 
