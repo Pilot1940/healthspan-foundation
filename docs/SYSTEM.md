@@ -383,12 +383,28 @@ drain, **all** rows in that cluster roll back to `pending`. This prevents two
 overlapping workflow runs (e.g. event-path + cron-path firing close together) from
 double-writing the same album.
 
+#### Single extractor
+
+There is **one** vision/extraction prompt (`_VISION_PROMPTS["unknown"]`) used for **every**
+path — text and photo. `vision_extract` always uses it and the re-dispatch always unwraps the
+`{kind,data}` it returns (the model's chosen kind wins over the `guessKind` hint). The old
+standalone `food`/`supplement`/`lab`/`dexa` prompts were deleted — they had either gone **dead**
+(`guessKind` never emitted `supplement`) or **drifted** from each other, so a fix on one path
+silently didn't apply on another. One prompt = one source of truth.
+
+The prompt encodes **clarify-on-uncertainty**: if it can't identify a specific food/supplement
+("my supplement", "a pill"), it sets `confidence < 0.3` rather than guessing. The **confidence
+gate** (config `ingest.confidence_threshold`, default 0.3) then stages those for the reply-to-clarify
+loop. Calibration: clarify on **identity/portion** ambiguity, **estimate** on quantity (a grilled-beef
+kcal estimate is the job, not a stage). Missing confidence defaults to confident (1.0) so normal
+estimates never stage. A `servings` multiplier scales a matched `food_reference` ("half a shake" → ×0.5).
+
 #### Stage vs insert routing
 
 `vision_extract` returns a parsed dict (or a **list** for multi-item food like
 "shake + fish + rice" — the food branch handles the list; other branches coerce to a
 single dict). The completeness predicate (`food_is_complete` / `supplement_is_complete`
-/ `biomarker_is_complete`) then decides routing:
+/ `biomarker_is_complete`) — plus the confidence gate above — then decides routing:
 
 - **Complete** → `maintainer_ingest_food` writes straight to `food_logs`
   (production); `media_inbox.status = "processed"`.
