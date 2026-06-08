@@ -1412,6 +1412,54 @@ python3 -m ingest.whoop_sync --backfill  # pulls full history from 2020-01-01</c
 <p>Expected output:</p>
 <ul><li>Connection: PASS</li><li>RLS scope: exactly 1 profile visible, matching the new user&#x27;s <code>profile_id</code></li><li>Maintainer: <code>false</code></li><li>Context: targets loaded, no profile_id mismatch</li><li>Staging queues visible: 0 rows (non-maintainer sees nothing)</li><li>Exit code: 0 (READY)</li></ul>
 <p>If exit code is 1 (BLOCKED), read the step that failed. The most common causes are a missing <code>family_memberships</code> row, a mismatched <code>profile_id</code> in the context MD, or <code>auth_password</code> not yet set in Supabase Auth.</p>
+<h3>Worked example — Dea (minor, ~95% onboarded as of 2026-06-08)</h3>
+<p>Most of the 9 steps above are already done for Dea; this is what a partially-onboarded user looks like and the single remaining action. Full plan: <code>docs/DEA-ONBOARDING-PLAN.md</code>.</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Step</th>
+<th>Dea&#x27;s state</th>
+</tr></thead><tbody>
+<tr>
+<td>1 Auth user</td>
+<td>✅ <code>47501376-6adb-458e-8679-57a4a4176692</code></td>
+</tr>
+<tr>
+<td>2 Profile</td>
+<td>✅ <code>3eed5503-…</code> — &quot;Dea Singh Chitalkar&quot;, <code>relationship=&#x27;child&#x27;</code>, <code>sex=&#x27;female&#x27;</code></td>
+</tr>
+<tr>
+<td>3 Family membership</td>
+<td>✅ PC (<code>0b0e4093…</code>, owner) → Dea, and Dea (<code>47501376…</code>, self) → Dea</td>
+</tr>
+<tr>
+<td>4 Config JSON</td>
+<td>✅ <code>config/dea.config.json</code> (<code>is_minor: true</code>)</td>
+</tr>
+<tr>
+<td>5 Context MD</td>
+<td>✅ <code>context/dea.context.md</code></td>
+</tr>
+<tr>
+<td>6 Link code</td>
+<td>❌ <strong>not yet minted — this is the only remaining step</strong></td>
+</tr>
+<tr>
+<td>7 User sends code</td>
+<td>❌ pending — Dea sends it from <strong>her own</strong> Telegram</td>
+</tr>
+<tr>
+<td>8 WHOOP OAuth</td>
+<td>✅ linked (<code>whoop_user 22399950</code>) + backfilled (300 cycles / 281 sleeps / 140 workouts), synced same-day</td>
+</tr>
+<tr>
+<td>9 Verify</td>
+<td>run after linking</td>
+</tr>
+</tbody></table></div>
+<p>Remaining action:</p>
+<pre><code class="language-bash">python3 scripts/hs_ops.py mint-link-code 3eed5503-a26f-4b88-bb76-075208fa5de3
+# → Dea opens the &quot;Chitalkar Family Health Tracker&quot; bot and sends the code (or /start &lt;code&gt;)</code></pre>
+<p>Because <code>profiles.relationship = &#x27;child&#x27;</code>, <code>telegram-webhook</code> sets <code>is_minor = true</code> on her <code>telegram_identities</code> row automatically — minor-safe framing (growth/performance only, no deficit/restriction language) applies from her first message. PC, as maintainer, sees her data; Dea sees outcomes only.</p>
 </section>
 <section id="sec-7">
 <h2 class="section-header">7. MAINTENANCE RUNBOOK</h2>
