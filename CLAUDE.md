@@ -20,7 +20,7 @@
 - **Cache**: Redis
 - **Language**: Python
 
-## Current State (2026-06-07)
+## Current State (2026-06-08)
 
 - **Migrations 024–028 all applied** (024 drop-backup, 025 query_audit reshape, 026 drop 8
   dead SaaS tables, 027 supplement source vocab +photo, 028 drop 4 more fossils —
@@ -56,18 +56,41 @@
   SECURITY DEFINER function + `trg_media_inbox_notify` AFTER INSERT trigger on
   `media_inbox` — fires `net.http_post` to `trigger-drain` Edge function for every new
   `pending` row; deduplication handled by the Edge function.
+  **043 (applied 2026-06-08)** seed `trigger_drain.last_dispatch_ts` in `system_config`
+  for atomic CAS dedup; updated `fn_media_inbox_notify` to forward `TRIGGER_DRAIN_SECRET`
+  from Supabase vault. ⚠️ Set `TRIGGER_DRAIN_SECRET` via `supabase secrets set` and
+  `vault.create_secret`, then redeploy trigger-drain before this has effect.
+  **044 (applied 2026-06-08)** dropped stale `food_guidance_item_classification_scope_key`
+  UNIQUE constraint (from mig 004); added `food_guidance_global_item_class` partial index
+  for global rows (`profile_id IS NULL`) to support multi-profile Viome guidance.
+  **045 (applied 2026-06-08)** WHOOP full schema expansion: added all missing WHOOP v2 API
+  fields to `whoop_cycles` (score_state, recovery_score_state, recovery_user_calibrating,
+  sleep_cycle_count, disturbance_count, no_data_min, whoop_updated_at/created_at),
+  `whoop_sleeps` (score_state, no_data_min, sleep_cycle_count, disturbance_count,
+  whoop_cycle_id, whoop_updated_at/created_at), `whoop_workouts` (score_state, sport_id,
+  percent_recorded, distance_m, altitude_gain_m, altitude_change_m, whoop_updated_at/
+  created_at). New table `whoop_body_measurements` (profile_id, synced_date, height_m,
+  weight_kg, max_heart_rate) for `GET /v2/user/measurement/body` — UNIQUE (profile_id,
+  synced_date). Backfilled: 519 workouts, 580 cycles, 625 sleeps for PC (2020-01-01→now).
+  **046 (applied 2026-06-08)** `claim_inbox_cluster(uuid[])` RPC — atomic cluster claim
+  using `FOR UPDATE` lock + all-or-nothing UPDATE; SECURITY INVOKER, granted to authenticated.
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
-- **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`
-  webhook). `ingest/whoop_sync.refresh_recent()` is the reusable mini-sync; the
-  `whoop-webhook` refreshes the prior cycle on `sleep.*`. ⚠️ webhook needs redeploy:
-  `supabase functions deploy whoop-webhook --no-verify-jwt`.
+- **Event-driven drain pipeline**: Telegram photo → `media_inbox` INSERT → pg_net trigger
+  `fn_media_inbox_notify` → `trigger-drain` Edge function (15s dedup via system_config CAS)
+  → GitHub `repository_dispatch` `inbox-drain` → GH Actions → `monitor/inbox_drain.py --settle-sec 5`.
+  Text messages → `telegram-webhook` → GH `repository_dispatch` `send-brief` → `monitor/brief.py`.
+- **WHOOP sync**: `ingest/whoop_sync.py` — `sync_profile()` runs workouts + cycles + sleeps +
+  body_measurements for each profile. `--backfill` from 2020-01-01. `refresh_recent()` for
+  brief pre-sync. Score state tracked: SCORED / PENDING_SCORE / UNSCORABLE — brief shows ⏳
+  for pending, ❌ for unscorable. WHOOP body endpoint: height_m, weight_kg, max_heart_rate.
+  ⚠️ whoop-webhook needs redeploy: `supabase functions deploy whoop-webhook --no-verify-jwt`.
 - **`lib/contract.write` skips GENERATED columns** on INSERT/UPDATE while keeping them
   as `ON CONFLICT` targets. `supplement_intake_logs.taken_on` IS `GENERATED ALWAYS AS
   ((taken_at AT TIME ZONE 'UTC')::date)` — confirmed on live DB. Migration 039 removed
   it from the `maintainer_ingest_supplement` INSERT (was causing error 428C9); it is
   still used as the ON CONFLICT target, auto-populated by Postgres from `taken_at`.
-- **66 tables** (35 active / 31 empty), 7 views, 126 FKs (0 orphans). Full inventory +
+- **67 tables** (36 active / 31 empty), 7 views. Full inventory +
   dormant-table classification: `docs/HEALTH-CHECK-2026-06-03.md`.
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,
   resolved via `family_memberships`). Maintainer-only RLS SELECT on `query_audit`,
