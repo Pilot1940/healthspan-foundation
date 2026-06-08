@@ -112,10 +112,21 @@ SHIPPED 2026-06-08 — explicit `log:`/`add:`/`/log`/`/add` trigger now logs via
 additive option). Bare-text-defaults-to-log (full inversion) intentionally **deferred** — that's a
 production-routing change needing the clarification loop (#5) + confirmation UX designed first.
 
-**Shipped (additive):** `telegram-webhook` `parseLogCommand` — text starting with `log:`/`add:`/
-`/log`/`/add` enqueues a text-only `media_inbox` row (null storage_path, kind=unknown) → pg_net
-trigger fires the drain → unknown-classifier extracts food/supplement/biomarker from the caption →
-`maintainer_ingest_*` → confirmation ("✅ … logged"). Bare text still → brief. 15 parser cases pass.
+**Superseded by LLM-intent routing (2026-06-08).** The regex approach (`parseLogCommand`/verb
+detection) was REMOVED — it gated text (a wrong guess permanently diverted to the brief, never
+reaching an extractor), while photos always got the LLM. That asymmetry made every keyword patch
+fail on the next phrasing. Now: ALL text → `media_inbox` (kind=unknown) → the drain's LLM is the
+router. The `unknown` prompt classifies each message as a LOG (food/supplement/biomarker, multi-item)
+or `{kind:"brief"}`; brief requests are composed inline at end-of-run (`compose_brief`). Supplements
+match on `display_name` and default their dose from the user's regimen, so "i took D3, K2, B12,
+magnesium citrate, omega-3" auto-logs all five. `guessKind` survives only as a photo-caption hint.
+
+**Watch / not-yet-fixed (log, don't patch reactively):**
+- Two text messages inside one settle window can be merged by `content_cluster_ungrouped` (e.g. a
+  brief-request + a log in one cluster → one classification). Low-probability; new interaction from
+  "all text → drain". Revisit if it bites.
+- Ambiguous supplement names ("took my magnesium" with two magnesiums in the catalog) resolve to the
+  first match — the clarification loop (#5) is the real fix.
 
 **Where it bites:** `telegram-webhook` routes **every** text-only message to the daily brief
 (`if (!isMediaMessage) → send-brief`). So "Supplements vitamin D3, vit K, magnesium, fish oil,
