@@ -1358,7 +1358,12 @@ def _process_cluster(
         tline = _totals_line(totals, supp, target_cal, target_prot, is_minor)
         if tline:
             msg = f"{msg}\n{tline}"
-    telegram_send(token, chat_id, msg)
+    mid = telegram_send(token, chat_id, msg)
+    # If this item staged, store the review message's id so a user REPLY to it correlates
+    # back here (reply-to-clarify loop). Without this the reply can't be matched.
+    if rpc_status == "staged" and mid:
+        db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"},
+                  {"clarify_message_id": mid})
 
 
 def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_override: int | None = None) -> dict:
