@@ -192,7 +192,26 @@ carefully; it's an `ON CONFLICT` target). Not urgent — the brief (main surface
 
 ---
 
+## #10 — food_reference lookup ignores portion (overrides with full serving) — **OPEN, med**
+
+**Severity:** MED · **Owner:** CC · **Status:** OPEN.
+
+When `lookup_food_reference` hits, the drain **overrides** the item's macros with the stored serving
+(`food_item["calories"] = ref["calories"]` …), discarding any portion the user stated. So once
+"Protein Thai Tea Shake" is in the reference (190 kcal/35P per 350ml bottle), logging "**half** a thai
+tea shake" would write the FULL bottle's macros. Full-serving logs are now perfect; partial logs
+regress. Fix: have the extractor return a `portion`/`servings` multiplier (default 1.0) and scale the
+reference macros by it, or only apply the reference when no explicit partial portion is stated.
+
+---
+
 ## Done / shipped reference
+- **2026-06-08 — vision truncation + multi-item confirmation + Protein Thai Tea reference.** Bottle
+  photo stuck in review = `max_tokens=1024` truncated the JSON (not a label-read failure) → bumped to
+  4096 + prose-tolerant parse + retry; validated by re-driving the stuck photo to `done`. Multi-item
+  confirmation fixed (`extracted = food_items[0]` discarded all but the first → "Logged 1" for a
+  2-item log); now names all items + counts items not clusters. Added "Protein Thai Tea Shake" (190/
+  35/9/2 per 350ml) to `food_reference` (global, verified, aliased) so future logs resolve instantly.
 - **2026-06-08 — Brief is the LOCAL day + food-log corrections.** Migration 048 seeds
   `app.timezone='Asia/Bangkok'`; `brief.py` computes "today" as a local-day UTC window over
   `logged_at`/`taken_at` (fixes 07:00-ICT rollover + UTC display). Was surfaced by a meal logged with
