@@ -564,9 +564,10 @@ code{
 <ul><li><strong>Incomplete</strong> → the RPC is called with <code>p_force_stage = true</code> and a <code>p_stage_reason</code>,</li></ul>
 <p>writing to <code>stg_food_log_review</code> instead; <code>media_inbox.status = &quot;staged&quot;</code>.</p>
 <ul><li><strong>Malformed Claude response</strong> → <code>vision_extract</code> returns <code>{&quot;_stage_reason&quot;: ...}</code> →</li></ul>
-<p>staged.</p>
+<p>staged. It <strong>retries the call once</strong> and parses tolerantly (<code>_extract_json</code> strips code fences + extracts the outermost <code>{}</code>/<code>[]</code> from any surrounding prose); <code>max_tokens</code> is <strong>4096</strong> (1024 truncated labelled multi-item foods mid-JSON, which used to strand them in review). Only a second failed parse stages the item.</p>
 <ul><li><strong>HTTP error to Claude</strong> → <code>vision_extract</code> returns <code>{&quot;_error&quot;: ...}</code> →</li></ul>
 <p><code>media_inbox.status = &quot;failed&quot;</code> (pipeline fault, needs investigation — distinct from a normal completeness-gate stage).</p>
+<p><strong>Multi-item confirmations</strong> name every item and count items, not clusters: a 2-item log (&quot;pineapple and dragon fruit&quot;) confirms &quot;✅ Logged 2 items: …&quot; and the run summary says &quot;Done — 2 logged&quot; (<code>compose_confirmation</code> is list-safe; <code>n_written</code> tracks inserted rows). <strong>Repeat products</strong> resolve instantly via <code>food_reference</code> (e.g. &quot;Protein Thai Tea Shake&quot; 190 kcal/35P per 350 ml) — no label re-read. (Reference override isn&#x27;t portion-scaled yet — backlog #10.)</p>
 <p>All thresholds driving these predicates (kcal plausibility, biomarker <code>plausible_min/max</code>, confidence floor) come from <code>system_config</code> / <code>metric_definitions</code> — never hardcoded.</p>
 <h4>Failure modes</h4>
 <div class="table-wrap"><table>
