@@ -13,7 +13,8 @@ CLI: python -m monitor.brief --profile-id <uuid>
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
@@ -23,15 +24,37 @@ _TIMING_ORDER = ["morning", "lunch", "dinner", "bedtime", "anytime"]
 
 # ── data fetching ─────────────────────────────────────────────────────────────
 
-def _fetch_food_full(db, profile_id: str, today: str) -> dict:
-    """Full macro totals for today (kcal, protein, carbs, fat, meals)."""
+def _local_day(cfg: dict) -> tuple[str, str, str]:
+    """(local_today_iso, day_start_utc_iso, day_end_utc_iso) for the configured timezone.
+
+    The brief's "today" is the LOCAL day in `app.timezone` (system_config), expressed as a
+    UTC range over the timestamptz columns (`logged_at`/`taken_at`). This fixes the old
+    UTC-date boundary, which rolled over at 07:00 ICT and dropped 00:00–07:00 meals.
+    """
+    tzname = str(cfg.get("app.timezone") or "UTC").strip().strip('"')
+    try:
+        tz = ZoneInfo(tzname)
+    except Exception:
+        tz = timezone.utc
+    now_local = datetime.now(tz)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    return (
+        now_local.date().isoformat(),
+        start_local.astimezone(timezone.utc).isoformat(),
+        end_local.astimezone(timezone.utc).isoformat(),
+    )
+
+
+def _fetch_food_full(db, profile_id: str, day_start: str, day_end: str) -> dict:
+    """Full macro totals for the local day (kcal, protein, carbs, fat, meals)."""
     try:
         rows = db.select(
             "food_logs",
             select="calories,protein_g,carbs_g,fat_g",
             filters={
                 "profile_id": f"eq.{profile_id}",
-                "log_date": f"eq.{today}",
+                "and": f"(logged_at.gte.{day_start},logged_at.lt.{day_end})",
                 "is_day_summary": "not.is.true",
             },
         )
@@ -46,8 +69,10 @@ def _fetch_food_full(db, profile_id: str, today: str) -> dict:
         return {}
 
 
-def _fetch_supplement_status(db, profile_id: str, today: str) -> list[dict]:
-    """Active regimen entries with name, timing[], and whether taken today."""
+def _fetch_supplement_status(db, profile_id: str, today: str, day_start: str, day_end: str) -> list[dict]:
+    """Active regimen entries with name, timing[], and whether taken in the local day.
+    `today` (local date) bounds the regimen's start/end; the local-day UTC window bounds
+    today's intakes (taken_at), not the UTC-derived taken_on column."""
     try:
         regimens = db.select(
             "supplement_regimens",
@@ -78,7 +103,10 @@ def _fetch_supplement_status(db, profile_id: str, today: str) -> list[dict]:
         intakes = db.select(
             "supplement_intake_logs",
             select="supplement_id",
-            filters={"profile_id": f"eq.{profile_id}", "taken_on": f"eq.{today}"},
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "and": f"(taken_at.gte.{day_start},taken_at.lt.{day_end})",
+            },
         )
         taken_ids = {str(r["supplement_id"]) for r in intakes}
 
@@ -147,15 +175,15 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
         return {}
 
 
-def _fetch_today_viome_flags(db, profile_id: str, today: str) -> list[dict]:
-    """Today's food_logs rows with a non-null, non-clean verdict."""
+def _fetch_today_viome_flags(db, profile_id: str, day_start: str, day_end: str) -> list[dict]:
+    """The local day's food_logs rows with a non-null, non-clean verdict."""
     try:
         rows = db.select(
             "food_logs",
             select="description,verdict,flags",
             filters={
                 "profile_id": f"eq.{profile_id}",
-                "log_date": f"eq.{today}",
+                "and": f"(logged_at.gte.{day_start},logged_at.lt.{day_end})",
                 "verdict": "not.is.null",
                 "is_day_summary": "not.is.true",
             },
@@ -399,10 +427,12 @@ def compose_brief(
         ctx = {}
     targets = ctx.get("targets") or {}
 
-    food        = _fetch_food_full(db, profile_id, today)
-    supps       = _fetch_supplement_status(db, profile_id, today)
-    whoop       = _fetch_whoop(db, profile_id, today)
-    viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, today)
+    # "Today" is the LOCAL day in app.timezone, as a UTC window over logged_at/taken_at.
+    local_today, day_start, day_end = _local_day(cfg)
+    food        = _fetch_food_full(db, profile_id, day_start, day_end)
+    supps       = _fetch_supplement_status(db, profile_id, local_today, day_start, day_end)
+    whoop       = _fetch_whoop(db, profile_id, local_today)
+    viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, day_start, day_end)
 
     model      = str(cfg.get("brief.model", _BRIEF_MODEL)).strip('"')
     food_txt   = _food_section(food, targets, is_minor,
