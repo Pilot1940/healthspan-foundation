@@ -765,16 +765,18 @@ def content_cluster_ungrouped(
 
 # ── telegram ──────────────────────────────────────────────────────────────────
 
-def telegram_send(token: str, chat_id: int, text: str) -> None:
-    """Best-effort Telegram sendMessage. Never raises."""
+def telegram_send(token: str, chat_id: int, text: str) -> int | None:
+    """Best-effort Telegram sendMessage. Never raises. Returns the sent message_id (so a
+    staged item can correlate the user's reply back to it), or None on failure."""
     try:
-        httpx.post(
+        resp = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": text},
             timeout=10.0,
         )
+        return resp.json().get("result", {}).get("message_id")
     except Exception:
-        pass
+        return None
 
 
 def compose_confirmation(kind: str, rpc_status: str, extracted, is_minor: bool) -> str:
@@ -822,31 +824,44 @@ def compose_confirmation(kind: str, rpc_status: str, extracted, is_minor: bool) 
 
 
 def describe_stage(api_key: str, model: str, raw_text: str, kind: str,
-                   stage_reason: str | None, extracted) -> str:
-    """LLM-written, specific 'here's what was unclear and what to send' line for an adult
-    whose item went to review — instead of a bare 'Queued for review'. Best-effort: on any
-    error/timeout it falls back to a templated message that still surfaces the reason."""
+                   stage_reason: str | None, extracted, is_minor: bool = False) -> str:
+    """LLM-written, specific 'here's what was unclear — reply and I'll finish it' line for
+    the user whose item went to review (instead of a bare 'Queued for review'). The user
+    can REPLY to this message to clarify (telegram-webhook re-queues it). Best-effort: on
+    any error/timeout it falls back to a templated message that still surfaces the reason.
+    Minor-safe wording when is_minor (warm/encouraging, never clinical)."""
     reason = stage_reason or "I need a little more detail"
-    fallback = f"📋 Saved for review — {reason}. Reply with the missing detail and I'll finish it."
+    fallback = (
+        "📋 I just need one more detail to save that — reply to this message and tell me a bit more 😊"
+        if is_minor
+        else f"📋 Saved for review — {reason}. Reply to this message with the missing detail and I'll finish it."
+    )
     try:
         items = extracted if isinstance(extracted, list) else [extracted]
         names = ", ".join(
             str(x.get("name") or x.get("description") or "").strip()
             for x in items if isinstance(x, dict) and (x.get("name") or x.get("description"))
         )
+        sys = (
+            "You write warm, encouraging messages for a kid's health-logging bot. Simple, positive, "
+            "never clinical, never mention calories/restrictions/review-queues."
+            if is_minor else
+            "You write concise, friendly confirmations for a health-logging bot. No emoji."
+        )
         prompt = (
             f'A user messaged a health logger: "{raw_text}". It could not be auto-saved.\n'
             f'Internal reason: "{reason}". Detected item(s): {names or "n/a"}.\n'
-            'Reply with ONE short, warm line (max ~160 chars, plain text, NO emoji) that says '
-            'specifically what was unclear and exactly what to send back to complete it. '
-            'Name the item and the missing field; do not apologise or add filler.'
+            'Reply with ONE short line (max ~160 chars, plain text) that says specifically what was '
+            'unclear and asks them to REPLY to this message with the missing detail. Name the item '
+            'and the missing field; do not apologise or add filler.'
+            + (' Keep it warm and simple for a teenager; no clinical or diet language.' if is_minor else '')
         )
         resp = httpx.post(
             _ANTHROPIC_URL,
             headers={"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION,
                      "content-type": "application/json"},
             json={"model": model, "max_tokens": 150,
-                  "system": "You write concise, friendly confirmations for a health-logging bot. No emoji.",
+                  "system": sys,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=20.0,
         )
@@ -1028,9 +1043,11 @@ def _process_cluster(
         summary["staged"] += 1
         if per_chat is not None:
             per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
-        msg = ("📋 I'll check this one with PC. Thanks!" if is_minor
-               else describe_stage(api_key, model, raw_text, kind, reason, {}))
-        telegram_send(token, chat_id, msg)
+        msg = describe_stage(api_key, model, raw_text, kind, reason, {}, is_minor)
+        mid = telegram_send(token, chat_id, msg)
+        if mid:  # correlate a future reply back to these staged rows
+            db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"},
+                      {"clarify_message_id": mid})
         return
     elif "_error" in extracted:
         summary["failed"] += 1
@@ -1293,11 +1310,11 @@ def _process_cluster(
     # Telegram confirmation — append running food totals after a successful write
     msg = compose_confirmation(kind, rpc_status, extracted, is_minor)
 
-    # Descriptive, LLM-written review feedback for an adult whose item staged — replaces the
-    # bare "Queued for review" with what was unclear and what to send. Minors keep the gentle
-    # "I'll check with PC" wording (no machinery exposed).
-    if rpc_status == "staged" and not is_minor:
-        msg = describe_stage(api_key, model, raw_text, kind, stage_reason_out, extracted)
+    # Descriptive, LLM-written review feedback when an item staged — replaces the bare
+    # "Queued for review" with what was unclear + an invitation to REPLY to clarify
+    # (telegram-webhook re-queues the reply). Minor-safe wording for minors.
+    if rpc_status == "staged":
+        msg = describe_stage(api_key, model, raw_text, kind, stage_reason_out, extracted, is_minor)
 
     # Viome cross-check lines (food, inserted, adult only)
     if kind == "food" and rpc_status == "inserted" and not is_minor and viome_verdicts:

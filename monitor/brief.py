@@ -230,9 +230,22 @@ def _food_section(totals: dict, targets: dict, is_minor: bool,
         f"  Fat:      {_vs(fat, t_fat, 'g')}",
     ]
     if energy_burned and energy_burned > 0 and not is_stale:
-        deficit = energy_burned - kcal
-        sign = "−" if deficit > 0 else "+"
-        lines.append(f"  WHOOP burn: {energy_burned} kcal · net {sign}{abs(deficit)} kcal {'deficit' if deficit > 0 else 'surplus'}")
+        # TRUE daily expenditure = BMR + activity. The old line did intake − WHOOP_burn,
+        # treating activity energy as the whole-day total and ignoring BMR entirely — so a
+        # 755 kcal activity burn read as a +1448 "surplus" when it's really a deficit.
+        # WHOOP energy below BMR is activity-only/partial → add BMR; if it already exceeds
+        # BMR it's a full-day total → use as-is.
+        bmr = targets.get("calorie_floor")  # measured BMR from the context MD
+        if bmr and energy_burned < bmr:
+            expenditure = round(bmr + energy_burned)
+            basis = f"BMR {round(bmr)} + {energy_burned} activity"
+        else:
+            expenditure = energy_burned
+            basis = f"{energy_burned} kcal expenditure"
+        balance = kcal - expenditure
+        sign = "+" if balance > 0 else "−"
+        word = "surplus" if balance > 0 else "deficit"
+        lines.append(f"  Energy: {kcal} in − {expenditure} out ({basis}) · net {sign}{abs(balance)} kcal {word}")
     return "\n".join(lines)
 
 

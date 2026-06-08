@@ -30,7 +30,7 @@ export function verifySecretToken(header: string | null, expected: string): bool
   return diff === 0;
 }
 
-// deploy: v5 (2026-06-08) — all text → drain; LLM routes log-vs-brief (no regex gate)
+// deploy: v6 (2026-06-08) — reply-to-clarify loop (reply to a staged item to fix it)
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
@@ -310,6 +310,47 @@ Deno.serve(async (req) => {
       await db.from("telegram_processed_updates").insert({ update_id: updateId });
       return new Response("ok", { status: 200 });
     }
+
+    // Reply-to-clarify: if this text is a REPLY to a staged item's review message, treat it
+    // as a clarification — re-queue the original (combined caption + its image) so the drain
+    // re-extracts with the new detail. We INSERT a fresh row (not UPDATE) so the AFTER-INSERT
+    // pg_net trigger fires; the original staged row is retired.
+    const replyToId: number | undefined = msg.reply_to_message?.message_id;
+    if (replyToId) {
+      const { data: staged } = await db
+        .from("media_inbox")
+        .select("id, caption, storage_path, clarify_count")
+        .eq("clarify_message_id", replyToId)
+        .eq("profile_id", profileId)
+        .eq("status", "staged")
+        .limit(1)
+        .maybeSingle();
+      if (staged) {
+        await db.from("telegram_processed_updates").insert({ update_id: updateId });
+        const prior = staged.clarify_count ?? 0;
+        if (prior >= 2) {
+          // Cap clarification rounds — hand off to the maintainer rather than loop.
+          await telegramSend(chatId, "Thanks — I'll have PC take a look at this one.");
+          return new Response("ok", { status: 200 });
+        }
+        await db.from("media_inbox").insert({
+          profile_id: profileId,
+          chat_id: chatId,
+          kind: "unknown",
+          storage_path: staged.storage_path,          // re-analyse the original image if any
+          caption: `${staged.caption ?? ""}\n[clarification: ${body}]`.trim(),
+          status: "pending",
+          clarify_count: prior + 1,
+        });
+        await db
+          .from("media_inbox")
+          .update({ status: "done", clarify_message_id: null, stage_reason: "superseded by clarification" })
+          .eq("id", staged.id);
+        await telegramSend(chatId, "📥 Got it — updating that…");
+        return new Response("ok", { status: 200 });
+      }
+    }
+
     const { error: txtErr } = await db.from("media_inbox").insert({
       profile_id: profileId,
       chat_id: chatId,
