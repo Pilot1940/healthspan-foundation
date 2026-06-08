@@ -103,7 +103,11 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
     try:
         rows = db.select(
             "whoop_cycles",
-            select="cycle_start,recovery_score_pct,hrv_ms,resting_hr_bpm,asleep_duration_min,sleep_performance_pct,energy_burned_cal",
+            select=(
+                "cycle_start,score_state,recovery_score_state,recovery_user_calibrating,"
+                "recovery_score_pct,hrv_ms,resting_hr_bpm,asleep_duration_min,"
+                "sleep_performance_pct,energy_burned_cal,sleep_cycle_count,disturbance_count"
+            ),
             filters={"profile_id": f"eq.{profile_id}"},
             order="cycle_start.desc",
             limit=1,
@@ -113,14 +117,19 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
         r = rows[0]
         stale = (r.get("cycle_start") or "")[:10] < today
         return {
-            "cycle_start":       r.get("cycle_start"),
-            "recovery":          r.get("recovery_score_pct"),
-            "hrv":               r.get("hrv_ms"),
-            "rhr":               r.get("resting_hr_bpm"),
-            "sleep_min":         r.get("asleep_duration_min"),
-            "sleep_performance": r.get("sleep_performance_pct"),
-            "energy_burned_cal": r.get("energy_burned_cal"),
-            "stale":             stale,
+            "cycle_start":              r.get("cycle_start"),
+            "score_state":              r.get("score_state"),
+            "recovery_score_state":     r.get("recovery_score_state"),
+            "recovery_user_calibrating": r.get("recovery_user_calibrating"),
+            "recovery":                 r.get("recovery_score_pct"),
+            "hrv":                      r.get("hrv_ms"),
+            "rhr":                      r.get("resting_hr_bpm"),
+            "sleep_min":                r.get("asleep_duration_min"),
+            "sleep_performance":        r.get("sleep_performance_pct"),
+            "sleep_cycle_count":        r.get("sleep_cycle_count"),
+            "disturbance_count":        r.get("disturbance_count"),
+            "energy_burned_cal":        r.get("energy_burned_cal"),
+            "stale":                    stale,
         }
     except Exception:
         return {}
@@ -146,7 +155,8 @@ def _fetch_today_viome_flags(db, profile_id: str, today: str) -> list[dict]:
 
 # ── formatting ────────────────────────────────────────────────────────────────
 
-def _food_section(totals: dict, targets: dict, is_minor: bool, energy_burned: int | None = None) -> str:
+def _food_section(totals: dict, targets: dict, is_minor: bool,
+                  energy_burned: int | None = None, is_stale: bool = False) -> str:
     if not totals:
         return "Food: no data yet"
     kcal  = totals.get("kcal", 0)
@@ -179,7 +189,7 @@ def _food_section(totals: dict, targets: dict, is_minor: bool, energy_burned: in
         f"  Carbs:    {_vs(carbs, t_carbs, 'g')}",
         f"  Fat:      {_vs(fat, t_fat, 'g')}",
     ]
-    if energy_burned and energy_burned > 0:
+    if energy_burned and energy_burned > 0 and not is_stale:
         deficit = energy_burned - kcal
         sign = "−" if deficit > 0 else "+"
         lines.append(f"  WHOOP burn: {energy_burned} kcal · net {sign}{abs(deficit)} kcal {'deficit' if deficit > 0 else 'surplus'}")
@@ -224,23 +234,44 @@ def _supps_section(supps: list[dict]) -> str:
 def _whoop_section(whoop: dict, is_minor: bool) -> str:
     if not whoop:
         return "WHOOP: no data"
-    rec       = whoop.get("recovery")
-    hrv       = whoop.get("hrv")
-    rhr       = whoop.get("rhr")
-    sleep_min = whoop.get("sleep_min")
-    stale     = whoop.get("stale", False)
+    rec          = whoop.get("recovery")
+    hrv          = whoop.get("hrv")
+    rhr          = whoop.get("rhr")
+    sleep_min    = whoop.get("sleep_min")
+    sleep_cycles = whoop.get("sleep_cycle_count")
+    disturbances = whoop.get("disturbance_count")
+    score_state  = whoop.get("score_state") or ""
+    rec_state    = whoop.get("recovery_score_state") or ""
+    calibrating  = whoop.get("recovery_user_calibrating", False)
+    stale        = whoop.get("stale", False)
+
     stale_tag = " ⚠️ (data >24h old)" if stale else ""
+
+    # Pending/unscorable score — show state, suppress misleading zeros
+    if score_state in ("PENDING_SCORE", "UNSCORABLE"):
+        state_label = "⏳ scoring" if score_state == "PENDING_SCORE" else "❌ unscorable"
+        return f"WHOOP{stale_tag}: {state_label}"
 
     parts = []
     if rec is not None:
-        parts.append(f"Recovery {int(rec)}%")
+        rec_label = f"Recovery {int(rec)}%"
+        if rec_state in ("PENDING_SCORE", "UNSCORABLE"):
+            rec_label += " ⏳"
+        elif calibrating:
+            rec_label += " (calibrating)"
+        parts.append(rec_label)
     if hrv is not None:
         parts.append(f"HRV {round(float(hrv), 1)} ms")
     if rhr is not None:
         parts.append(f"RHR {int(rhr)} bpm")
     if sleep_min is not None:
         h, m = divmod(int(sleep_min), 60)
-        parts.append(f"Sleep {h}h{m:02d}m")
+        sleep_label = f"Sleep {h}h{m:02d}m"
+        if sleep_cycles is not None:
+            sleep_label += f" · {sleep_cycles} cycles"
+        if disturbances:
+            sleep_label += f" · {disturbances} disturbances"
+        parts.append(sleep_label)
 
     if not parts:
         return f"WHOOP{stale_tag}: no data"
@@ -353,7 +384,9 @@ def compose_brief(
     viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, today)
 
     model      = str(cfg.get("brief.model", _BRIEF_MODEL)).strip('"')
-    food_txt   = _food_section(food, targets, is_minor, energy_burned=whoop.get("energy_burned_cal"))
+    food_txt   = _food_section(food, targets, is_minor,
+                               energy_burned=whoop.get("energy_burned_cal"),
+                               is_stale=whoop.get("stale", False))
     supps_txt  = _supps_section(supps)
     whoop_txt  = _whoop_section(whoop, is_minor)
     viome_txt  = _viome_section(viome_flags)

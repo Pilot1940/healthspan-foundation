@@ -31,6 +31,7 @@ Principles (mirroring the BaySys data-quality spec):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid as _uuid
 
@@ -539,10 +540,13 @@ def _generated_cols(conn, table: str) -> frozenset:
                 (table,),
             )
             _GENERATED_CACHE[table] = frozenset(r[0] for r in cur.fetchall())
-        except Exception:
+        except Exception as exc:
             # introspection unavailable (e.g. a mocked conn in tests) — degrade to "none
             # generated" (old behaviour: insert every column). Don't cache the failure so
             # a real connection retries.
+            logging.getLogger(__name__).warning(
+                "_generated_cols introspection failed for %s: %s", table, exc
+            )
             return frozenset()
     return _GENERATED_CACHE[table]
 

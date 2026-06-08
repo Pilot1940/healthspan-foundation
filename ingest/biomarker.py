@@ -125,6 +125,7 @@ def ingest_biomarker_row(payload: dict, conn, profile_id: str,
         conn, provider="manual", method=method,
         profile_id=profile_id, sync_type="ingest",
     )
+    result: dict = {}
     try:
         result = ingest_record(
             conn,
@@ -138,7 +139,7 @@ def ingest_biomarker_row(payload: dict, conn, profile_id: str,
         return result
     finally:
         # caller owns commit; we just close the log
-        status = "success"
+        status = "success" if result.get("status") != "failed" else "failed"
         close_sync_log(
             conn, sync_log_id,
             status=status,

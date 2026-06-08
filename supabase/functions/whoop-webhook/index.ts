@@ -386,6 +386,18 @@ Deno.serve(async (req) => {
 
   try {
     const token = await getValidAccessToken(db, profileId);
+
+    // Handle *.deleted events before routing by prefix — calling whoopGet()
+    // on a deleted resource returns 404, causes a 500, and triggers WHOOP retries.
+    if (type?.endsWith(".deleted")) {
+      // Acknowledge the deletion; soft-delete or mark is a future enhancement.
+      // For now, log success so WHOOP does not retry.
+      await db.from("wearable_sync_log").update({
+        status: "success", completed_at: new Date().toISOString(),
+      }).eq("id", logId);
+      return new Response("deleted event acknowledged", { status: 200 });
+    }
+
     let table = "", row: Record<string, unknown> = {};
     if (type?.startsWith("workout")) {
       table = "whoop_workouts"; row = mapWorkout(await whoopGet(token, `/v2/activity/workout/${id}`), profileId);

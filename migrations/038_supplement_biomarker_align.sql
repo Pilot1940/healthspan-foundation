@@ -67,12 +67,13 @@ BEGIN
 
   IF NOT p_force_stage THEN
     -- Upsert on (profile_id, supplement_id, taken_on, source)
-    -- taken_on is a plain date column; set it explicitly from taken_at
+    -- SUPERSEDED BY 039: taken_on in INSERT causes 428C9; see 039 for fix.
+    -- taken_on is GENERATED ALWAYS AS ((taken_at AT TIME ZONE 'UTC')::date) STORED
+    -- — do NOT include it in INSERT column list; Postgres populates it automatically.
     INSERT INTO public.supplement_intake_logs (
-      profile_id, supplement_id, taken_at, taken_on, source, dose_amount, dose_unit, notes
+      profile_id, supplement_id, taken_at, source, dose_amount, dose_unit, notes
     ) VALUES (
       p_profile_id, p_supplement_id, v_taken_at,
-      (v_taken_at AT TIME ZONE 'UTC')::date,
       p_source, p_dose_amount, p_dose_unit, p_notes
     )
     ON CONFLICT (profile_id, supplement_id, taken_on, source)

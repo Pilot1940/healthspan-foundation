@@ -957,7 +957,14 @@ def _process_cluster(
         # Aggregate: all inserted → done; any staged (none failed) → staged; else failed
         if not statuses or "failed" in statuses:
             rpc_status = "failed"
-            mark_rows(db, _ids(cluster), "failed")
+            n_ok = sum(1 for s in statuses if s in ("inserted", "staged"))
+            n_total = len(food_items)
+            partial_reason = (
+                f"partial: {n_ok} of {n_total} items wrote successfully"
+                if n_ok > 0
+                else None
+            )
+            mark_rows(db, _ids(cluster), "failed", stage_reason=partial_reason)
         elif "staged" in statuses:
             rpc_status = "staged"
             mark_rows(db, _ids(cluster), "staged", stage_reason=food_stage_reason)

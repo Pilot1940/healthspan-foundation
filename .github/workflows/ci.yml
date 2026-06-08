@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/unit/
+
+      - name: Run integration tests
+        # Integration tests use pytest.mark.skipif and self-skip when
+        # DATABASE_URL (and other live-DB credentials) are absent.
+        # They run here only if the secret is wired to this workflow.
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HS_AUTH_EMAIL: ${{ secrets.HS_AUTH_EMAIL }}
+          HS_AUTH_PASSWORD: ${{ secrets.HS_AUTH_PASSWORD }}
+        run: pytest tests/integration/

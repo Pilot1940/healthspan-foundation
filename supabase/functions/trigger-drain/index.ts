@@ -1,6 +1,14 @@
 // trigger-drain: fires GitHub repository_dispatch when media_inbox gets a new row.
 // Deduplicates within a 15s window — albums arrive in <1s so this batches them
 // without orphaning back-to-back meals.
+//
+// Auth: requires Authorization: Bearer <TRIGGER_DRAIN_SECRET> header.
+//   Set TRIGGER_DRAIN_SECRET as a Supabase secret and update the pg_net trigger
+//   (fn_media_inbox_notify) to send it. See migration 043.
+//
+// Dedup: atomic compare-and-set via UPDATE ... WHERE updated_at < cutoff.
+//   Concurrent calls both hit the DB; only one UPDATE wins (affected rows = 1).
+//   The loser sees 0 rows and returns skipped — no thundering herd.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -8,8 +16,25 @@ const GITHUB_REPO = "Pilot1940/healthspan-foundation";
 const DEDUP_KEY = "trigger_drain.last_dispatch_ts";
 const DEDUP_WINDOW_SEC = 15;
 
-Deno.serve(async (_req) => {
+Deno.serve(async (req) => {
   try {
+    // --- auth: shared-secret header check ---
+    const drainSecret = Deno.env.get("TRIGGER_DRAIN_SECRET") ?? "";
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+
+    // Constant-time compare to prevent timing attacks
+    if (!drainSecret || provided.length !== drainSecret.length) {
+      return new Response("unauthorized", { status: 401 });
+    }
+    let diff = 0;
+    for (let i = 0; i < drainSecret.length; i++) {
+      diff |= provided.charCodeAt(i) ^ drainSecret.charCodeAt(i);
+    }
+    if (diff !== 0) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const ghToken = Deno.env.get("GH_DISPATCH_TOKEN")!;
@@ -18,27 +43,27 @@ Deno.serve(async (_req) => {
       auth: { persistSession: false },
     });
 
-    // --- dedup: skip if dispatched recently ---
-    const { data: row } = await db
+    // --- dedup: atomic compare-and-set (mirrors telegram-webhook maybeFireRoutine) ---
+    // UPDATE wins only if updated_at < cutoff — concurrent calls both hit the DB
+    // but only one UPDATE will match, preventing double-dispatch.
+    const nowMs = Date.now();
+    const cutoff = new Date(nowMs - DEDUP_WINDOW_SEC * 1000).toISOString();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const { data: won } = await db
       .from("system_config")
-      .select("value")
+      .update({ value: nowIso, updated_at: nowIso })
       .eq("key", DEDUP_KEY)
-      .maybeSingle();
+      .eq("is_active", true)
+      .lt("updated_at", cutoff)
+      .select("id");
 
-    const lastTs = row?.value ? Number(row.value) : 0;
-    const nowSec = Math.floor(Date.now() / 1000);
-
-    if (nowSec - lastTs < DEDUP_WINDOW_SEC) {
+    if (!won?.length) {
       return new Response(
-        JSON.stringify({ skipped: true, age_sec: nowSec - lastTs }),
+        JSON.stringify({ skipped: true }),
         { headers: { "Content-Type": "application/json" } },
       );
     }
-
-    // Stamp before dispatching — prevents thundering herd if GH API is slow
-    await db
-      .from("system_config")
-      .upsert({ key: DEDUP_KEY, value: String(nowSec) }, { onConflict: "key" });
 
     // --- fire GitHub repository_dispatch ---
     const resp = await fetch(
@@ -61,7 +86,7 @@ Deno.serve(async (_req) => {
     }
 
     return new Response(
-      JSON.stringify({ dispatched: true, ts: nowSec }),
+      JSON.stringify({ dispatched: true, ts: nowIso }),
       { headers: { "Content-Type": "application/json" } },
     );
   } catch (err) {

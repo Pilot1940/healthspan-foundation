@@ -14,7 +14,7 @@
 
 - **Database**: Supabase (PostgreSQL + Row Level Security)
 - **AI**: Anthropic Claude API
-- **Messaging**: Google Chat (push via webhook URLs in Supabase secrets)
+- **Messaging**: Telegram (bot confirmations + data ingestion channel) + Google Chat (future push notifications — not yet implemented in code)
 - **Storage**: AWS S3
 - **Email**: AWS SES
 - **Cache**: Redis
@@ -27,7 +27,7 @@
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
   canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
   state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
-- **Migrations 029–040 all written and applied** — Telegram ingestion Phase 1–3B + drain
+- **Migrations 029–042 all written and applied** — Telegram ingestion Phase 1–3B + drain
   identity + completeness gate + stage_reason + supplement/biomarker alignment + taken_on fix +
   write-contract audit. 035 re-keyed drain identity to `healthspan.drainer@chitalkar.com`.
   **036 (applied 2026-06-07)** added `p_force_stage` to `maintainer_ingest_food` + DB-side kcal gate.
@@ -46,6 +46,16 @@
   (supplement_id), biomarker (metric_definition_id, value), and food (description,
   meal_type CHECK) RPCs; fixed supplement RETURN to emit `v_stage_reason` not
   `p_stage_reason`; removed `'unknown'` from food vision prompt meal_type options.
+  **041 (applied 2026-06-07)** smart food resolution: `food_reference` table (shared macro
+  library; global rows have `profile_id IS NULL`, personal rows scoped to user); per-user
+  `food_guidance` via nullable `profile_id` column + `effective_food_guidance` view updated;
+  SECURITY DEFINER RPCs `lookup_food_reference`, `lookup_viome_verdicts`,
+  `promote_food_to_reference`; `food_reference.learn_min_logs` threshold in
+  `system_config`; Hooray Strawberry Shake seed row (global).
+  **042 (applied 2026-06-07)** pg_net trigger-drain webhook: `fn_media_inbox_notify`
+  SECURITY DEFINER function + `trg_media_inbox_notify` AFTER INSERT trigger on
+  `media_inbox` — fires `net.http_post` to `trigger-drain` Edge function for every new
+  `pending` row; deduplication handled by the Edge function.
 - **Drain service account**: `healthspan.drainer@chitalkar.com` (HS_AUTH_EMAIL env var).
   UID resolved dynamically in migration 035 — no hardcoded UUID.
 - **WHOOP strain refresh (v3-8):** cycles go stale at ~0 strain (no `cycle.updated`

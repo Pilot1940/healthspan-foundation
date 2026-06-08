@@ -97,8 +97,19 @@ Set confidence lower (< 0.7) when items are vague or portions are unknown."""
         max_tokens=512,
         messages=[{"role": "user", "content": prompt}],
     )
+    if not message.content:
+        raise ValueError("Claude returned an empty content list — cannot classify food")
     raw = message.content[0].text.strip()
-    return json.loads(raw)
+    # Strip code-fence wrappers the model occasionally emits (```json ... ```)
+    if raw.startswith("```"):
+        raw = raw.split("```", 2)[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip().rstrip("`").strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Claude response was not valid JSON: {raw[:200]}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -275,10 +286,8 @@ def run_interactive(conn, profile_id: str) -> None:
         "notes": notes or None,
     }
 
-    if method not in _VALID_METHODS:
-        raise ValueError(f"method {method!r} not in {sorted(_VALID_METHODS)}")
     sync_log_id = open_sync_log(
-        conn, provider="manual", method=method,
+        conn, provider="manual", method="manual",
         profile_id=profile_id, sync_type="ingest",
     )
     try:

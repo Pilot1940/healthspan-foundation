@@ -5,3 +5,9 @@ verify_jwt = false
 
 [functions.whoop-webhook]
 verify_jwt = false
+
+[functions.telegram-webhook]
+verify_jwt = false
+
+[functions.trigger-drain]
+verify_jwt = false

@@ -202,7 +202,17 @@ def _get_access_token(env: dict) -> tuple[str, str]:
     except urllib.error.HTTPError as e:
         err_body = e.read().decode(errors="replace")
         raise RuntimeError(f"WHOOP token refresh HTTP {e.code}: {err_body}") from e
-    return data["access_token"], data["refresh_token"]
+    access_token = data.get("access_token")
+    if not access_token:
+        raise ValueError(
+            f"Whoop token response missing access_token. Response keys: {list(data.keys())}"
+        )
+    refresh_token_new = data.get("refresh_token")
+    if not refresh_token_new:
+        raise ValueError(
+            f"Whoop token response missing refresh_token. Response keys: {list(data.keys())}"
+        )
+    return access_token, refresh_token_new
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +295,8 @@ def _duration_min(start_iso: str | None, end_iso: str | None) -> float | None:
 
 def _map_workout(rec: dict, profile_id: str) -> dict:
     score = rec.get("score") or {}
-    zones = score.get("zone_durations") or {}  # API field is plural
+    # WHOOP v2 API uses "zone_duration" (singular) as the key name.
+    zones = score.get("zone_duration") or score.get("zone_durations") or {}
     sport_id = rec.get("sport_id", -1)
 
     z0 = zones.get("zone_zero_milli") or 0
@@ -306,11 +317,17 @@ def _map_workout(rec: dict, profile_id: str) -> dict:
         "workout_end": rec.get("end"),
         "timezone": rec.get("timezone_offset"),
         "activity_name": rec.get("sport_name") or _SPORT_NAMES.get(sport_id, "Activity"),
+        "sport_id": sport_id if sport_id != -1 else None,
+        "score_state": rec.get("score_state"),
         "activity_strain": score.get("strain"),
         "avg_hr_bpm": score.get("average_heart_rate"),
         "max_hr_bpm": score.get("max_heart_rate"),
         "energy_burned_cal": _kj_to_kcal(score.get("kilojoule")),
         "duration_min": _duration_min(rec.get("start"), rec.get("end")),
+        "percent_recorded": score.get("percent_recorded"),
+        "distance_m": score.get("distance_meter"),
+        "altitude_gain_m": score.get("altitude_gain_meter"),
+        "altitude_change_m": score.get("altitude_change_meter"),
         # Only include zone fields if the API returned real data (any zone > 0).
         # All-zero means zone_duration was absent — don't overwrite screenshot data.
         **({"hr_zone0_sec": _ms_to_sec(z0), "hr_zone1_sec": _ms_to_sec(z1),
@@ -320,7 +337,8 @@ def _map_workout(rec: dict, profile_id: str) -> dict:
              "hr_zone2_pct": pct(z2), "hr_zone3_pct": pct(z3),
              "hr_zone4_pct": pct(z4), "hr_zone5_pct": pct(z5),
             } if total > 0 else {}),
-        # cardio_load_pct / muscular_load_pct not exposed by WHOOP v2 API
+        "whoop_updated_at": rec.get("updated_at"),
+        "whoop_created_at": rec.get("created_at"),
         "source_file": "whoop_api",
     }
     return {k: v for k, v in row.items() if v is not None}
@@ -352,18 +370,23 @@ def _map_cycle(cycle: dict, recovery: dict | None, sleep: dict | None,
         "cycle_start": cycle.get("start"),
         "cycle_end": cycle.get("end"),
         "timezone": cycle.get("timezone_offset"),
+        "score_state": cycle.get("score_state"),
+        "whoop_updated_at": cycle.get("updated_at"),
+        "whoop_created_at": cycle.get("created_at"),
         # strain / energy from cycle
         "day_strain": c_score.get("strain"),
         "energy_burned_cal": _kj_to_kcal(c_score.get("kilojoule")),
         "avg_hr_bpm": c_score.get("average_heart_rate"),
         "max_hr_bpm": c_score.get("max_heart_rate"),
         # recovery
+        "recovery_score_state": (recovery or {}).get("score_state"),
+        "recovery_user_calibrating": r_score.get("user_calibrating"),
         "recovery_score_pct": r_score.get("recovery_score"),
         "resting_hr_bpm": r_score.get("resting_heart_rate"),
         "hrv_ms": r_score.get("hrv_rmssd_milli"),
         "blood_oxygen_pct": r_score.get("spo2_percentage"),
         "skin_temp_celsius": r_score.get("skin_temp_celsius"),
-        # sleep summary on the cycle row
+        # sleep summary on the cycle row (denormalized for brief queries)
         "sleep_onset": sleep.get("start") if sleep else None,
         "wake_onset": sleep.get("end") if sleep else None,
         "sleep_performance_pct": s_score.get("sleep_performance_percentage"),
@@ -378,12 +401,16 @@ def _map_cycle(cycle: dict, recovery: dict | None, sleep: dict | None,
         "awake_min": _ms_to_min(stages.get("total_awake_time_milli")),
         "sleep_need_min": _ms_to_min(need_ms) if need_ms else None,
         "sleep_debt_min": _ms_to_min(needed.get("need_from_sleep_debt_milli")),
+        "no_data_min": _ms_to_min(stages.get("total_no_data_time_milli")),
+        "sleep_cycle_count": stages.get("sleep_cycle_count"),
+        "disturbance_count": stages.get("disturbance_count"),
         "source_file": "whoop_api",
     }
     return {k: v for k, v in row.items() if v is not None}
 
 
-def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
+def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str,
+               whoop_cycle_id: int | None = None) -> dict:
     s_score = sleep.get("score") or {}
     stages = s_score.get("stage_summary") or {}
     needed = s_score.get("sleep_needed") or {}
@@ -403,11 +430,13 @@ def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
     row: dict = {
         "profile_id": profile_id,
         "whoop_id": sleep.get("id"),
+        "whoop_cycle_id": whoop_cycle_id,    # WHOOP integer cycle ID from recovery
         "cycle_start": cycle_start,          # derived from recovery → cycle.start
         "sleep_onset": sleep.get("start"),
         "wake_onset": sleep.get("end"),
         "timezone": sleep.get("timezone_offset"),
         "is_nap": sleep.get("nap", False),
+        "score_state": sleep.get("score_state"),
         "sleep_performance_pct": s_score.get("sleep_performance_percentage"),
         "sleep_consistency_pct": s_score.get("sleep_consistency_percentage"),
         "sleep_efficiency_pct": s_score.get("sleep_efficiency_percentage"),
@@ -418,8 +447,13 @@ def _map_sleep(sleep: dict, cycle_start: str | None, profile_id: str) -> dict:
         "deep_sws_min": _ms_to_min(stages.get("total_slow_wave_sleep_time_milli")),
         "rem_min": _ms_to_min(stages.get("total_rem_sleep_time_milli")),
         "awake_min": _ms_to_min(stages.get("total_awake_time_milli")),
+        "no_data_min": _ms_to_min(stages.get("total_no_data_time_milli")),
+        "sleep_cycle_count": stages.get("sleep_cycle_count"),
+        "disturbance_count": stages.get("disturbance_count"),
         "sleep_need_min": _ms_to_min(need_ms) if need_ms else None,
         "sleep_debt_min": _ms_to_min(needed.get("need_from_sleep_debt_milli")),
+        "whoop_updated_at": sleep.get("updated_at"),
+        "whoop_created_at": sleep.get("created_at"),
         "source_file": "whoop_api",
     }
     return {k: v for k, v in row.items() if v is not None}
@@ -560,11 +594,14 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
 
     cycle_start_by_id: dict = {c["id"]: c.get("start") for c in cycles}
     sleep_to_cycle_start: dict = {}
+    sleep_to_cycle_id: dict = {}
     for r in recoveries:
         sid = r.get("sleep_id")
         cid = r.get("cycle_id")
-        if sid and cid and cid in cycle_start_by_id:
-            sleep_to_cycle_start[sid] = cycle_start_by_id[cid]
+        if sid and cid:
+            sleep_to_cycle_id[sid] = cid
+            if cid in cycle_start_by_id:
+                sleep_to_cycle_start[sid] = cycle_start_by_id[cid]
 
     # Build sorted cycle lookup as fallback for naps not in the recovery feed
     cycle_lookup = _build_cycle_lookup(cycles)
@@ -577,7 +614,8 @@ def sync_sleeps(conn, access_token: str, profile_id: str,
             cycle_start = _find_cycle_start(cycle_lookup, sleep.get("start", ""))
         if not cycle_start:
             return None  # genuinely unresolvable, skip
-        return _map_sleep(sleep, cycle_start, profile_id)
+        whoop_cycle_id = sleep_to_cycle_id.get(sleep_id)
+        return _map_sleep(sleep, cycle_start, profile_id, whoop_cycle_id=whoop_cycle_id)
 
     counters = _run_sync_loop(conn, sync_id, sleeps, _map,
                               "whoop_sleeps", _SLEEP_CONFLICTS)
@@ -627,12 +665,54 @@ def _resolve_access_token(conn, profile_id: str, env: dict) -> str:
     return token
 
 
+def sync_body_measurements(conn, access_token: str, profile_id: str) -> dict:
+    """Fetch GET /v2/user/measurement/body and upsert a daily snapshot."""
+    sync_id = open_sync_log(
+        conn, "whoop", "api", profile_id=profile_id,
+        sync_type="whoop_body_measurements",
+        source_path="/v2/user/measurement/body",
+    )
+    headers = {"Authorization": f"Bearer {access_token}", "User-Agent": _UA, "Accept": "application/json"}
+    req = urllib.request.Request(f"{_API_BASE}/v2/user/measurement/body", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise RuntimeError(f"WHOOP body measurements HTTP {e.code}: {body}") from e
+
+    now = datetime.now(timezone.utc)
+    row: dict = {
+        "profile_id": profile_id,
+        "synced_at": now.isoformat(),
+        "synced_date": now.date().isoformat(),
+        "height_m": data.get("height_meter"),
+        "weight_kg": data.get("weight_kilogram"),
+        "max_heart_rate": data.get("max_heart_rate"),
+    }
+    row = {k: v for k, v in row.items() if v is not None}
+    result = write(conn, "whoop_body_measurements", row, ["profile_id", "synced_date"])
+    close_sync_log(
+        conn, sync_id, status="success",
+        records_in=1, records_upserted=1, records_skipped=0, records_failed=0,
+    )
+    conn.commit()
+    upserted = 1 if result in ("inserted", "updated") else 0
+    return {"table": "whoop_body_measurements", "sync_log_id": sync_id,
+            "in": 1, "upserted": upserted, "skipped": 1 - upserted, "failed": 0}
+
+
 def sync_profile(conn, profile_id: str, since_iso: str, to_iso: str, env: dict) -> list:
-    """Run all three per-table syncs for one profile over the window. Returns the
-    per-table result dicts."""
+    """Run all syncs for one profile over the window. Returns per-table result dicts."""
     access_token = _resolve_access_token(conn, profile_id, env)
-    return [fn(conn, access_token, profile_id, since_iso, to_iso)
-            for fn in (sync_workouts, sync_cycles, sync_sleeps)]
+    results = [fn(conn, access_token, profile_id, since_iso, to_iso)
+               for fn in (sync_workouts, sync_cycles, sync_sleeps)]
+    # Body measurements: one call per profile, not windowed
+    try:
+        results.append(sync_body_measurements(conn, access_token, profile_id))
+    except Exception as e:
+        print(f"  ⚠  body measurements failed for {profile_id}: {str(e).splitlines()[0]}")
+    return results
 
 
 def refresh_recent(conn=None, *, hours: int = 48, profiles: list | None = None,
