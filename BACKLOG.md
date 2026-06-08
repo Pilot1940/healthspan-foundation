@@ -105,6 +105,54 @@ take the magnesium?") → user reply lands as a follow-up message → correlated
 
 ---
 
+## #6 — Text-only messages can't log data (always route to brief) — **OPEN, usability**
+
+**Severity:** HIGH (usage-dropper) · **Owner:** PC (design) → CC (build) · **Status:** OPEN.
+
+**Where it bites:** `telegram-webhook` routes **every** text-only message to the daily brief
+(`if (!isMediaMessage) → send-brief`). So "Supplements vitamin D3, vit K, magnesium, fish oil,
+electrolytes" returned a *summary*, logged nothing — and the brief still showed `0/16 taken`.
+Data can only be logged via photo/document today; freeform text logging is unwired. Users type
+the most natural thing ("ate 2 eggs", "took my magnesium") and get nothing recorded → they stop.
+
+**Proposed:** lightweight intent split on inbound text — if it parses as a log (food/supplement/
+biomarker/weight via the same liberal classifier + a verb/noun heuristic) → enqueue for ingestion
+(text → `media_inbox`-style row or a direct text-ingest path → LLM extract → staging/write); only
+fall back to the brief for genuine summary requests ("brief", "how am I doing", "summary", "?").
+
+**Open design questions:**
+1. Disambiguation — keyword router vs a cheap LLM intent call vs an explicit `/brief` command for
+   summaries and default-everything-else-to-log?
+2. Text-ingest path — reuse `media_inbox` with a text body + null storage_path, or a new lane?
+3. Confirmation UX — echo back what was logged ("✅ Logged: 2 eggs ~140 kcal") so it's not silent.
+4. Safety — never execute caption text; treat as data only (already the rule for media captions).
+
+---
+
+## #7 — health-media bucket retention / cleanup (30–60 days) — **OPEN**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN.
+
+**Idea:** Photos pile up in the private `health-media` Storage bucket forever. Once a `media_inbox`
+row is `done` (or `staged` and resolved) and the data is written to `food_logs`/biomarkers/etc.,
+the source image has served its purpose. Periodically prune objects older than 30–60 days.
+
+**Design:** scheduled job (pg_cron or a GH Actions cron) that lists `health-media` objects whose
+linked `media_inbox.created_at` is older than the retention window AND `status IN ('done','failed')`,
+then deletes the Storage object (keep the DB row for audit, null out `storage_path`). Make the
+window a `system_config` key (`media.retention_days`, default 45) per the no-hardcoded-thresholds
+rule. Skip anything still `pending`/`staged`/`awaiting_reply`. Log a count of pruned objects.
+
+---
+
 ## Done / shipped reference
+- **2026-06-08 — vision label-reading + liberal food classification (was backlog A).** Root cause
+  of the alley shake parking in review with null macros: (1) vision prompts never told Claude to
+  read packaged nutrition labels; (2) "Add this shake" classified `unknown` ('shake' wasn't in the
+  food regex) → used the weaker prompt. Fixed both: label-reading instructions (incl. Thai term
+  mapping) in food + unknown prompts; `guessKind` expanded to a very liberal food net (drinks,
+  shakes, packaged items, dishes, staples) reordered so genuine lab/workout/dexa still win; 27
+  classification cases pass. `monitor/inbox_drain.py` + `telegram-webhook` (redeployed). The
+  completeness gate was working correctly — it was the extraction that was blind.
 - v3.2 (2026-06-05): supabase_client auth fix, lazy psycopg2, pinned cold-start, schema-map freshness, 924-char description. Webhook duration/zone-pct/sleep-fields fix deployed; prior-cycle refresh live.
 - Pending elsewhere: migration 016c schema-comment completion (35 unmapped tables) — prompt already with CC.
