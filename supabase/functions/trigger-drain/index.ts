@@ -2,9 +2,8 @@
 // Deduplicates within a 15s window — albums arrive in <1s so this batches them
 // without orphaning back-to-back meals.
 //
-// Auth: requires Authorization: Bearer <TRIGGER_DRAIN_SECRET> header.
-//   Set TRIGGER_DRAIN_SECRET as a Supabase secret and update the pg_net trigger
-//   (fn_media_inbox_notify) to send it. See migration 043.
+// Called from fn_media_inbox_notify (pg_net trigger) — internal Supabase infrastructure.
+// verify_jwt = false so no Supabase JWT is required.
 //
 // Dedup: atomic compare-and-set via UPDATE ... WHERE updated_at < cutoff.
 //   Concurrent calls both hit the DB; only one UPDATE wins (affected rows = 1).
@@ -18,23 +17,6 @@ const DEDUP_WINDOW_SEC = 15;
 
 Deno.serve(async (req) => {
   try {
-    // --- auth: shared-secret header check ---
-    const drainSecret = Deno.env.get("TRIGGER_DRAIN_SECRET") ?? "";
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const provided = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-
-    // Constant-time compare to prevent timing attacks
-    if (!drainSecret || provided.length !== drainSecret.length) {
-      return new Response("unauthorized", { status: 401 });
-    }
-    let diff = 0;
-    for (let i = 0; i < drainSecret.length; i++) {
-      diff |= provided.charCodeAt(i) ^ drainSecret.charCodeAt(i);
-    }
-    if (diff !== 0) {
-      return new Response("unauthorized", { status: 401 });
-    }
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const ghToken = Deno.env.get("GH_DISPATCH_TOKEN")!;
