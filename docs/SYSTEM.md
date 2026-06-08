@@ -395,10 +395,20 @@ single dict). The completeness predicate (`food_is_complete` / `supplement_is_co
 - **Incomplete** → the RPC is called with `p_force_stage = true` and a `p_stage_reason`,
   writing to `stg_food_log_review` instead; `media_inbox.status = "staged"`.
 - **Malformed Claude response** → `vision_extract` returns `{"_stage_reason": ...}` →
-  staged.
+  staged. It **retries the call once** and parses tolerantly (`_extract_json` strips code
+  fences + extracts the outermost `{}`/`[]` from any surrounding prose); `max_tokens` is
+  **4096** (1024 truncated labelled multi-item foods mid-JSON, which used to strand them
+  in review). Only a second failed parse stages the item.
 - **HTTP error to Claude** → `vision_extract` returns `{"_error": ...}` →
   `media_inbox.status = "failed"` (pipeline fault, needs investigation — distinct from a
   normal completeness-gate stage).
+
+**Multi-item confirmations** name every item and count items, not clusters: a 2-item log
+("pineapple and dragon fruit") confirms "✅ Logged 2 items: …" and the run summary says
+"Done — 2 logged" (`compose_confirmation` is list-safe; `n_written` tracks inserted rows).
+**Repeat products** resolve instantly via `food_reference` (e.g. "Protein Thai Tea Shake"
+190 kcal/35P per 350 ml) — no label re-read. (Reference override isn't portion-scaled yet
+— backlog #10.)
 
 All thresholds driving these predicates (kcal plausibility, biomarker `plausible_min/max`,
 confidence floor) come from `system_config` / `metric_definitions` — never hardcoded.

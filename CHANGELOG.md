@@ -1,5 +1,21 @@
 # HealthSpan Skill — Changelog
 
+## v3.14.1 — Vision robustness + honest multi-item confirmations (2026-06-08)
+
+**Fixes that surfaced during onboarding: a labelled-bottle photo stuck in review, and a 2-item log reported as "1".**
+
+### Vision extraction (`inbox_drain.py`)
+- `max_tokens` 1024 → **4096**. A labelled multi-item food ("170ml of this shake + a poached egg" with the label's vitamins in `foods[]`) overflowed 1024 tokens, truncating the JSON mid-string → "no parseable extraction" → stuck in review. Not a label-reading failure — the label was legible.
+- `_extract_json()` tolerates code fences AND surrounding prose (outermost `{}`/`[]` substring). Truncated JSON still raises (that's the `max_tokens` case).
+- Vision call **retries once** on a parse miss; logs `stop_reason`. Only stages if both attempts fail.
+
+### Confirmations (`inbox_drain.py`)
+- Multi-item logs named every item, not just the first: `extracted = food_items[0]` discarded the rest, so "pineapple and dragon fruit" (both logged) reported as "Logged: Pineapple / 1 logged". Now keeps the full list → "✅ Logged 2 items: Pineapple, Dragon fruit".
+- `n_written` counts **items, not clusters** — "Done — N logged" and the run summary are now accurate for multi-item food/supplement.
+
+### Reference library
+- Added "Protein Thai Tea Shake" (190 kcal / 35P / 9C / 2F per 350 ml bottle) to `food_reference` (global, verified, aliased) so repeat logs resolve instantly without re-reading the label. Caveat: the reference overrides with the full serving — partial-portion logs aren't yet scaled (backlog #10).
+
 ## v3.14.0 — LLM-routed text logging + WHOOP refresh-on-interaction (2026-06-08)
 
 **Natural-language Telegram logging with no commands, multi-supplement support, and fresh WHOOP on every brief.**
