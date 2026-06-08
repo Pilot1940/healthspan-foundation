@@ -575,11 +575,13 @@ _VISION_PROMPTS: dict[str, str] = {
         'gave (apply the WHEN-UNSURE rule if vague):\n'
         '{"kind":"supplement","data":[{"name":"...","dose_amount":null,"dose_unit":null,'
         '"taken_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n\n'
-        'Food or meal — a list, one object per distinct dish:\n'
+        'Food or meal — a list, one object per distinct dish. "servings" = how many standard '
+        'servings were consumed (half a shake → 0.5, two bottles → 2, default 1) — used to '
+        'scale a known product\'s macros:\n'
         '{"kind":"food","data":[{"meal_type":"breakfast|lunch|dinner|snack",'
         '"description":"...","calories":integer_or_null,"protein_g":null,"carbs_g":null,'
-        '"fat_g":null,"fiber_g":null,"foods":[{"name":"...","amount":null,"unit":null}],'
-        '"logged_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n'
+        '"fat_g":null,"fiber_g":null,"servings":1,"foods":[{"name":"...","amount":null,'
+        '"unit":null}],"logged_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n'
         'Thai/Indian/composite dishes hide Avoid/Minimize items — decompose into constituent '
         'ingredients in foods[] (e.g. "Thai green curry" → coconut milk, green curry paste, '
         'vegetables, fish sauce). Note meat cuts if visible (fatty beef, lean chicken breast). '
@@ -1098,16 +1100,25 @@ def _process_cluster(
                 statuses.append("failed")
                 continue
 
-            # Food reference resolution: caption → description → ingredient names
+            # Food reference resolution: caption → description → ingredient names. The
+            # reference holds ONE standard serving — scale it by `servings` so "half a
+            # shake" logs half, not the full bottle (was backlog #10).
             candidates = _food_reference_candidates(raw_text, food_item)
             ref = lookup_food_reference(db, candidates, str(profile_id))
             if ref:
-                food_item["calories"]   = ref["calories"]
-                food_item["protein_g"]  = ref["protein_g"]
-                food_item["carbs_g"]    = ref["carbs_g"]
-                food_item["fat_g"]      = ref["fat_g"]
+                _sv = food_item.get("servings")
+                mult = float(_sv) if _sv not in (None, "") else 1.0
+                def _scale(v):
+                    return None if v is None else round(float(v) * mult, 1)
+                food_item["calories"]   = round(float(ref["calories"]) * mult)
+                food_item["protein_g"]  = _scale(ref["protein_g"])
+                food_item["carbs_g"]    = _scale(ref["carbs_g"])
+                food_item["fat_g"]      = _scale(ref["fat_g"])
                 if ref.get("fiber_g") is not None:
-                    food_item["fiber_g"] = ref["fiber_g"]
+                    food_item["fiber_g"] = _scale(ref["fiber_g"])
+                if mult != 1.0:
+                    food_item["notes"] = ((food_item.get("notes") or "")
+                                          + f" [{mult}× {ref.get('serving_desc') or 'serving'}]").strip()
             else:
                 has_ref_miss = True
 

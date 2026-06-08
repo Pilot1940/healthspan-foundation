@@ -199,9 +199,9 @@ carefully; it's an `ON CONFLICT` target). Not urgent — the brief (main surface
 
 ---
 
-## #10 — food_reference lookup ignores portion (overrides with full serving) — **OPEN, med**
+## #10 — food_reference lookup ignores portion — **SHIPPED 2026-06-08**
 
-**Severity:** MED · **Owner:** CC · **Status:** OPEN.
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — the extractor returns a `servings` multiplier (half a shake → 0.5) and the drain scales the matched reference's macros by it, so a partial-portion log is no longer overwritten with the full serving (half Thai Tea shake = 95 kcal, not 190). Pending live verify.
 
 When `lookup_food_reference` hits, the drain **overrides** the item's macros with the stored serving
 (`food_item["calories"] = ref["calories"]` …), discarding any portion the user stated. So once
