@@ -5,7 +5,7 @@
 // injection safety) without a live DB or Telegram connection.
 // DB-layer tests (dedup row count, media_inbox schema) live in tests/unit/test_telegram_webhook.py.
 import { assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { verifySecretToken, guessKind } from "./index.ts";
+import { verifySecretToken, guessKind, parseLogCommand } from "./index.ts";
 
 // ── verifySecretToken ──────────────────────────────────────────────────────────
 
@@ -50,6 +50,29 @@ Deno.test("guessKind: liberal food net — shakes/drinks/dishes/packaged", () =>
   assertEquals(guessKind("bowl of oatmeal"), "food");
   assertEquals(guessKind("matcha latte"), "food");
   assertEquals(guessKind("electrolytes"), "food");
+});
+
+// parseLogCommand — explicit text-logging trigger. Brief stays default; only
+// "log:/add:/​/log/​/add" prefixed text enqueues for ingestion.
+Deno.test("parseLogCommand: recognised triggers return stripped body", () => {
+  assertEquals(parseLogCommand("log: took my magnesium"), "took my magnesium");
+  assertEquals(parseLogCommand("add: 2 eggs and toast"), "2 eggs and toast");
+  assertEquals(parseLogCommand("/log water 500ml"), "water 500ml");
+  assertEquals(parseLogCommand("/add berberine 500mg"), "berberine 500mg");
+  assertEquals(parseLogCommand("LOG:  Vitamin D3, vit K, magnesium"), "Vitamin D3, vit K, magnesium");
+  assertEquals(parseLogCommand("Add this shake"), "this shake"); // 'add ' + body
+  assertEquals(parseLogCommand("log:\nmultiline\nmeal"), "multiline\nmeal");
+});
+
+Deno.test("parseLogCommand: non-commands return null (fall through to brief)", () => {
+  assertEquals(parseLogCommand("how am I doing today?"), null);
+  assertEquals(parseLogCommand("brief"), null);
+  assertEquals(parseLogCommand("summary please"), null);
+  assertEquals(parseLogCommand("log"), null);          // no body
+  assertEquals(parseLogCommand("logging my thoughts"), null); // 'log' not a whole word + sep
+  assertEquals(parseLogCommand("address change"), null);      // 'add' not a whole word
+  assertEquals(parseLogCommand(""), null);
+  assertEquals(parseLogCommand(undefined), null);
 });
 
 // A genuine workout/lab caption must still win over the broad food net (order matters).

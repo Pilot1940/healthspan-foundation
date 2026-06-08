@@ -30,7 +30,7 @@ export function verifySecretToken(header: string | null, expected: string): bool
   return diff === 0;
 }
 
-// deploy: liberal-food-net v2 (2026-06-08) — labels read in vision, shake→food
+// deploy: v3 (2026-06-08) — liberal food net + explicit log:/add: text-logging trigger
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
@@ -59,6 +59,16 @@ function svc(): SupabaseClient {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { persistSession: false } },
   );
+}
+
+// Explicit log trigger for text-only messages: "log: …", "add: …", "/log …", "/add …"
+// (case-insensitive, ':' or whitespace separator, multi-line allowed). Returns the
+// stripped body to log, or null if the text is not a log command. Brief stays the
+// DEFAULT for all other text — this is purely additive, nothing existing changes.
+export function parseLogCommand(text: string | undefined): string | null {
+  if (!text) return null;
+  const m = text.trim().match(/^\/?(?:log|add)\b[:\s]+([\s\S]+)/i);
+  return m ? m[1].trim() : null;
 }
 
 // ── Telegram helpers ────────────────────────────────────────────────────────────
@@ -297,9 +307,33 @@ Deno.serve(async (req) => {
   const document: any | undefined = msg.document;
   const isMediaMessage = !!(photo?.length || document);
 
-  // Text-only messages: skip media_inbox entirely — dispatch a GH Actions
-  // send-brief workflow for this profile and ack. Nothing to stage or review.
+  // Text-only messages. An explicit "log:/add:" command enqueues the text for
+  // ingestion (food/supplement/biomarker); everything else defaults to the daily
+  // brief. Additive — bare text behaves exactly as before.
   if (!isMediaMessage) {
+    const logBody = parseLogCommand(messageText);
+    if (logBody) {
+      // Enqueue a text-only media_inbox row (no image). The pg_net trigger
+      // (fn_media_inbox_notify) auto-fires the drain, which extracts from the
+      // caption text and sends the confirmation. kind='unknown' lets the drain's
+      // classifier decide food vs supplement vs lab. media_inbox FIRST, then
+      // update_id (idempotency ordering, mirrors the media path).
+      const { error: logErr } = await db.from("media_inbox").insert({
+        profile_id: profileId,
+        chat_id: chatId,
+        kind: "unknown",
+        storage_path: null,
+        caption: logBody,
+        status: "pending",
+      });
+      await db.from("telegram_processed_updates").insert({ update_id: updateId });
+      await telegramSend(
+        chatId,
+        logErr ? "⚠️ Couldn't queue that — please try again." : "📥 Got it — logging…",
+      );
+      return new Response("ok", { status: 200 });
+    }
+
     await db.from("telegram_processed_updates").insert({ update_id: updateId });
     await telegramSend(chatId, "📊 Sending your summary...");
 
