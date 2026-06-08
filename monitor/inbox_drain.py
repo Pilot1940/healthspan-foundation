@@ -607,6 +607,27 @@ def _strip_fences(text: str) -> str:
     return text
 
 
+def _extract_json(text: str):
+    """Parse JSON from a model response, tolerating ``` fences and surrounding prose.
+
+    Falls back to the outermost {...} / [...] substring if the whole string isn't valid
+    JSON (model added a sentence before/after). Truncated JSON (cut mid-token) still
+    raises — that's a max_tokens problem, not a parsing one."""
+    t = _strip_fences(text)
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
+        pass
+    for oc, cc in (("{", "}"), ("[", "]")):
+        s, e = t.find(oc), t.rfind(cc)
+        if 0 <= s < e:
+            try:
+                return json.loads(t[s:e + 1])
+            except json.JSONDecodeError:
+                continue
+    raise json.JSONDecodeError("no JSON object/array in response", t, 0)
+
+
 def vision_extract(
     api_key: str,
     model: str,
@@ -632,33 +653,49 @@ def vision_extract(
         content.append({"type": "text", "text": f"Caption: {caption}"})
     content.append({"type": "text", "text": prompt})
 
-    try:
-        resp = httpx.post(
-            _ANTHROPIC_URL,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": _ANTHROPIC_VERSION,
-                "content-type": "application/json",
-            },
-            json={
-                "model": model,
-                "max_tokens": 1024,
-                "system": (
-                    "You are a health data extraction assistant. "
-                    "Respond with valid JSON only. No prose, no markdown fences."
-                ),
-                "messages": [{"role": "user", "content": content}],
-            },
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-        raw = resp.json()["content"][0]["text"]
-        return json.loads(_strip_fences(raw))
-    except (json.JSONDecodeError, KeyError, IndexError):
-        # Malformed or empty API response body — stage for review, not a hard failure
-        return {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
-    except Exception as exc:
-        return {"confidence": 0.0, "_error": str(exc)}
+    # 4096 (was 1024): a labelled multi-item food — e.g. "170ml of this shake + a poached
+    # egg" with the label's vitamins in foods[] — overflowed 1024 tokens, truncating the
+    # JSON mid-string → "no parseable extraction" → stuck in review. Retry once on a parse
+    # miss (transient / prose-wrapped); only stage if BOTH attempts fail.
+    last_reason = "no parseable extraction"
+    for attempt in range(2):
+        try:
+            resp = httpx.post(
+                _ANTHROPIC_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": _ANTHROPIC_VERSION,
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "max_tokens": 4096,
+                    "system": (
+                        "You are a health data extraction assistant. "
+                        "Respond with valid JSON only. No prose, no markdown fences."
+                    ),
+                    "messages": [{"role": "user", "content": content}],
+                },
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            raw = data["content"][0]["text"]
+            try:
+                return _extract_json(raw)
+            except (json.JSONDecodeError, KeyError, IndexError):
+                stop = data.get("stop_reason")
+                last_reason = f"unparseable JSON (stop_reason={stop})"
+                log.warning("vision_extract parse miss (attempt %d, stop_reason=%s): %.200s",
+                            attempt + 1, stop, raw)
+                continue  # retry once
+        except (KeyError, IndexError) as exc:
+            last_reason = f"unexpected response shape: {exc}"
+            log.warning("vision_extract bad shape (attempt %d): %s", attempt + 1, exc)
+            continue
+        except Exception as exc:
+            return {"confidence": 0.0, "_error": str(exc)}
+    return {"confidence": 0.0, "_stage_reason": f"vision returned {last_reason}"}
 
 
 def content_cluster_ungrouped(
