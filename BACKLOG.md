@@ -212,11 +212,15 @@ reference macros by it, or only apply the reference when no explicit partial por
 
 ---
 
-## #11 — Extraction-prompt architecture (advisor review 2026-06-08) — **OPEN, do AFTER loop verified**
+## #11 — Extraction-prompt architecture (advisor review 2026-06-08) — **SHIPPED, pending live verify**
 
-**Severity:** MED · **Owner:** CC · **Status:** OPEN. Advisor flagged the *structural* reason fixes
-don't stick. Do these as a careful, sequenced pass — NOT all at once — and only after the
-reply-to-clarify loop has a confirmed live round-trip.
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED 2026-06-08 (clean pass) — collapsed to ONE
+extractor prompt (deleted the dead `supplement` prompt + drifted `food`/`lab`/`dexa` copies;
+`vision_extract` always uses it; re-dispatch always unwraps `{kind,data}`); added a first-class
+"WHEN UNSURE OF IDENTITY, DO NOT GUESS — confidence <0.3" escape; **enforced** the confidence gate
+(food/supplement explicit-low-confidence → stage→clarify; safe default = log; threshold 0.7→0.3).
+**NEEDS LIVE VERIFICATION** — food photo, multi-supplement, vague→clarify, brief; and the loop's
+reply round-trip (everything routes into the clarify loop). Original findings kept below.
 
 1. **Prompts force an output; none can say "I can't identify this — ask."** Principle to encode:
    clarify on **identity/portion** ambiguity, **estimate** on quantity (grilled-beef kcal is the
@@ -237,6 +241,36 @@ reply-to-clarify loop has a confirmed live round-trip.
 
 **Hard gate:** prove the loop's `staged → reply → logs` round-trip live before relying on any
 clarify-routing change (descriptive feedback, generic guard, this) — they all dead-end if it doesn't fire.
+
+---
+
+## #12 — No self-correct path: skill can log a bad row but can't undo it — **OPEN, MED**
+
+**Severity:** MED · **Owner:** CC · **Status:** OPEN. Surfaced 2026-06-08: a mis-dated NAC duplicate
+(`6276da9f`, source `skill`, dated June 7, superseded by the correct June 8 `66decb05`) could not be
+removed by the skill — its role is barred from DELETE (by design) and there is no soft-delete column.
+The row was UPDATE-flagged in `notes` as `VOID — …` as an interim, but it **still counts as an
+intake** in every aggregation until properly voided.
+
+**Fix — add a soft-delete column, NOT grant DELETE.** Health data should be append-only + soft-delete
+(the audit trail should show "a mistake was made and corrected", not silently vanish), and the actor
+issuing writes is an unattended LLM drain — raw DELETE on a hallucinated match is unrecoverable, a
+stray extra row is not.
+
+1. **DDL:** `supplement_intake_logs.voided_at timestamptz NULL` + `void_reason text NULL`. Consider the
+   same on `food_logs` / `biomarkers` for symmetry (do supplements first).
+2. **The actual work (not the DDL):** every READ/aggregation path must filter voided rows —
+   `WHERE voided_at IS NULL` in the brief's adherence count, `query_log`, any supplement rollup.
+   Adding the column alone is **cosmetic**; a voided dose still counts as taken until the reads filter.
+3. **Skill capability:** the skill role already has UPDATE → it can set `voided_at`/`void_reason`
+   itself. No new privilege needed. Add a `void`/`undo last` command surface (Telegram + skill).
+4. Once shipped: void `6276da9f` properly and migrate its interim `notes` flag. **No hard DELETE /
+   service-role escalation needed, ever** — voiding becomes the permanent fix.
+
+**Note (PC, 2026-06-08):** PC asked to grant the skill full privilege (incl. DELETE) "as I manage it".
+Recommendation on record: keep DELETE off the role; this soft-delete column gives full self-correct
+ability without exposing the autonomous drain to unrecoverable LLM-driven deletes. If PC still wants
+raw DELETE after this lands, it's a `GRANT` PC/CC runs via the admin/service path — not the skill.
 
 ---
 
