@@ -1,3 +1,4 @@
+// deploy: v2 (2026-06-08) — *.deleted events handled (return 200, no 404 retry storm)
 // whoop-webhook — WHOOP pushes {type,id,user_id}; we verify the signature, map the
 // user to a profile, fetch the referenced record, and upsert on the confirmed key
 // (profile_id, whoop_id) for ALL THREE tables (008b/008e). Logs to wearable_sync_log.
