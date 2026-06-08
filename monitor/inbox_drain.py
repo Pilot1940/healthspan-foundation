@@ -296,12 +296,43 @@ def lookup_metric(db: DbRest, query: str) -> list[dict]:
 
 
 def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
+    """Resolve a supplement by name. The LLM returns human display names
+    ("Magnesium Citrate", "Vitamin D3"), so match display_name first, then fall back
+    to the snake_case internal name."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    rows = db.select(
+        "supplements",
+        select="id,name,display_name,default_unit",
+        filters={"display_name": f"ilike.*{q}*", "is_active": "eq.true"},
+        limit=5,
+    )
+    if rows:
+        return rows
     return db.select(
         "supplements",
         select="id,name,display_name,default_unit",
-        filters={"name": f"ilike.*{query}*", "is_active": "eq.true"},
+        filters={"name": f"ilike.*{q}*", "is_active": "eq.true"},
         limit=5,
     )
+
+
+def lookup_regimen_dose(db: DbRest, profile_id: str, supplement_id: str) -> dict | None:
+    """Return {dose_amount, dose_unit} from the user's regimen for this supplement, so a
+    bare "took my magnesium citrate" defaults to the prescribed dose instead of staging.
+    Prefers an active regimen row; falls back to any row that carries a dose."""
+    rows = db.select(
+        "supplement_regimens",
+        select="dose_amount,dose_unit,status",
+        filters={"profile_id": f"eq.{profile_id}", "supplement_id": f"eq.{supplement_id}"},
+    ) or []
+    active = [r for r in rows if (r.get("status") in (None, "active"))
+              and r.get("dose_amount") is not None and r.get("dose_unit")]
+    pool = active or [r for r in rows if r.get("dose_amount") is not None and r.get("dose_unit")]
+    if pool:
+        return {"dose_amount": pool[0]["dose_amount"], "dose_unit": pool[0]["dose_unit"]}
+    return None
 
 
 def _food_reference_candidates(caption: str, food_item: dict) -> list[str]:
@@ -1103,6 +1134,18 @@ def _process_cluster(
             matches = lookup_supplement_by_name(db, name) if name else []
             if matches:
                 supp["supplement_id"] = matches[0]["id"]
+            # Default the dose from the user's regimen when not stated ("took my magnesium
+            # citrate" → the prescribed 200 mg) so it auto-logs instead of staging.
+            if supp.get("supplement_id") and (
+                supp.get("dose_amount") is None or not supp.get("dose_unit")
+            ):
+                reg = lookup_regimen_dose(db, str(profile_id), supp["supplement_id"])
+                if reg:
+                    if supp.get("dose_amount") is None:
+                        supp["dose_amount"] = reg["dose_amount"]
+                    if not supp.get("dose_unit"):
+                        supp["dose_unit"] = reg["dose_unit"]
+                    supp["notes"] = ((supp.get("notes") or "") + " [dose from regimen]").strip()
             complete = supplement_is_complete(supp)
             item_reason = None
             if not complete:
