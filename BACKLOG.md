@@ -164,7 +164,27 @@ rule. Skip anything still `pending`/`staged`/`awaiting_reply`. Log a count of pr
 
 ---
 
+## #8 — No scheduled WHOOP pull (only webhook + on-interaction) — **OPEN, low**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN (mitigated 2026-06-08).
+
+There is no GitHub Actions cron that runs `ingest.whoop_sync` — WHOOP data moved only via
+the `whoop-webhook` push events (redeployed 2026-06-08) and the nightly ETL. Now also via
+**refresh-on-interaction** (every brief calls `refresh_recent` first), which covers daily users.
+Gap: a profile that never interacts won't refresh. If wanted, add a small cron workflow
+(`whoop-sync.yml`, e.g. every 4h) calling `python -m ingest.whoop_sync --since 6h --all-profiles`
+with the WHOOP_CLIENT_ID/SECRET + DATABASE_URL secrets (now set). Not urgent given the webhook +
+on-interaction refresh.
+
+---
+
 ## Done / shipped reference
+- **2026-06-08 — WHOOP refresh-on-interaction + staleness fix.** No scheduled pull existed; data
+  aged through the day and the stale flag wrongly compared cycle_start's UTC *date* to today
+  (00:06 IST = 18:36 UTC prior day → false ">24h old"). Now: every brief refreshes WHOOP first
+  (`refresh_recent`, best-effort); staleness is elapsed-time (>30h), tz-safe. whoop-webhook
+  redeployed with `*.deleted` handling. WHOOP_CLIENT_ID/SECRET added as GH secrets + to both
+  workflow envs.
 - **2026-06-08 — vision label-reading + liberal food classification (was backlog A).** Root cause
   of the alley shake parking in review with null macros: (1) vision prompts never told Claude to
   read packaged nutrition labels; (2) "Add this shake" classified `unknown` ('shake' wasn't in the
