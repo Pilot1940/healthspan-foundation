@@ -28,7 +28,8 @@ from lib.db_rest import DbRest
 log = logging.getLogger(__name__)
 
 _SETTLE_SEC_FALLBACK = 90
-_CONFIDENCE_FALLBACK = 0.7
+_CONFIDENCE_FALLBACK = 0.3  # items with EXPLICIT confidence below this stage → clarify
+                            # (identity uncertain). Low by design: estimates shouldn't stage.
 _VISION_MODEL_FALLBACK = "claude-sonnet-4-6"
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -546,45 +547,11 @@ def _image_block(data: bytes, content_type: str) -> dict:
 
 # ── vision ────────────────────────────────────────────────────────────────────
 
+# SINGLE extractor for every path (text + photo). One source of truth — no drifted
+# duplicate food/supplement prompts (the old standalone "food"/"supplement"/"lab"/"dexa"
+# entries were either dead or had drifted from this one, which is why a fix on one path
+# silently didn't apply on the other). vision_extract always uses this.
 _VISION_PROMPTS: dict[str, str] = {
-    "food": (
-        'Extract food log data. Return JSON only:\n'
-        '{"meal_type":"breakfast|lunch|dinner|snack|drink|supplement",'
-        '"description":"brief description",'
-        '"calories":integer_or_null,"protein_g":null,"carbs_g":null,"fat_g":null,"fiber_g":null,'
-        '"foods":[{"name":"...","amount":null,"unit":null,"calories":null}],'
-        '"logged_at":"ISO-8601 (use NOW if not visible)",'
-        '"notes":null,"confidence":0.0_to_1.0}\n\n'
-        'IMPORTANT: Thai, Indian, and composite dishes often hide Avoid/Minimize items — '
-        'always decompose into constituent ingredients in the foods[] array. '
-        'List each significant ingredient as a separate foods[] entry with its name '
-        '(e.g. "Thai green curry" → foods=[{name:"coconut milk",...},{name:"green curry paste",...},'
-        '{name:"vegetables",...},{name:"fish sauce",...}]). '
-        'For meat dishes, note the cut if visible (e.g. "fatty beef", "lean chicken breast"). '
-        'Explicitly surface: coconut (milk/oil/flesh), dairy (ghee/paneer/butter/cream/cheese), '
-        'alliums (onion/garlic/leek), high-sugar fruits, fatty cuts.\n\n'
-        'NUTRITION LABELS: if a packaged nutrition-facts panel is visible, READ it — copy the '
-        'per-serving calories and macros straight into the top-level calories/protein_g/carbs_g/'
-        'fat_g/fiber_g fields, scaled by servings consumed (default 1 bottle/pack/can = 1 serving '
-        'unless the caption says otherwise). Labels may be in Thai or other languages: map '
-        'Energy/พลังงาน→calories(kcal), โปรตีน→protein_g, คาร์โบไฮเดรต→carbs_g, ไขมัน→fat_g, '
-        'ใยอาหาร→fiber_g. NEVER return null macros when a label is legible — read the numbers.'
-    ),
-    "lab": (
-        'Extract biomarker measurements from this lab result. Return JSON only:\n'
-        '{"biomarkers":[{"extracted_name":"exact name","value":number,"unit":"string",'
-        '"measured_at":"ISO-8601 or null","notes":null,"confidence":0.0_to_1.0}]}'
-    ),
-    "dexa": (
-        'Extract DEXA / body composition measurements. Return JSON only:\n'
-        '{"biomarkers":[{"extracted_name":"metric name","value":number,"unit":"string",'
-        '"measured_at":"ISO-8601 or null","notes":null,"confidence":0.0_to_1.0}]}'
-    ),
-    "supplement": (
-        'Extract supplement intake. Return JSON only:\n'
-        '{"name":"supplement name","dose_amount":null,"dose_unit":null,'
-        '"taken_at":"ISO-8601 (use NOW if not stated)","notes":null,"confidence":0.0_to_1.0}'
-    ),
     "unknown": (
         'You are the router AND extractor for a health logger. Read the message (and any '
         'image) and decide what it IS, then return JSON only — no prose, no markdown.\n\n'
@@ -592,26 +559,37 @@ _VISION_PROMPTS: dict[str, str] = {
         'ASKING for information / making conversation (a brief)?\n'
         'An IMAGE of food, a meal, a drink, a supplement, a label, or a lab/DEXA result is '
         'ALWAYS a log — extract it; never return "brief" when an image is present.\n\n'
+        'WHEN UNSURE OF IDENTITY, DO NOT GUESS. If you cannot tell WHICH specific food or '
+        'supplement it is (vague references like "my supplement", "a pill", "that thing", '
+        '"the usual"), set its name/description to exactly what the user said and confidence '
+        'below 0.3 — the user will be asked to clarify. NEVER invent a specific product. '
+        '(Estimating a reasonable QUANTITY or calories for a food you CAN identify is fine '
+        'and expected — only lower confidence for IDENTITY ambiguity, or a PORTION that '
+        'materially changes the record, e.g. "half or a full bottle?")\n\n'
         'Brief request — questions, status/summary asks, greetings, thanks, or anything that '
         'is NOT a record of intake/measurement (e.g. "how am I doing?", "brief", "summary", '
         '"what\'s my recovery", "hi", "thanks", "did I take my magnesium?"):\n'
         '{"kind":"brief"}\n\n'
-        'Supplement(s) — ALWAYS a list, one object per supplement. A message like '
-        '"took D3, K2, B12, magnesium citrate, omega-3" → five objects. Use the SPECIFIC '
-        'product name the user gave. If a supplement is named too vaguely to identify a '
-        'specific product (e.g. "my supplement", "a pill", "the night one", just "vitamin"), '
-        'do NOT invent or guess one — set its name to exactly what they said and confidence '
-        'below 0.3 so the user is asked which one:\n'
+        'Supplement(s) — ALWAYS a list, one object per supplement. "took D3, K2, B12, '
+        'magnesium citrate, omega-3" → five objects. Use the SPECIFIC product name the user '
+        'gave (apply the WHEN-UNSURE rule if vague):\n'
         '{"kind":"supplement","data":[{"name":"...","dose_amount":null,"dose_unit":null,'
         '"taken_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n\n'
         'Food or meal — a list, one object per distinct dish:\n'
         '{"kind":"food","data":[{"meal_type":"breakfast|lunch|dinner|snack",'
-        '"description":"...","calories":null,"protein_g":null,"carbs_g":null,'
-        '"fat_g":null,"fiber_g":null,"logged_at":"NOW","notes":null}]}\n'
-        'If a packaged nutrition-facts label is visible, READ it: fill calories/protein_g/'
-        'carbs_g/fat_g/fiber_g with the per-serving values (scaled by servings consumed). '
-        'Labels may be Thai — Energy/พลังงาน=calories, โปรตีน=protein_g, คาร์โบไฮเดรต=carbs_g, '
-        'ไขมัน=fat_g, ใยอาหาร=fiber_g. Do not leave macros null when a label is legible.\n\n'
+        '"description":"...","calories":integer_or_null,"protein_g":null,"carbs_g":null,'
+        '"fat_g":null,"fiber_g":null,"foods":[{"name":"...","amount":null,"unit":null}],'
+        '"logged_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n'
+        'Thai/Indian/composite dishes hide Avoid/Minimize items — decompose into constituent '
+        'ingredients in foods[] (e.g. "Thai green curry" → coconut milk, green curry paste, '
+        'vegetables, fish sauce). Note meat cuts if visible (fatty beef, lean chicken breast). '
+        'Surface coconut (milk/oil/flesh), dairy (ghee/paneer/butter/cream/cheese), alliums '
+        '(onion/garlic/leek), high-sugar fruits, fatty cuts.\n'
+        'If a packaged nutrition-facts label is visible, READ it into calories/protein_g/'
+        'carbs_g/fat_g/fiber_g (per-serving, scaled by servings consumed; default 1 bottle/'
+        'pack/can = 1 serving). Labels may be Thai: Energy/พลังงาน=calories, โปรตีน=protein_g, '
+        'คาร์โบไฮเดรต=carbs_g, ไขมัน=fat_g, ใยอาหาร=fiber_g. Never leave macros null when a '
+        'label is legible.\n\n'
         'Lab or DEXA result:\n'
         '{"kind":"lab","data":{"biomarkers":[{"extracted_name":"...","value":null,'
         '"unit":"...","measured_at":"NOW","confidence":0.0_to_1.0}]}}\n\n'
@@ -671,7 +649,8 @@ def vision_extract(
 
     Reads HS_ANTHROPIC_API_KEY from the api_key arg (platform reserves ANTHROPIC_API_KEY).
     """
-    prompt = _VISION_PROMPTS.get(kind, _VISION_PROMPTS["unknown"]).replace("NOW", now_iso)
+    # Single extractor for every kind — the model classifies + extracts in one shot.
+    prompt = _VISION_PROMPTS["unknown"].replace("NOW", now_iso)
 
     content: list[dict] = [*image_blocks]
     if caption:
@@ -1078,8 +1057,9 @@ def _process_cluster(
         mark_rows(db, _ids(cluster), "failed", stage_reason=extracted["_error"])
         return
 
-    # Handle "unknown" kind — re-dispatch based on what Claude returned
-    if isinstance(extracted, dict) and kind == "unknown" and "kind" in extracted:
+    # The single extractor ALWAYS returns {"kind":…, "data":…} — re-dispatch on the kind
+    # the model chose (not the guessKind hint), and unwrap to the payload.
+    if isinstance(extracted, dict) and "kind" in extracted:
         kind = extracted.get("kind", "unknown")
         extracted = extracted.get("data", extracted)
 
@@ -1131,9 +1111,16 @@ def _process_cluster(
             else:
                 has_ref_miss = True
 
-            item_conf = float(food_item.get("confidence", confidence))
-            is_complete = food_is_complete(food_item)
-            item_stage_reason = None if is_complete else "incomplete: missing calories or macros"
+            # Confidence: only an EXPLICIT low value stages (identity uncertain). Missing
+            # confidence → assume confident (1.0) so normal estimates don't stage.
+            _c = food_item.get("confidence")
+            item_conf = float(_c) if _c is not None else 1.0
+            if item_conf < conf_threshold:
+                is_complete = False
+                item_stage_reason = "not sure what this is — reply with what you ate"
+            else:
+                is_complete = food_is_complete(food_item)
+                item_stage_reason = None if is_complete else "incomplete: missing calories or macros"
             try:
                 res = db.rpc("maintainer_ingest_food", _food_rpc_args(
                     profile_id, food_item, item_conf, raw_text,
@@ -1271,9 +1258,15 @@ def _process_cluster(
                     if not supp.get("dose_unit"):
                         supp["dose_unit"] = reg["dose_unit"]
                     supp["notes"] = ((supp.get("notes") or "") + " [dose from regimen]").strip()
-            complete = supplement_is_complete(supp)
-            # Only an unresolved name stages now — dose is optional (logged null if absent).
-            item_reason = None if complete else "incomplete: no supplement match"
+            # Confidence: explicit low value (vague identity) stages → clarify; missing → confident.
+            _sc = supp.get("confidence")
+            supp_conf = float(_sc) if _sc is not None else 1.0
+            if supp_conf < conf_threshold:
+                complete = False
+                item_reason = "not sure which supplement — reply with the name"
+            else:
+                complete = supplement_is_complete(supp)  # id resolved; dose optional (null ok)
+                item_reason = None if complete else "incomplete: no supplement match"
             try:
                 res = db.rpc("maintainer_ingest_supplement", _supplement_rpc_args(
                     profile_id, supp, float(supp.get("confidence", confidence)),
