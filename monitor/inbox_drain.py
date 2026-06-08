@@ -1009,6 +1009,7 @@ def _process_cluster(
 
     confidence = float(extracted.get("confidence", 0.0)) if isinstance(extracted, dict) else 0.0
     rpc_status = "failed"
+    n_written = 1  # how many rows this cluster wrote — multi-item food/supplement set this
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
@@ -1128,8 +1129,10 @@ def _process_cluster(
                         )
                         break
 
-        # Use first item for confirmation message
-        extracted = food_items[0] if food_items and isinstance(food_items[0], dict) else {}
+        # Keep the FULL item list so the confirmation names every item, not just the first
+        # (a 2-item "pineapple and dragon fruit" must not report as just "Pineapple").
+        extracted = [fi for fi in food_items if isinstance(fi, dict)] or [{}]
+        n_written = sum(1 for s in statuses if s == "inserted")
 
     elif kind in ("lab", "dexa"):
         biomarkers = extracted.get("biomarkers", [])
@@ -1218,6 +1221,7 @@ def _process_cluster(
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
+        n_written = sum(1 for s in statuses if s == "inserted")
         # `extracted` stays the list — compose_confirmation handles it.
 
     else:
@@ -1234,9 +1238,9 @@ def _process_cluster(
         rpc_status = result.get("status", "failed")
 
     if rpc_status == "inserted":
-        summary["written"] += 1
+        summary["written"] += n_written
         if per_chat is not None:
-            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["written"] += 1
+            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["written"] += n_written
     elif rpc_status == "staged":
         summary["staged"] += 1
         if per_chat is not None:
