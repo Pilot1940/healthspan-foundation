@@ -715,6 +715,7 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <p><code>python3 -m ingest.whoop_sync --backfill</code> pulls full history from <strong>2020-01-01</strong>. The initial PC backfill (migration 045) loaded 519 workouts, 580 cycles, 625 sleeps. WHOOP never emits <code>cycle.updated</code> on close, so a just-closed cycle&#x27;s final <code>day_strain</code> is only captured by <code>refresh_recent</code>, a <code>--since</code> run, or a <code>sleep.*</code>-triggered re-fetch — not by waiting for a webhook.</p>
 <h3>3.4 Daily Brief Content (<code>monitor/brief.py</code>)</h3>
 <p><code>compose_brief()</code> fetches every section best-effort (any fetcher returning empty on error), renders minor-safe text, calls Claude (Haiku — default <code>claude-haiku-4-5-20251001</code>, overridable via <code>system_config</code> key <code>brief.model</code>) for the rest-of-day actions, sends over Telegram, and returns the message text.</p>
+<p><strong>&quot;Today&quot; is the LOCAL day</strong> (migration 048): <code>_local_day(cfg)</code> reads <code>app.timezone</code> from <code>system_config</code> and bounds the day as a UTC window over <code>logged_at</code>/<code>taken_at</code>, so a Thailand user&#x27;s day no longer rolls over at 07:00 ICT. <strong>Refresh-on-interaction</strong>: <code>compose_brief</code> calls <code>refresh_recent</code> (WHOOP) first — best-effort — so an on-demand brief reflects the latest cycle.</p>
 <div class="table-wrap"><table>
 <thead><tr>
 <th>Section</th>
@@ -734,7 +735,7 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td><strong>WHOOP</strong></td>
 <td>Recovery / HRV / sleep; <strong>score_state aware</strong> — ⏳ for <code>PENDING_SCORE</code>, ❌ for <code>UNSCORABLE</code> (never a misleading 0); sleep cycle count + disturbance count</td>
-<td>Stale data (<code>cycle_start</code> &lt; today) is still shown but flagged</td>
+<td>Stale = <code>cycle_start</code> &gt;30h old (elapsed-time, tz-safe — not a UTC-date compare); still shown but flagged</td>
 </tr>
 <tr>
 <td><strong>Viome</strong></td>
@@ -1308,7 +1309,12 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td>047</td>
 <td>fix_media_inbox_notify</td>
-<td>Reverts <code>fn_media_inbox_notify</code> to anon-key-from-<code>system_config</code> header (vault lookup returned NULL in pg_net context, causing 401 stalls).</td>
+<td>Reverts <code>fn_media_inbox_notify</code> to NO auth header (vault lookup returned NULL in pg_net context, causing 401 stalls). trigger-drain runs no-auth.</td>
+</tr>
+<tr>
+<td>048</td>
+<td>app_timezone</td>
+<td>Seeds <code>app.timezone=&#x27;Asia/Bangkok&#x27;</code> in <code>system_config</code>. The daily brief computes &quot;today&quot; as a LOCAL-day UTC window over <code>logged_at</code>/<code>taken_at</code> instead of the UTC-derived <code>log_date</code>/<code>taken_on</code> (fixes the 07:00-ICT day rollover + UTC display).</td>
 </tr>
 </tbody></table></div>
 </section>
