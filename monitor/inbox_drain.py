@@ -164,12 +164,14 @@ def food_is_complete(extracted: dict) -> bool:
 
 
 def supplement_is_complete(extracted: dict) -> bool:
-    """True when supplement has a resolved ID and dose information — safe to auto-write."""
-    return bool(
-        extracted.get("supplement_id")
-        and extracted.get("dose_amount") is not None
-        and extracted.get("dose_unit")
-    )
+    """True when the supplement resolves to a known id — safe to auto-write.
+
+    Dose is OPTIONAL. Many real supplements have no measured dose (nutritional yeast,
+    oral lozenges — their regimen rows carry no dose_amount), and "I took it" is a valid
+    adherence record without one (dose_amount/dose_unit are nullable). Requiring a dose
+    stranded those in review every time. Dose still defaults from the regimen when the
+    regimen has one (see lookup_regimen_dose) for richer data."""
+    return bool(extracted.get("supplement_id"))
 
 
 def biomarker_is_complete(extracted: dict) -> bool:
@@ -1189,12 +1191,8 @@ def _process_cluster(
                         supp["dose_unit"] = reg["dose_unit"]
                     supp["notes"] = ((supp.get("notes") or "") + " [dose from regimen]").strip()
             complete = supplement_is_complete(supp)
-            item_reason = None
-            if not complete:
-                item_reason = (
-                    "incomplete: no supplement match" if not supp.get("supplement_id")
-                    else "incomplete: missing dose or unit"
-                )
+            # Only an unresolved name stages now — dose is optional (logged null if absent).
+            item_reason = None if complete else "incomplete: no supplement match"
             try:
                 res = db.rpc("maintainer_ingest_supplement", _supplement_rpc_args(
                     profile_id, supp, float(supp.get("confidence", confidence)),
