@@ -30,7 +30,7 @@ export function verifySecretToken(header: string | null, expected: string): bool
   return diff === 0;
 }
 
-// deploy: v3 (2026-06-08) — liberal food net + explicit log:/add: text-logging trigger
+// deploy: v4 (2026-06-08) — natural-verb text logging (took/ate/had/…) + log:/add: prefix
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
@@ -61,14 +61,30 @@ function svc(): SupabaseClient {
   );
 }
 
-// Explicit log trigger for text-only messages: "log: …", "add: …", "/log …", "/add …"
-// (case-insensitive, ':' or whitespace separator, multi-line allowed). Returns the
-// stripped body to log, or null if the text is not a log command. Brief stays the
-// DEFAULT for all other text — this is purely additive, nothing existing changes.
+// Leading action verbs that signal "I'm logging something I did", e.g.
+// "took my magnesium", "ate 2 eggs", "had a shake", "drank electrolytes".
+// Intentionally natural-language — the most common ways PC phrases an intake.
+// Excludes weak/ambiguous openers that are usually questions or imperatives
+// ("have I…", "did I…", "take your…") — those still fall through to the brief.
+const LOG_VERBS =
+  /^(took|taken|taking|ate|eat|eaten|eating|had|having|drank|drink|drinking|drunk|finished|finish|finishing|consumed|consume|consuming|added)\b/i;
+
+// Decide whether a text-only message is a LOG (vs the default daily brief).
+// Two ways to log:
+//   1. Explicit prefix — "log: …" / "add: …" / "/log …" / "/add …" → returns the stripped body.
+//   2. Natural phrasing — text led by a logging verb (LOG_VERBS) → returns the whole text
+//      (the extractor needs the verb, e.g. "took my magnesium", to read it as an intake).
+// Everything else (questions, "brief", "summary", "how am I doing", greetings) → null → brief.
+// Brief remains the DEFAULT; this only diverts clearly log-shaped text.
 export function parseLogCommand(text: string | undefined): string | null {
   if (!text) return null;
-  const m = text.trim().match(/^\/?(?:log|add)\b[:\s]+([\s\S]+)/i);
-  return m ? m[1].trim() : null;
+  const t = text.trim();
+  // 1. Explicit prefix: strip it, return the body.
+  const pref = t.match(/^\/?(?:log|add)\b[:\s]+([\s\S]+)/i);
+  if (pref) return pref[1].trim();
+  // 2. Natural logging phrasing: leading action verb → log the whole message.
+  if (LOG_VERBS.test(t)) return t;
+  return null;
 }
 
 // ── Telegram helpers ────────────────────────────────────────────────────────────

@@ -64,13 +64,29 @@ Deno.test("parseLogCommand: recognised triggers return stripped body", () => {
   assertEquals(parseLogCommand("log:\nmultiline\nmeal"), "multiline\nmeal");
 });
 
+// Natural logging phrasing — leading action verb logs without a prefix, returning
+// the WHOLE text (the extractor needs the verb to read it as an intake).
+Deno.test("parseLogCommand: leading logging verbs log without a prefix", () => {
+  assertEquals(parseLogCommand("took my magnesium"), "took my magnesium");
+  assertEquals(parseLogCommand("took electrolytes"), "took electrolytes");
+  assertEquals(parseLogCommand("ate 2 eggs and toast"), "ate 2 eggs and toast");
+  assertEquals(parseLogCommand("had a protein shake"), "had a protein shake");
+  assertEquals(parseLogCommand("drank 500ml water"), "drank 500ml water");
+  assertEquals(parseLogCommand("finished my bedtime stack"), "finished my bedtime stack");
+  assertEquals(parseLogCommand("Taken berberine with lunch"), "Taken berberine with lunch");
+});
+
 Deno.test("parseLogCommand: non-commands return null (fall through to brief)", () => {
   assertEquals(parseLogCommand("how am I doing today?"), null);
   assertEquals(parseLogCommand("brief"), null);
   assertEquals(parseLogCommand("summary please"), null);
+  assertEquals(parseLogCommand("what's my recovery?"), null);
   assertEquals(parseLogCommand("log"), null);          // no body
-  assertEquals(parseLogCommand("logging my thoughts"), null); // 'log' not a whole word + sep
+  assertEquals(parseLogCommand("logging my thoughts"), null); // 'logging' excluded (weak signal)
+  assertEquals(parseLogCommand("did I take my magnesium?"), null); // 'did' is a question opener
+  assertEquals(parseLogCommand("have I logged lunch?"), null);     // 'have' excluded
   assertEquals(parseLogCommand("address change"), null);      // 'add' not a whole word
+  assertEquals(parseLogCommand("takeaway dinner later"), null); // 'takeaway' not a whole word
   assertEquals(parseLogCommand(""), null);
   assertEquals(parseLogCommand(undefined), null);
 });

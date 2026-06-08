@@ -613,25 +613,47 @@ code{
 </tbody></table></div>
 <h4>Minor-safety framing</h4>
 <p>The <code>is_minor</code> flag on <code>telegram_identities</code> changes both the ack text (step 9) and any push/confirmation wording (<code>compose_confirmation</code>, <code>composePush</code>): growth/performance language only, never deficit/restriction words. This is enforced at the <code>telegram-webhook</code> ack and again in the Python drain.</p>
-<h3>3.2 Text Message → Daily Brief Pipeline</h3>
-<p>A <strong>text-only</strong> Telegram message (no photo) skips <code>media_inbox</code> entirely.</p>
+<h3>3.2 Text Message → Daily Brief (or Log) Pipeline</h3>
+<p>A <strong>text-only</strong> Telegram message has <strong>two routes</strong>. If it starts with an explicit
+log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/add</code>, case-insensitive —
+<code>parseLogCommand</code>), the stripped body is enqueued as a <strong>text-only <code>media_inbox</code> row</strong>
+(<code>storage_path = null</code>, <code>kind = 'unknown'</code>) and flows through the <em>same</em> drain as photos
+(the unknown-classifier reads food/supplement/biomarker from the caption text — no image needed); the user gets
+&quot;📥 Got it — logging…&quot; then a &quot;✅ … logged&quot; confirmation from the drain. <strong>All other text</strong>
+(e.g. &quot;how am I doing today?&quot;, &quot;brief&quot;, &quot;summary&quot;) defaults to the daily brief, skipping
+<code>media_inbox</code> entirely. (Bare-text-defaults-to-log was deliberately not done — see
+<code>BACKLOG.md</code> #6.)</p>
 <div class="pipeline">
-<div class="pipe-step">USER (Telegram text, e.g. &quot;how am I doing today?&quot;)</div>
+<div class="pipe-step">USER (Telegram text)</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">telegram-webhook (no media → guessKind yields no media kind)</div>
+<div class="pipe-step">telegram-webhook (identity + update_id dedup)</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">send-brief.yml (ubuntu-latest, 10-min timeout)</div>
+<div class="pipe-step">ROUTE A: &quot;log:/add: …&quot; → media_inbox (kind=unknown, storage_path=null) → drain → &quot;✅ … logged&quot;</div>
+</div>
+<div class="pipeline">
+<div class="pipe-step">telegram-webhook</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">monitor/brief.py → compose_brief()</div>
-<div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">Telegram reply (the rendered daily brief)</div>
+<div class="pipe-step">ROUTE B: anything else → send-brief.yml → monitor/brief.py → Telegram daily brief</div>
 </div>
 <details class="pipe-detail" open><summary>Step detail</summary><div class="pipe-anno">
-<div class="anno-node"><div class="anno-label">USER (Telegram text, e.g. &quot;how am I doing today?&quot;)</div>
+<div class="anno-node"><div class="anno-label">USER (Telegram text)</div>
 </div>
-<div class="anno-node"><div class="anno-label">telegram-webhook (no media → guessKind yields no media kind)</div>
+<div class="anno-node"><div class="anno-label">telegram-webhook (identity + update_id dedup as above)</div>
 <ul>
-<li>Identity + update_id dedup as above</li>
+<li>parseLogCommand inspects the message for a leading log trigger</li>
+<li>Route A (log trigger present) vs Route B (everything else)</li>
+</ul>
+</div>
+<div class="anno-node"><div class="anno-label">ROUTE A — explicit log trigger (log: / add: / /log / /add …)</div>
+<ul>
+<li>INSERT media_inbox { kind:&#x27;unknown&#x27;, storage_path:null, caption:body }</li>
+<li>→ pg_net trigger → trigger-drain → inbox-drain (same drain as photos)</li>
+<li>unknown-classifier extracts food/supplement/biomarker from the caption text (no image)</li>
+<li>ack &quot;📥 Got it — logging…&quot; → drain confirmation &quot;✅ … logged&quot;</li>
+</ul>
+</div>
+<div class="anno-node"><div class="anno-label">ROUTE B — anything else (daily brief)</div>
+<ul>
 <li>Fires GitHub repository_dispatch: send-brief</li>
 <li>POST api.github.com/.../dispatches</li>
 <li>{ event_type:&quot;send-brief&quot;, client_payload:{ profile_id } }</li>
