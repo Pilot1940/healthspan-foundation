@@ -79,11 +79,13 @@ numbers). Prune to stay short.
 
 ---
 
+> **Telegram ingestion is fully automated** (photo → `media_inbox` → pg_net trigger → `trigger-drain` Edge function → GH Actions `inbox-drain` → `monitor/inbox_drain.py`). The App skill does **NOT** re-trigger that pipeline. Use it for **direct interaction and on-demand briefs only**. Text messages (→ `send-brief` GH action → `monitor/brief.py`) are also automatic.
+
 ## 1. DISPATCHER — route intent to the existing modules (every module is standalone-invokable; do NOT rebuild)
 
 | Intent (what they ask) | Route to | Notes |
 |---|---|---|
-| "log this / here's my **food / labs / DEXA / whoop screenshot**" | vision-OCR → `analysis/food_chat.py` (food) · `ingest/biomarker.py` (labs/DEXA) · `ingest/whoop_screenshot.py` — `method="photo"` | CONFIRM parsed rows before writing |
+| "log this / here's my **food / labs / DEXA / whoop screenshot**" | vision-OCR → `analysis/food_chat.py` (food) · `ingest/biomarker.py` (labs/DEXA) · `ingest/whoop_screenshot.py` — `method="photo"` | CONFIRM parsed rows before writing; resolve macros via `lookup_food_reference` first (see §2) |
 | **Conversational diet log** / "how many calories left today?" | `analysis/food_chat.py`: `preview_meal` → confirm → `log_meal`; `daily_total(…, calorie_target=get_target(ctx,'daily_calories'))` | running total vs the CONTEXT-MD target |
 | **Log food/supplement/biomarker** by text | `ingest/food.py` · `ingest/supplement.py` · `ingest/biomarker.py` (`method="manual"`) | each via `lib.contract` |
 | "how's my **recovery / sleep / HRV / workouts / India-vs-travel**" | `lib/views.py` via `run_view()`; narratives via `analysis/trends.py` (`sleep_trend`, `workout_trend`) | NULL-recovery aware |
@@ -92,7 +94,8 @@ numbers). Prune to stay short.
 | "**am I on track / my goals / progress**" | `plan/goals.py`: `track_goals(conn, profile_id)` | MULTIPLE concurrent goals; direction-aware % |
 | "**set a goal**" | `plan/goals.py`: `create_goal(…)` | target/unit from context or the user, never invented |
 | "**build me a plan for <event>**" | `plan/training_plan.py`: `create_training_plan(…)` / `get_training_plan` | phases carry the prescription in `weekly_template` |
-| "**what changed / brief me**" | `monitor/trend_monitor.py` + `analysis/trends.py` + `plan/goals.track_goals` | the session-start findings, on demand |
+| "**give me my day / status / summary / how am I doing / daily brief**" | Produce the structured brief inline (or call `monitor.brief.compose_brief()` directly): **Food** (kcal/protein/carbs/fat vs context targets, remaining; WHOOP burn + net deficit/surplus if available and not stale) · **Supplements** (active regimen from `supplement_regimens` WHERE status='active', grouped by timing slot morning/lunch/dinner/bedtime/anytime, ✅/⬜ per taken today from `supplement_intake_logs`, slot marker ← for current slot) · **WHOOP** (Recovery% with ⏳ if PENDING_SCORE / ❌ if UNSCORABLE / "(calibrating)" if `recovery_user_calibrating=true` · HRV ms · RHR bpm · Sleep Xh Xm · sleep_cycle_count · disturbance_count; ⚠️ stale if cycle_start < today) · **Viome** (today's food_logs with non-null/non-clean verdict — ⚠️ AVOID / ⚠️ Minimize / ✅ Superfoods; skip for minors) · **Rest-of-day actions** (2–4 concrete Claude haiku suggestions). For Dea: growth/performance framing ONLY, no deficit/restriction language. | do NOT call for plain WHOOP/trend queries; only on "day/brief/how am I doing" phrasing |
+| "**what changed / brief me**" | `monitor/trend_monitor.py` + `analysis/trends.py` + `plan/goals.track_goals` | trend-delta findings, on demand — distinct from the daily structured brief above |
 | "**what's abnormal**" | `run_view(conn, "abnormal_labs", profile_id)` | DB reference ranges; surface DATE |
 | **Novel question** not in the catalog | ad-hoc read-only SQL via **`lib.sql_guard.run_adhoc_audited(conn, profile_id, sql, intent=…)`** | quality-checked + logged to `query_audit` |
 | Reports / dashboard / export | `export/` (consume `lib/views`) | xlsx / PDF / HTML |
@@ -161,6 +164,15 @@ The contract enforces these; you uphold them:
 8. **Method is recorded** — pass `method="photo"` when OCR'd from an image, `"manual"` for typed entry,
    `"csv"` for a file. The sync-log run records the true modality.
 
+9. **Food photo / "log this" in the App (photo dropped directly, not via Telegram):** decompose composite
+   dishes into their **ingredients** — Thai/Indian dishes hide coconut milk, palm oil, condensed milk, ghee;
+   list them explicitly. Resolve macros via `lookup_food_reference(description, profile_id)` RPC **first**
+   (returns macro library match + confidence from `food_reference`). Cross-check
+   `lookup_viome_verdicts(ingredient_list, profile_id)` for per-ingredient Viome flags. Compute meal verdict
+   (worst verdict of ingredients). Store verdict + flags on `food_logs` via `maintainer_ingest_food` RPC or
+   `ingest/food.py`. Confirm with ⚠️/✅ lines per ingredient verdict. Apply the same per-kind completeness
+   gates and RPC write path as the Telegram drain.
+
 Catalogs (`metric_definitions`, `food_guidance`, `supplements`) are SELECT-only for non-owners — a
 non-owner instance FLAGS an unknown item for the owner, never writes the catalog.
 
@@ -199,10 +211,25 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
 
 ## 5. THE DATA (what's in the DB)
 
-- **whoop_cycles / whoop_sleeps / whoop_workouts** — keyed on `whoop_id`; webhook keeps fresh.
+- **whoop_cycles** — keyed on `whoop_id`; webhook keeps fresh. Columns include: `score_state`
+  (PENDING_SCORE / SCORED / UNSCORABLE), `recovery_score_state`, `recovery_user_calibrating` (bool —
+  show "(calibrating)" when true), `sleep_cycle_count`, `disturbance_count`, `no_data_min`,
+  `whoop_updated_at`, `whoop_created_at`. Always check `score_state` before displaying recovery — ⏳ if
+  PENDING_SCORE, ❌ if UNSCORABLE.
+- **whoop_sleeps** — `whoop_id`, `score_state`, `no_data_min`, `sleep_cycle_count`, `disturbance_count`,
+  `whoop_cycle_id`, `whoop_updated_at`, `whoop_created_at`.
+- **whoop_workouts** — `whoop_id`, `score_state`, `sport_id`, `percent_recorded`, `distance_m`,
+  `altitude_gain_m`, `altitude_change_m`, `whoop_updated_at`, `whoop_created_at`.
+- **whoop_body_measurements** — daily body snapshot from WHOOP GET /v2/user/measurement/body: `profile_id`,
+  `synced_date`, `height_m`, `weight_kg`, `max_heart_rate`.
 - **biomarkers** — all lab + DEXA scalar values (canonical home). `qualifier` for below-detection;
   `metric_definitions` carries CLINICAL `min/max` (flag) AND PHYSIOLOGICAL `plausible_min/max` (gate).
-- **food_logs** — meals (macros, verdict, flags). **supplements / _regimens / _intake_logs** — the stack.
+- **food_logs** — meals (macros, verdict, flags). **food_reference** — shared macro library; global rows
+  have `profile_id IS NULL`, personal rows scoped to a user. RPCs: `lookup_food_reference(p_description,
+  p_profile_id)` (returns macro library match + confidence), `lookup_viome_verdicts(p_ingredient_names[],
+  p_profile_id)` (per-ingredient Viome verdict), `promote_food_to_reference(p_food_log_id)` (promote a
+  confirmed log entry to the shared library). `food_reference.learn_min_logs` threshold in `system_config`.
+- **supplements / _regimens / _intake_logs** — the stack.
 - **training_programs / program_phases / program_workouts** — training plans (prescription in
   `program_phases.weekly_template`). **user_goals** — multiple concurrent goals. **trend_alerts** —
   persisted monitor findings. **health_context_notes** — session memory. **query_audit** — ad-hoc query log
