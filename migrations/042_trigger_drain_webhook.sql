@@ -2,9 +2,11 @@
 -- pg_net trigger: fire trigger-drain Edge function on every new media_inbox row.
 -- The Edge function handles deduplication, so firing per-row is safe.
 --
--- The anon key in the Authorization header is intentionally public-facing
--- (the same JWT used in client-side JS). The Edge function uses service_role
--- internally for its Supabase calls.
+-- NOTE: SUPERSEDED by migration 047 — fn_media_inbox_notify now posts to trigger-drain
+-- with NO auth header (the vault/Bearer scheme was unreachable from pg_net context).
+-- The anon-key Bearer below has been REDACTED (it was the public anon JWT, but literal
+-- tokens must not ship in the transportable skill bundle — leak guard). This file is a
+-- historical record; the live function is the 047 version.
 
 CREATE OR REPLACE FUNCTION public.fn_media_inbox_notify()
 RETURNS trigger
@@ -19,7 +21,7 @@ BEGIN
       body    := jsonb_build_object('inbox_id', NEW.id),
       headers := jsonb_build_object(
         'Content-Type',  'application/json',
-        'Authorization', 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzbnlkc2trand6aXlud216ZmtoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM3NTY5MjIsImV4cCI6MjA4OTMzMjkyMn0.3i68UT8_Nr2psZZKfEv5BMRaSpIx9n0bUMSVVrt4T1M'
+        'Authorization', 'Bearer <ANON_KEY_REDACTED_SEE_MIGRATION_047>'
       ),
       timeout_milliseconds := 3000
     );

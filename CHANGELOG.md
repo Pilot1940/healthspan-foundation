@@ -1,5 +1,29 @@
 # HealthSpan Skill — Changelog
 
+## v3.14.0 — LLM-routed text logging + WHOOP refresh-on-interaction (2026-06-08)
+
+**Natural-language Telegram logging with no commands, multi-supplement support, and fresh WHOOP on every brief.**
+
+### Text routing — the LLM is the router (`telegram-webhook`, `inbox_drain.py`)
+- Removed the regex gate (`parseLogCommand`/`guessKind`-for-text). It permanently diverted a mis-guessed message to the brief so it never reached an extractor — while photos always got the LLM. That asymmetry made every keyword patch fail on the next phrasing.
+- All text-only messages now enqueue to `media_inbox` (kind=unknown). The drain's `unknown` prompt classifies each as a LOG (food/supplement/biomarker, multi-item) or `{kind:"brief"}`. Brief requests compose inline at end-of-run (reuses `compose_brief`). `guessKind` survives only as a photo-caption hint.
+- Prompt hardened: an image is ALWAYS a log, never a brief (protects uncaptioned meal photos).
+
+### Multi-supplement + robust matching (`inbox_drain.py`)
+- Supplement branch rewritten as a multi-item loop (mirrors food): "i took D3, K2, B12, magnesium citrate, omega-3" logs all five.
+- `lookup_supplement_by_name` matches `display_name` first (LLM returns "Magnesium Citrate", not `magnesium_citrate`).
+- `lookup_regimen_dose` — a dose-less log ("took my magnesium citrate") defaults to the user's active regimen dose, so it auto-writes instead of staging.
+- `compose_confirmation` made list-safe + multi-supplement aware (also fixed staged supplements wrongly saying "logged").
+
+### Vision (`inbox_drain.py`)
+- Food + unknown prompts now READ packaged nutrition labels (incl. Thai term mapping) — fixes meals/shakes staging with null macros.
+- `guessKind` food net widened (drinks, shakes, packaged items, dishes, staples); lab/workout/dexa still win.
+
+### WHOOP (`brief.py`, workflows)
+- Refresh-on-interaction: every brief calls `refresh_recent` first, so on-demand briefs reflect the latest cycle/recovery (no scheduled pull existed).
+- Staleness flag fixed: elapsed-time (>30h since `cycle_start`), tz-safe — was a UTC-date compare that falsely flagged a just-after-local-midnight cycle as ">24h old".
+- `whoop-webhook` redeployed (`*.deleted` handling); `WHOOP_CLIENT_ID/SECRET` added to CI.
+
 ## v3.13.0 — Ingredient-level Viome analysis + daily brief composer (2026-06-07)
 
 **Composite dishes now decomposed into ingredients for Viome cross-check; worst-case meal verdict stored on food_logs; new `monitor/brief.py` sends a structured daily brief after every food write.**

@@ -1,9 +1,9 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-07 03:08 UTC.
-> generated_at: 2026-06-07T03:08:19Z
-> coverage: 59 of 59 public base tables documented.
+> Generated 2026-06-08 09:55 UTC.
+> generated_at: 2026-06-08T09:55:56Z
+> coverage: 60 of 61 public base tables documented.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -83,6 +83,14 @@ _WHOOP physiological day (wake-to-wake): one row per cycle. Recovery/HRV/RHR der
 | `created_at` | timestamp with time zone | Row insert time (not the cycle date). |
 | `profile_id` | uuid | FK profiles.id — the LIVE per-person key (RLS scopes on this). |
 | `whoop_id` | text | WHOOP API cycle UUID — the stable upsert key (profile_id, whoop_id). Re-scores overwrite, never duplicate. |
+| `score_state` | text | WHOOP scoring state: SCORED, PENDING_SCORE, or UNSCORABLE. |
+| `recovery_score_state` | text |  |
+| `recovery_user_calibrating` | boolean | True during the first 30 days of WHOOP use — HRV baselines are not yet established. |
+| `sleep_cycle_count` | smallint |  |
+| `disturbance_count` | smallint |  |
+| `no_data_min` | numeric(6,1) |  |
+| `whoop_updated_at` | timestamp with time zone |  |
+| `whoop_created_at` | timestamp with time zone |  |
 
 ## `whoop_sleeps`
 _Individual sleep events incl. naps. Keyed on (profile_id, whoop_id). Most analyses filter is_nap=false._
@@ -114,6 +122,13 @@ _Individual sleep events incl. naps. Keyed on (profile_id, whoop_id). Most analy
 | `created_at` | timestamp with time zone | Row insert time. |
 | `profile_id` | uuid | FK profiles.id — live per-person key. |
 | `whoop_id` | text | WHOOP API sleep UUID — stable upsert key (profile_id, whoop_id). |
+| `score_state` | text |  |
+| `no_data_min` | numeric(6,1) |  |
+| `sleep_cycle_count` | smallint |  |
+| `disturbance_count` | smallint |  |
+| `whoop_cycle_id` | bigint |  |
+| `whoop_updated_at` | timestamp with time zone |  |
+| `whoop_created_at` | timestamp with time zone |  |
 
 ## `whoop_workouts`
 _Workouts with zone durations. Keyed on (profile_id, whoop_id). Zone seconds (hr_zoneN_sec) are exact from API; percentages are derived._
@@ -155,6 +170,14 @@ _Workouts with zone durations. Keyed on (profile_id, whoop_id). Zone seconds (hr
 | `muscular_load_pct` | numeric(5,2) | Muscular load split %. NULL from API (app-only / screenshot). |
 | `whoop_id` | text | WHOOP API workout UUID — stable upsert key (profile_id, whoop_id). |
 | `protocol` | jsonb | JSONB intended-session spec, e.g. {"type":"4x4","pct_max":[90,95],"rounds":3,"work_min":4,"recovery_min":3}. Distinct from tags. |
+| `score_state` | text |  |
+| `sport_id` | smallint | WHOOP sport catalogue integer (see _SPORT_NAMES in whoop_sync.py for mapping). |
+| `percent_recorded` | numeric(5,2) |  |
+| `distance_m` | numeric(8,1) |  |
+| `altitude_gain_m` | numeric(7,1) |  |
+| `altitude_change_m` | numeric(7,1) |  |
+| `whoop_updated_at` | timestamp with time zone |  |
+| `whoop_created_at` | timestamp with time zone |  |
 
 ## `workout_intervals`
 _Per-interval HR shape (peak/recovery) for VO2 tracking. TRAP: source='screenshot' = APPROXIMATE vision read; the API does NOT expose this. Additive only._
@@ -539,6 +562,7 @@ _FAMILY/GLOBAL food classification (the curated avoid/minimize/superfood list, i
 | `is_active` | boolean | Whether the guidance is in use. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update. |
+| `profile_id` | uuid |  |
 
 ## `food_rules`
 _PER-PROFILE dietary rules (allergies, intolerances, preferences, medical avoidances). TRAP: distinct from food_guidance, which is FAMILY/GLOBAL classification. rule_type CHECK allergy|intolerance|preference|medical; severity CHECK mild|moderate|severe|life_threatening. Currently empty._
@@ -655,6 +679,7 @@ _Durable inbound queue: one row per Telegram photo/text from an active identity.
 | `processed_at` | timestamp with time zone | Timestamp the Routine finished processing (timestamptz). NULL = not yet processed. |
 | `result_ref` | uuid | UUID of the downstream row written by the Routine (food_logs.id, biomarkers.id, etc.). NULL until status = done. |
 | `media_group_id` | text | Telegram media_group_id shared by photos in the same album burst. NULL for single photos or text messages. Rows sharing this value are drained as one cluster (one extraction, one log entry). |
+| `stage_reason` | text | Human-readable reason this item was staged or failed (e.g. "incomplete: missing calories or macros", "implausible calories: 12500 kcal (must be 25–12000)", "vision returned no parseable extraction", "unknown kind: workout"). Set by the drain at mark_rows time. |
 
 ## `program_phases`
 _Ordered phases within a training_program (base / build / peak / taper...). UNIQUE(program_id, ordinal)._
@@ -731,6 +756,7 @@ _Staging queue for AI-extracted biomarkers (rule #2: extraction → staging, nev
 | `raw_text` | text | The source text snippet the value came from. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+| `stage_reason` | text | Why this biomarker needs review — set by drain (completeness gate) or RPC (plausibility gate). |
 
 ## `stg_food_log_review`
 _Staging queue for AI-extracted food logs (rule #2). On approval, promotes to food_logs. TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
@@ -756,6 +782,7 @@ _Staging queue for AI-extracted food logs (rule #2). On approval, promotes to fo
 | `reviewed_at` | timestamp with time zone | When actioned. |
 | `raw_text` | text | Source text snippet. |
 | `created_at` | timestamp with time zone | Row insert time. |
+| `stage_reason` | text | Reason this food entry needs human review — populated by the RPC (DB-side plausibility gate) or passed from Python (completeness gate, unknown kind). Used by the daily Telegram review-summary. |
 
 ## `stg_food_rule_review`
 _Staging queue for AI-extracted food_rules (rule #2). TRAP: not production truth. status CHECK pending|approved|rejected|merged; confidence 0-1._
@@ -794,6 +821,7 @@ _Staging queue for AI-extracted supplement intake events (rule #2). On approval,
 | `reviewed_at` | timestamp with time zone | When actioned. |
 | `raw_text` | text | Source text snippet. |
 | `created_at` | timestamp with time zone | Row insert time. |
+| `stage_reason` | text | Why this supplement entry needs review — set by drain (completeness gate) or RPC. |
 
 ## `stg_test_result_review`
 _Staging queue for AI-extracted test/investigation results (rule #2). TRAP: not production truth. result_value is TEXT (free-form, pre-normalisation). status CHECK pending|approved|rejected|merged; confidence 0-1._
@@ -1030,6 +1058,19 @@ _Body-weight log (kg). UNIQUE(profile_id, logged_at). Currently empty — weight
 | `created_at` | timestamp with time zone | Row insert time. |
 | `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
 
+## `whoop_body_measurements`
+_Daily snapshot from WHOOP /v2/user/measurement/body. One row per profile per calendar day._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | bigint |  |
+| `profile_id` | uuid |  |
+| `synced_at` | timestamp with time zone |  |
+| `synced_date` | date |  |
+| `height_m` | numeric(4,2) |  |
+| `weight_kg` | numeric(5,2) |  |
+| `max_heart_rate` | smallint |  |
+
 ## `whoop_journal_entries`
 _Long-form WHOOP journal answers: one row per (cycle, behaviour). The whoop_journal VIEW (016b) pivots these into one boolean/quantity column per habit. UNIQUE(profile_id, cycle_start, behavior_id). JOIN TRAP: cycle_start is CSV-sourced and matches whoop_cycles.cycle_start only on ::date, never the exact timestamp._
 
@@ -1064,4 +1105,6 @@ _WHOOP OAuth tokens per profile, used by the WHOOP API sync (ingest/whoop_sync).
 
 ## Unmapped tables
 
-_None — every public base table carries a comment._
+> ⚠ These live tables have NO table/column COMMENTs and are therefore undocumented. Add them in a `COMMENT ON` migration (see 016/016c) so they stop hiding here.
+
+- `food_reference`
