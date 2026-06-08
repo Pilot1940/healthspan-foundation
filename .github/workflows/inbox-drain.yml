@@ -22,6 +22,8 @@ jobs:
       HS_ANTHROPIC_API_KEY: ${{ secrets.HS_ANTHROPIC_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WHOOP_CLIENT_ID: ${{ secrets.WHOOP_CLIENT_ID }}
+      WHOOP_CLIENT_SECRET: ${{ secrets.WHOOP_CLIENT_SECRET }}
       ENVIRONMENT: production
 
     steps:

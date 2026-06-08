@@ -115,7 +115,19 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
         if not rows:
             return {}
         r = rows[0]
-        stale = (r.get("cycle_start") or "")[:10] < today
+        # Staleness by ELAPSED TIME, not UTC-date compare. The old `cycle_start[:10] <
+        # today` flagged a cycle that started just after local midnight as ">24h old"
+        # whenever that instant was still the previous UTC day (e.g. 00:06 IST = 18:36
+        # UTC the day before). A WHOOP cycle spans ~24h, so treat the latest cycle as
+        # fresh until it is >30h old; only then is the sync genuinely behind.
+        cs = r.get("cycle_start") or ""
+        try:
+            cs_dt = datetime.fromisoformat(cs.replace("Z", "+00:00"))
+            if cs_dt.tzinfo is None:
+                cs_dt = cs_dt.replace(tzinfo=timezone.utc)
+            stale = (datetime.now(timezone.utc) - cs_dt).total_seconds() > 30 * 3600
+        except Exception:
+            stale = cs[:10] < today  # fallback to the old date compare if parse fails
         return {
             "cycle_start":              r.get("cycle_start"),
             "score_state":              r.get("score_state"),
@@ -355,6 +367,15 @@ def compose_brief(
 
     Called from run_once() (best-effort, never raises) and by the CLI.
     """
+    # WHOOP refresh-on-interaction: pull the latest cycle/recovery so the brief reflects
+    # current data, not just the last nightly sync. Best-effort — a slow/dead WHOOP API
+    # or missing creds must never block the brief (it just falls back to stored data).
+    try:
+        from ingest.whoop_sync import refresh_recent
+        refresh_recent(profiles=[profile_id], hours=48)
+    except Exception as exc:
+        log.warning("WHOOP refresh-on-interaction skipped for %s: %s", profile_id, exc)
+
     identity_rows = db.select(
         "telegram_identities",
         select="chat_id,is_minor,display_name",

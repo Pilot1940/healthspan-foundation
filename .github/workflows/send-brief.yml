@@ -21,7 +21,11 @@ jobs:
       HS_AUTH_EMAIL: ${{ secrets.HS_AUTH_EMAIL }}
       HS_AUTH_PASSWORD: ${{ secrets.HS_AUTH_PASSWORD }}
       ANTHROPIC_API_KEY: ${{ secrets.HS_ANTHROPIC_API_KEY }}
+      HS_ANTHROPIC_API_KEY: ${{ secrets.HS_ANTHROPIC_API_KEY }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WHOOP_CLIENT_ID: ${{ secrets.WHOOP_CLIENT_ID }}
+      WHOOP_CLIENT_SECRET: ${{ secrets.WHOOP_CLIENT_SECRET }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
