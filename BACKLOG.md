@@ -53,6 +53,25 @@ has no CHECK (verified) — no change needed there.
 
 ---
 
+## #4 — Telegram-linked dashboards — **NEW, design wanted**
+
+**Severity:** MED · **Owner:** PC (design) → CC (build) · **Status:** OPEN.
+
+**Idea:** Design visual health dashboards that can be linked & available directly via Telegram
+chat. PC sends/taps a command in Telegram → bot returns a dashboard (food, WHOOP recovery/strain/
+sleep, supplements adherence, biomarker + weight trends) as a rendered image or a linked HTML page.
+
+**Open design questions:**
+1. Delivery format — rendered PNG (matplotlib/Pillow, sends inline) vs hosted HTML page (S3 +
+   signed/short-lived link, opens in browser) vs both per-dashboard?
+2. Which dashboards for v1 — daily snapshot, 7/30-day WHOOP trends, food+deficit, biomarker timeline?
+3. Trigger surface — slash-style text commands to `telegram-webhook`, an inline keyboard menu, or
+   scheduled auto-push (ties into #1 morning brief)?
+4. Auth/scoping — per-profile (PC vs Dea), maintainer-only panels gated like the brief.
+5. Reuse — share the brief's render-guard cite-only numeric path; no LLM-invented figures on a chart.
+
+---
+
 ## Done / shipped reference
 - v3.2 (2026-06-05): supabase_client auth fix, lazy psycopg2, pinned cold-start, schema-map freshness, 924-char description. Webhook duration/zone-pct/sleep-fields fix deployed; prior-cycle refresh live.
 - Pending elsewhere: migration 016c schema-comment completion (35 unmapped tables) — prompt already with CC.
