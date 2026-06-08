@@ -955,6 +955,33 @@ Expected output:
 
 If exit code is 1 (BLOCKED), read the step that failed. The most common causes are a missing `family_memberships` row, a mismatched `profile_id` in the context MD, or `auth_password` not yet set in Supabase Auth.
 
+### Worked example — Dea (minor, ~95% onboarded as of 2026-06-08)
+
+Most of the 9 steps above are already done for Dea; this is what a partially-onboarded user
+looks like and the single remaining action. Full plan: `docs/DEA-ONBOARDING-PLAN.md`.
+
+| Step | Dea's state |
+|---|---|
+| 1 Auth user | ✅ `47501376-6adb-458e-8679-57a4a4176692` |
+| 2 Profile | ✅ `3eed5503-…` — "Dea Singh Chitalkar", `relationship='child'`, `sex='female'` |
+| 3 Family membership | ✅ PC (`0b0e4093…`, owner) → Dea, and Dea (`47501376…`, self) → Dea |
+| 4 Config JSON | ✅ `config/dea.config.json` (`is_minor: true`) |
+| 5 Context MD | ✅ `context/dea.context.md` |
+| 6 Link code | ❌ **not yet minted — this is the only remaining step** |
+| 7 User sends code | ❌ pending — Dea sends it from **her own** Telegram |
+| 8 WHOOP OAuth | ✅ linked (`whoop_user 22399950`) + backfilled (300 cycles / 281 sleeps / 140 workouts), synced same-day |
+| 9 Verify | run after linking |
+
+Remaining action:
+```bash
+python3 scripts/hs_ops.py mint-link-code 3eed5503-a26f-4b88-bb76-075208fa5de3
+# → Dea opens the "Chitalkar Family Health Tracker" bot and sends the code (or /start <code>)
+```
+Because `profiles.relationship = 'child'`, `telegram-webhook` sets `is_minor = true` on her
+`telegram_identities` row automatically — minor-safe framing (growth/performance only, no
+deficit/restriction language) applies from her first message. PC, as maintainer, sees her data;
+Dea sees outcomes only.
+
 ---
 
 ## 7. MAINTENANCE RUNBOOK
