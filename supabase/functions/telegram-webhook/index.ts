@@ -33,10 +33,20 @@ export function verifySecretToken(header: string | null, expected: string): bool
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
-  if (/\b(food|meal|eat|ate|breakfast|lunch|dinner|snack|calories|protein|macro|carb|fat|glucose|creatine)\b/.test(t)) return "food";
-  if (/\b(workout|exercise|gym|run|swim|bike|cycle|lift|strain|training|sport|hiit|cardio)\b/.test(t)) return "workout";
-  if (/\b(lab|blood|test|result|report|hba1c|cholesterol|creatinine|tsh|vitamin|panel|rbc|wbc)\b/.test(t)) return "lab";
-  if (/\b(dexa|dxa|body.?comp|composition|fat.?mass|lean.?mass|bone.?density)\b/.test(t)) return "dexa";
+
+  // Order matters: check the specific, document/activity-like kinds FIRST, then fall
+  // through to a deliberately liberal food net. A genuine lab/workout/dexa caption wins
+  // over food; anything edible-looking that isn't one of those becomes food (richer
+  // food prompt: ingredient decomposition + nutrition-label reading).
+  if (/\b(dexa|dxa|body.?comp|composition|fat.?mass|lean.?mass|bone.?density|bmd)\b/.test(t)) return "dexa";
+  if (/\b(lab|labs|blood|bloodwork|test|result|report|hba1c|a1c|cholesterol|ldl|hdl|triglyceride|creatinine|tsh|t3|t4|panel|rbc|wbc|crp|ferritin|insulin|cortisol|testosterone|apob|lipid|cbc|urine|biopsy)\b/.test(t)) return "lab";
+  if (/\b(workout|exercise|gym|run|ran|jog|swim|swam|bike|biked|cycle|cycling|ride|lift|lifted|strain|training|trained|sport|hiit|cardio|yoga|pilates|crossfit|tennis|padel|squash|hike|hiked|walk|steps|pushup|pullup|squat|deadlift|bench|row|sprint|marathon|workout)\b/.test(t)) return "workout";
+
+  // FOOD — very liberal. Any food/drink noun or eating verb routes here.
+  if (/\b(food|meal|eat|ate|eaten|eating|drink|drank|drunk|drinking|had|having|consume|consumed|nutrition|nutritional|kcal|cal|cals|calorie|calories|macro|macros|protein|carb|carbs|carbohydrate|fat|fats|fiber|fibre|sugar|glucose|creatine|glutamine|breakfast|lunch|dinner|snack|brunch|supper|dessert|appetizer|starter|side)\b/.test(t)) return "food";
+  // FOOD nouns / forms — drinks, dishes, packaged items, staples, common foods.
+  if (/\b(shake|smoothie|protein.?shake|juice|coffee|espresso|latte|cappuccino|tea|matcha|soda|cola|kombucha|electrolyte|electrolytes|water|milk|yogurt|yoghurt|lassi|kefir|bottle|can|pack|packet|sachet|scoop|serving|bar|powder|cereal|oats|oatmeal|granola|muesli|egg|eggs|omelette|omelet|chicken|beef|pork|lamb|mutton|fish|salmon|tuna|prawn|shrimp|seafood|paneer|tofu|tempeh|rice|quinoa|bread|toast|bagel|roti|naan|chapati|paratha|pasta|noodle|noodles|ramen|pho|salad|soup|stew|curry|dal|daal|dhal|sambar|kebab|kabab|kabob|chello|burger|pizza|sandwich|wrap|roll|taco|burrito|sushi|dumpling|momo|samosa|pakora|fries|chips|fruit|banana|apple|mango|orange|grape|grapes|berry|berries|strawberry|blueberry|avocado|nuts|almond|almonds|peanut|cashew|walnut|cheese|butter|ghee|cream|chocolate|cake|cookie|biscuit|donut|ice.?cream|gelato|pudding|honey|jam|plate|bowl|dish|portion|bite)\b/.test(t)) return "food";
+
   return "unknown";
 }
 

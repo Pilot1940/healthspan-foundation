@@ -37,6 +37,28 @@ Deno.test("guessKind: food keywords → food", () => {
   assertEquals(guessKind("6g creatine taken"), "food");
 });
 
+// Regression: liberal food net — drinks, packaged items, dishes, staples must all
+// classify as food so they use the richer food prompt (label-reading + decomposition).
+// The original miss: "Add this shake" classified unknown → vision skipped the label.
+Deno.test("guessKind: liberal food net — shakes/drinks/dishes/packaged", () => {
+  assertEquals(guessKind("Add this shake"), "food");                       // the original bug
+  assertEquals(guessKind("the whole truth protein powder shake"), "food");
+  assertEquals(guessKind("lemon ginger crush and soda 200ml"), "food");
+  assertEquals(guessKind("smoothie"), "food");
+  assertEquals(guessKind("1/2 chicken chello kabab and daal"), "food");
+  assertEquals(guessKind("1 banana"), "food");
+  assertEquals(guessKind("bowl of oatmeal"), "food");
+  assertEquals(guessKind("matcha latte"), "food");
+  assertEquals(guessKind("electrolytes"), "food");
+});
+
+// A genuine workout/lab caption must still win over the broad food net (order matters).
+Deno.test("guessKind: specific kinds win over liberal food net", () => {
+  assertEquals(guessKind("ran 5k this morning"), "workout");
+  assertEquals(guessKind("my apoB and LDL came back"), "lab");
+  assertEquals(guessKind("DEXA body comp scan"), "dexa");
+});
+
 Deno.test("guessKind: workout keywords → workout", () => {
   assertEquals(guessKind("45min run this morning"), "workout");
   assertEquals(guessKind("gym session — deadlifts"), "workout");
