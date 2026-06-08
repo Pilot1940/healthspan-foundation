@@ -1317,6 +1317,11 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <td>app_timezone</td>
 <td>Seeds <code>app.timezone=&#x27;Asia/Bangkok&#x27;</code> in <code>system_config</code>. The daily brief computes &quot;today&quot; as a LOCAL-day UTC window over <code>logged_at</code>/<code>taken_at</code> instead of the UTC-derived <code>log_date</code>/<code>taken_on</code> (fixes the 07:00-ICT day rollover + UTC display).</td>
 </tr>
+<tr>
+<td>049</td>
+<td>clarify_loop</td>
+<td><code>media_inbox.clarify_message_id</code> + <code>clarify_count</code> for the reply-to-clarify loop: a staged item&#x27;s review message id is stored, a user reply re-queues it (fresh INSERT → AFTER-INSERT trigger fires) with the clarification + original image; <code>clarify_count</code> caps rounds at 2.</td>
+</tr>
 </tbody></table></div>
 </section>
 <section id="sec-5">
