@@ -212,6 +212,34 @@ reference macros by it, or only apply the reference when no explicit partial por
 
 ---
 
+## #11 — Extraction-prompt architecture (advisor review 2026-06-08) — **OPEN, do AFTER loop verified**
+
+**Severity:** MED · **Owner:** CC · **Status:** OPEN. Advisor flagged the *structural* reason fixes
+don't stick. Do these as a careful, sequenced pass — NOT all at once — and only after the
+reply-to-clarify loop has a confirmed live round-trip.
+
+1. **Prompts force an output; none can say "I can't identify this — ask."** Principle to encode:
+   clarify on **identity/portion** ambiguity, **estimate** on quantity (grilled-beef kcal is the
+   job), and only ask when the missing detail *materially changes the record* (avoid clarification
+   fatigue). Partially done: generic-supplement guard + "don't guess vague supplements" prompt note.
+2. **`ingest.confidence_threshold` is stored but NEVER enforced** — it's read into `conf_threshold`
+   and passed around, but nothing gates on it. Wire low-confidence → stage→clarify; that generalizes
+   the hand-written generic guard.
+3. **Dead / drifted prompts** (the maintainability root cause): the standalone `"supplement"` vision
+   prompt is dead (`guessKind` never emits `supplement` — they only arrive via `unknown`); the
+   standalone `"food"` prompt and `unknown`.food have **drifted** (rich label/decomposition rules in
+   one, a shorter copy in the other). Text always uses `unknown`; photos sometimes `food`/`lab`/`dexa`.
+   So a prompt fix on one path silently doesn't apply on the other — exactly the "fixed it, happened
+   again" pattern. Collapse to the `unknown` prompt as the single extractor (verify `guessKind`
+   outputs first), or delete the dead ones. **Risky on prod — sequence it, prove each step live.**
+4. Optional: let the extractor return its own `question` for the clarify message (the model that saw
+   the input asks better; saves the `describe_stage` call).
+
+**Hard gate:** prove the loop's `staged → reply → logs` round-trip live before relying on any
+clarify-routing change (descriptive feedback, generic guard, this) — they all dead-end if it doesn't fire.
+
+---
+
 ## Done / shipped reference
 - **2026-06-08 — vision truncation + multi-item confirmation + Protein Thai Tea reference.** Bottle
   photo stuck in review = `max_tokens=1024` truncated the JSON (not a label-read failure) → bumped to
