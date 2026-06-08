@@ -30,6 +30,7 @@ export function verifySecretToken(header: string | null, expected: string): bool
   return diff === 0;
 }
 
+// deploy: liberal-food-net v2 (2026-06-08) — labels read in vision, shake→food
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
