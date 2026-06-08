@@ -30,7 +30,7 @@ export function verifySecretToken(header: string | null, expected: string): bool
   return diff === 0;
 }
 
-// deploy: v4 (2026-06-08) — natural-verb text logging (took/ate/had/…) + log:/add: prefix
+// deploy: v5 (2026-06-08) — all text → drain; LLM routes log-vs-brief (no regex gate)
 export function guessKind(caption: string | undefined): "food" | "workout" | "lab" | "dexa" | "unknown" {
   if (!caption) return "unknown";
   const t = caption.toLowerCase();
@@ -59,32 +59,6 @@ function svc(): SupabaseClient {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { persistSession: false } },
   );
-}
-
-// Leading action verbs that signal "I'm logging something I did", e.g.
-// "took my magnesium", "ate 2 eggs", "had a shake", "drank electrolytes".
-// Intentionally natural-language — the most common ways PC phrases an intake.
-// Excludes weak/ambiguous openers that are usually questions or imperatives
-// ("have I…", "did I…", "take your…") — those still fall through to the brief.
-const LOG_VERBS =
-  /^(took|taken|taking|ate|eat|eaten|eating|had|having|drank|drink|drinking|drunk|finished|finish|finishing|consumed|consume|consuming|added)\b/i;
-
-// Decide whether a text-only message is a LOG (vs the default daily brief).
-// Two ways to log:
-//   1. Explicit prefix — "log: …" / "add: …" / "/log …" / "/add …" → returns the stripped body.
-//   2. Natural phrasing — text led by a logging verb (LOG_VERBS) → returns the whole text
-//      (the extractor needs the verb, e.g. "took my magnesium", to read it as an intake).
-// Everything else (questions, "brief", "summary", "how am I doing", greetings) → null → brief.
-// Brief remains the DEFAULT; this only diverts clearly log-shaped text.
-export function parseLogCommand(text: string | undefined): string | null {
-  if (!text) return null;
-  const t = text.trim();
-  // 1. Explicit prefix: strip it, return the body.
-  const pref = t.match(/^\/?(?:log|add)\b[:\s]+([\s\S]+)/i);
-  if (pref) return pref[1].trim();
-  // 2. Natural logging phrasing: leading action verb → log the whole message.
-  if (LOG_VERBS.test(t)) return t;
-  return null;
 }
 
 // ── Telegram helpers ────────────────────────────────────────────────────────────
@@ -323,60 +297,32 @@ Deno.serve(async (req) => {
   const document: any | undefined = msg.document;
   const isMediaMessage = !!(photo?.length || document);
 
-  // Text-only messages. An explicit "log:/add:" command enqueues the text for
-  // ingestion (food/supplement/biomarker); everything else defaults to the daily
-  // brief. Additive — bare text behaves exactly as before.
+  // Text-only messages → enqueue for the drain. The drain's LLM is the router: it
+  // decides whether this is a LOG (food/supplement/biomarker, possibly several) or a
+  // BRIEF request, and acts accordingly (see inbox_drain.py "unknown" prompt). No
+  // regex routing here — the model decides. media_inbox FIRST, then update_id
+  // (idempotency ordering, mirrors the media path). The pg_net trigger
+  // (fn_media_inbox_notify) auto-fires the drain.
   if (!isMediaMessage) {
-    const logBody = parseLogCommand(messageText);
-    if (logBody) {
-      // Enqueue a text-only media_inbox row (no image). The pg_net trigger
-      // (fn_media_inbox_notify) auto-fires the drain, which extracts from the
-      // caption text and sends the confirmation. kind='unknown' lets the drain's
-      // classifier decide food vs supplement vs lab. media_inbox FIRST, then
-      // update_id (idempotency ordering, mirrors the media path).
-      const { error: logErr } = await db.from("media_inbox").insert({
-        profile_id: profileId,
-        chat_id: chatId,
-        kind: "unknown",
-        storage_path: null,
-        caption: logBody,
-        status: "pending",
-      });
+    const body = (messageText ?? "").trim();
+    if (!body) {
+      // Non-text payload with no caption (sticker, location, etc.) — nothing to do.
       await db.from("telegram_processed_updates").insert({ update_id: updateId });
-      await telegramSend(
-        chatId,
-        logErr ? "⚠️ Couldn't queue that — please try again." : "📥 Got it — logging…",
-      );
       return new Response("ok", { status: 200 });
     }
-
+    const { error: txtErr } = await db.from("media_inbox").insert({
+      profile_id: profileId,
+      chat_id: chatId,
+      kind: "unknown",
+      storage_path: null,
+      caption: body,
+      status: "pending",
+    });
     await db.from("telegram_processed_updates").insert({ update_id: updateId });
-    await telegramSend(chatId, "📊 Sending your summary...");
-
-    const ghToken = Deno.env.get("GH_DISPATCH_TOKEN");
-    if (ghToken) {
-      const fireTask = fetch(
-        "https://api.github.com/repos/Pilot1940/healthspan-foundation/dispatches",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${ghToken}`,
-            Accept: "application/vnd.github+json",
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-          body: JSON.stringify({
-            event_type: "send-brief",
-            client_payload: { profile_id: profileId },
-          }),
-        },
-      ).catch(() => {});
-      if (typeof EdgeRuntime !== "undefined") {
-        EdgeRuntime.waitUntil(fireTask);
-      } else {
-        await fireTask;
-      }
-    }
+    await telegramSend(
+      chatId,
+      txtErr ? "⚠️ Couldn't process that — please try again." : "📥 On it…",
+    );
     return new Response("ok", { status: 200 });
   }
 

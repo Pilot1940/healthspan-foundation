@@ -279,15 +279,9 @@ def _supplement_rpc_args(
     }
 
 
-def write_supplement(
-    db: DbRest, rows: list[dict], profile_id: str,
-    extracted: dict[str, Any], confidence: float, raw_text: str,
-    force_stage: bool = False,
-    stage_reason: str | None = None,
-) -> dict:
-    return _write(db, rows, "maintainer_ingest_supplement",
-                  _supplement_rpc_args(profile_id, extracted, confidence, raw_text,
-                                       force_stage, stage_reason))
+# NOTE: supplements are written inline in _process_cluster's multi-item loop (one or
+# many per message), calling maintainer_ingest_supplement via db.rpc directly so the
+# cluster rows are marked once by aggregate status. No write_supplement wrapper needed.
 
 
 # ── lookups ───────────────────────────────────────────────────────────────────
@@ -539,11 +533,20 @@ _VISION_PROMPTS: dict[str, str] = {
         '"taken_at":"ISO-8601 (use NOW if not stated)","notes":null,"confidence":0.0_to_1.0}'
     ),
     "unknown": (
-        'Classify and extract health data. Return JSON only — no prose, no markdown.\n\n'
-        'Supplement (single item or combo):\n'
-        '{"kind":"supplement","data":{"name":"...","dose_amount":null,"dose_unit":null,'
-        '"taken_at":"NOW","notes":null,"confidence":0.0_to_1.0}}\n\n'
-        'Food or meal (use a list even for one item; one object per distinct dish):\n'
+        'You are the router AND extractor for a health logger. Read the message (and any '
+        'image) and decide what it IS, then return JSON only — no prose, no markdown.\n\n'
+        'DECIDE FIRST: is the user RECORDING something they consumed/measured (a log), or '
+        'ASKING for information / making conversation (a brief)?\n\n'
+        'Brief request — questions, status/summary asks, greetings, thanks, or anything that '
+        'is NOT a record of intake/measurement (e.g. "how am I doing?", "brief", "summary", '
+        '"what\'s my recovery", "hi", "thanks", "did I take my magnesium?"):\n'
+        '{"kind":"brief"}\n\n'
+        'Supplement(s) — ALWAYS a list, one object per supplement. A message like '
+        '"took D3, K2, B12, magnesium citrate, omega-3" → five objects. Strip filler like '
+        '"i took"/"my":\n'
+        '{"kind":"supplement","data":[{"name":"...","dose_amount":null,"dose_unit":null,'
+        '"taken_at":"NOW","notes":null,"confidence":0.0_to_1.0}]}\n\n'
+        'Food or meal — a list, one object per distinct dish:\n'
         '{"kind":"food","data":[{"meal_type":"breakfast|lunch|dinner|snack",'
         '"description":"...","calories":null,"protein_g":null,"carbs_g":null,'
         '"fat_g":null,"fiber_g":null,"logged_at":"NOW","notes":null}]}\n'
@@ -554,7 +557,7 @@ _VISION_PROMPTS: dict[str, str] = {
         'Lab or DEXA result:\n'
         '{"kind":"lab","data":{"biomarkers":[{"extracted_name":"...","value":null,'
         '"unit":"...","measured_at":"NOW","confidence":0.0_to_1.0}]}}\n\n'
-        'Unclassifiable:\n'
+        'Genuinely unclassifiable (rare):\n'
         '{"kind":"unknown","data":{}}'
     ),
 }
@@ -702,30 +705,47 @@ def telegram_send(token: str, chat_id: int, text: str) -> None:
         pass
 
 
-def compose_confirmation(kind: str, rpc_status: str, extracted: dict, is_minor: bool) -> str:
-    """Compose Telegram confirmation. Minor-safe: no deficit/restriction language."""
+def compose_confirmation(kind: str, rpc_status: str, extracted, is_minor: bool) -> str:
+    """Compose Telegram confirmation. Minor-safe: no deficit/restriction language.
+
+    `extracted` may be a dict (single item) or a list (multi-item food/supplement).
+    """
+    items = extracted if isinstance(extracted, list) else [extracted]
+    dicts = [x for x in items if isinstance(x, dict)]
+    first = dicts[0] if dicts else {}
+    staged_msg = "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+
     if kind == "food" and rpc_status in ("inserted", "staged"):
-        desc = extracted.get("description") or "meal"
-        kcal = extracted.get("calories")
-        kcal_str = f" — {kcal} kcal" if kcal else ""
         if rpc_status == "staged":
-            return "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+            return staged_msg
+        if len(dicts) > 1:
+            descs = ", ".join((d.get("description") or "item") for d in dicts)
+            return (f"📊 Tracked {len(dicts)} items: {descs}. Nice! 💪" if is_minor
+                    else f"✅ Logged {len(dicts)} items: {descs}.")
+        desc = first.get("description") or "meal"
+        kcal = first.get("calories")
+        kcal_str = f" — {kcal} kcal" if kcal else ""
         return (
             f"📊 Tracked: {desc}{kcal_str}. Nice! 💪" if is_minor
             else f"✅ Logged: {desc}{kcal_str}."
         )
     if kind in ("lab", "dexa"):
-        n = len(extracted.get("biomarkers", [])) or 1
+        n = len(first.get("biomarkers", [])) or 1
         if is_minor:
             return f"📊 {n} measurement{'s' if n > 1 else ''} tracked. 💪"
         return f"✅ {n} biomarker{'s' if n > 1 else ''} logged."
     if kind == "supplement":
-        name = extracted.get("name") or "supplement"
-        if is_minor:
-            return f"📊 {name} tracked."
-        return f"✅ {name} logged."
+        if rpc_status == "staged":
+            return staged_msg
+        names = [d.get("name") for d in dicts if d.get("name")]
+        if len(names) > 1:
+            joined = ", ".join(names)
+            return (f"📊 {len(names)} supplements tracked: {joined}." if is_minor
+                    else f"✅ Logged {len(names)} supplements: {joined}.")
+        name = names[0] if names else "supplement"
+        return f"📊 {name} tracked." if is_minor else f"✅ {name} logged."
     if rpc_status == "staged":
-        return "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+        return staged_msg
     return "✅ Logged."
 
 
@@ -859,8 +879,13 @@ def _process_cluster(
     per_chat: dict | None = None,
     today: str | None = None,
     learn_min_logs: int = 2,
+    brief_profiles: set | None = None,
 ) -> None:
-    """Extract, write, and confirm one cluster. Updates summary in place."""
+    """Extract, write, and confirm one cluster. Updates summary in place.
+
+    A message the LLM classifies as a brief request adds its profile_id to
+    brief_profiles (sent once at end-of-run by run_once) and writes nothing.
+    """
     profile_id = cluster[0]["profile_id"]
     chat_id = cluster[0]["chat_id"]
     is_minor = chat_is_minor.get(str(chat_id), False)
@@ -907,9 +932,9 @@ def _process_cluster(
         kind = extracted.get("kind", "unknown")
         extracted = extracted.get("data", extracted)
 
-    # Only the food branch handles a bare list; for other kinds coerce to the first
-    # dict (or {}) so a shape surprise stages rather than crashing the cluster.
-    if isinstance(extracted, list) and kind != "food":
+    # food and supplement branches handle a bare list (multi-item); for other kinds
+    # coerce to the first dict (or {}) so a shape surprise stages rather than crashing.
+    if isinstance(extracted, list) and kind not in ("food", "supplement"):
         extracted = extracted[0] if extracted and isinstance(extracted[0], dict) else {}
 
     confidence = float(extracted.get("confidence", 0.0)) if isinstance(extracted, dict) else 0.0
@@ -919,6 +944,14 @@ def _process_cluster(
     learn_offer: str = ""
     meal_verdict: str = "clean"
     meal_flags: list[str] = []
+
+    # Brief request — the LLM decided this message is a question/summary/greeting, not a
+    # log. Record the profile so run_once sends ONE brief at end-of-run; write nothing.
+    if kind == "brief":
+        if brief_profiles is not None:
+            brief_profiles.add(str(profile_id))
+        mark_rows(db, _ids(cluster), "done")
+        return
 
     if kind == "food":
         # Normalise: model may return a list for multi-item text (e.g. "shake + fish + rice")
@@ -1056,23 +1089,54 @@ def _process_cluster(
         rpc_status = "inserted" if all_ok and biomarkers else "staged"
 
     elif kind == "supplement":
-        name = extracted.get("name", "")
-        matches = lookup_supplement_by_name(db, name) if name else []
-        if matches:
-            extracted["supplement_id"] = matches[0]["id"]
-        complete = supplement_is_complete(extracted)
-        if not complete:
-            reason = (
-                "incomplete: no supplement match" if not extracted.get("supplement_id")
-                else "incomplete: missing dose or unit"
-            )
-            result = write_supplement(
-                db, cluster, profile_id, extracted, confidence, raw_text,
-                force_stage=True, stage_reason=reason,
-            )
+        # One or many supplements ("took D3, K2, magnesium" → 3). Mirror the food
+        # multi-item loop: resolve + RPC each, then mark the cluster rows once by
+        # aggregate status so we never double-mark.
+        supp_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
+        statuses: list[str] = []
+        supp_stage_reason: str | None = None
+        for supp in supp_items:
+            if not isinstance(supp, dict):
+                statuses.append("failed")
+                continue
+            name = supp.get("name", "")
+            matches = lookup_supplement_by_name(db, name) if name else []
+            if matches:
+                supp["supplement_id"] = matches[0]["id"]
+            complete = supplement_is_complete(supp)
+            item_reason = None
+            if not complete:
+                item_reason = (
+                    "incomplete: no supplement match" if not supp.get("supplement_id")
+                    else "incomplete: missing dose or unit"
+                )
+            try:
+                res = db.rpc("maintainer_ingest_supplement", _supplement_rpc_args(
+                    profile_id, supp, float(supp.get("confidence", confidence)),
+                    raw_text, not complete, item_reason,
+                )) or {}
+                s = res.get("status", "failed")
+                statuses.append(s)
+                if s == "staged" and supp_stage_reason is None:
+                    supp_stage_reason = res.get("stage_reason") or item_reason
+            except Exception as exc:
+                log.error("maintainer_ingest_supplement failed: %s", exc)
+                statuses.append("failed")
+
+        # Aggregate: all inserted → done; any staged (none failed) → staged; else failed
+        if not statuses or "failed" in statuses:
+            rpc_status = "failed"
+            n_ok = sum(1 for s in statuses if s in ("inserted", "staged"))
+            partial = (f"partial: {n_ok} of {len(supp_items)} supplements wrote successfully"
+                       if n_ok else None)
+            mark_rows(db, _ids(cluster), "failed", stage_reason=partial)
+        elif "staged" in statuses:
+            rpc_status = "staged"
+            mark_rows(db, _ids(cluster), "staged", stage_reason=supp_stage_reason)
         else:
-            result = write_supplement(db, cluster, profile_id, extracted, confidence, raw_text)
-        rpc_status = result.get("status", "failed")
+            rpc_status = "inserted"
+            mark_rows(db, _ids(cluster), "done")
+        # `extracted` stays the list — compose_confirmation handles it.
 
     else:
         # workout / could not classify — always stage as food for human review.
@@ -1148,6 +1212,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     chat_is_minor = {str(r["chat_id"]): bool(r.get("is_minor")) for r in identities}
     profile_ctx = _load_profile_contexts(identities)
     per_chat: dict[str, dict] = {}
+    brief_profiles: set[str] = set()  # profiles whose text the LLM classified as a brief request
 
     items = fetch_settled(db, settle_sec)
     summary["fetched"] = len(items)
@@ -1194,7 +1259,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                 db, cluster, api_key, model, now_iso,
                 conf_threshold, chat_is_minor, token, summary,
                 profile_ctx=profile_ctx, per_chat=per_chat, today=today_date,
-                learn_min_logs=learn_min_logs,
+                learn_min_logs=learn_min_logs, brief_profiles=brief_profiles,
             )
         except Exception as exc:
             summary["failed"] += 1
@@ -1213,18 +1278,21 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
             parts.append(f"{s} to review")
         telegram_send(token, int(chat_id_str), f"Done — {', '.join(parts)}.")
 
-    # Compose and send daily brief — best-effort, once per adult profile that had a food write
-    # Import here to avoid circular imports at module level
+    # Compose and send daily brief — best-effort. Two triggers:
+    #   1. an adult profile that had a food write (post-log nudge), and
+    #   2. any profile whose message the LLM classified as a brief request.
+    # Import here to avoid circular imports at module level.
     written_adult_profiles: set[str] = {
         str(r["profile_id"])
         for r in identities
         if not r.get("is_minor")
         and per_chat.get(str(r["chat_id"]), {}).get("written", 0) > 0
     }
-    if written_adult_profiles:
+    brief_targets = written_adult_profiles | brief_profiles
+    if brief_targets:
         try:
             from monitor.brief import compose_brief
-            for pid in written_adult_profiles:
+            for pid in brief_targets:
                 try:
                     compose_brief(db, pid, cfg, api_key, token, today_date)
                 except Exception as exc:

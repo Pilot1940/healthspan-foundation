@@ -5,7 +5,7 @@
 // injection safety) without a live DB or Telegram connection.
 // DB-layer tests (dedup row count, media_inbox schema) live in tests/unit/test_telegram_webhook.py.
 import { assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { verifySecretToken, guessKind, parseLogCommand } from "./index.ts";
+import { verifySecretToken, guessKind } from "./index.ts";
 
 // ── verifySecretToken ──────────────────────────────────────────────────────────
 
@@ -52,44 +52,9 @@ Deno.test("guessKind: liberal food net — shakes/drinks/dishes/packaged", () =>
   assertEquals(guessKind("electrolytes"), "food");
 });
 
-// parseLogCommand — explicit text-logging trigger. Brief stays default; only
-// "log:/add:/​/log/​/add" prefixed text enqueues for ingestion.
-Deno.test("parseLogCommand: recognised triggers return stripped body", () => {
-  assertEquals(parseLogCommand("log: took my magnesium"), "took my magnesium");
-  assertEquals(parseLogCommand("add: 2 eggs and toast"), "2 eggs and toast");
-  assertEquals(parseLogCommand("/log water 500ml"), "water 500ml");
-  assertEquals(parseLogCommand("/add berberine 500mg"), "berberine 500mg");
-  assertEquals(parseLogCommand("LOG:  Vitamin D3, vit K, magnesium"), "Vitamin D3, vit K, magnesium");
-  assertEquals(parseLogCommand("Add this shake"), "this shake"); // 'add ' + body
-  assertEquals(parseLogCommand("log:\nmultiline\nmeal"), "multiline\nmeal");
-});
-
-// Natural logging phrasing — leading action verb logs without a prefix, returning
-// the WHOLE text (the extractor needs the verb to read it as an intake).
-Deno.test("parseLogCommand: leading logging verbs log without a prefix", () => {
-  assertEquals(parseLogCommand("took my magnesium"), "took my magnesium");
-  assertEquals(parseLogCommand("took electrolytes"), "took electrolytes");
-  assertEquals(parseLogCommand("ate 2 eggs and toast"), "ate 2 eggs and toast");
-  assertEquals(parseLogCommand("had a protein shake"), "had a protein shake");
-  assertEquals(parseLogCommand("drank 500ml water"), "drank 500ml water");
-  assertEquals(parseLogCommand("finished my bedtime stack"), "finished my bedtime stack");
-  assertEquals(parseLogCommand("Taken berberine with lunch"), "Taken berberine with lunch");
-});
-
-Deno.test("parseLogCommand: non-commands return null (fall through to brief)", () => {
-  assertEquals(parseLogCommand("how am I doing today?"), null);
-  assertEquals(parseLogCommand("brief"), null);
-  assertEquals(parseLogCommand("summary please"), null);
-  assertEquals(parseLogCommand("what's my recovery?"), null);
-  assertEquals(parseLogCommand("log"), null);          // no body
-  assertEquals(parseLogCommand("logging my thoughts"), null); // 'logging' excluded (weak signal)
-  assertEquals(parseLogCommand("did I take my magnesium?"), null); // 'did' is a question opener
-  assertEquals(parseLogCommand("have I logged lunch?"), null);     // 'have' excluded
-  assertEquals(parseLogCommand("address change"), null);      // 'add' not a whole word
-  assertEquals(parseLogCommand("takeaway dinner later"), null); // 'takeaway' not a whole word
-  assertEquals(parseLogCommand(""), null);
-  assertEquals(parseLogCommand(undefined), null);
-});
+// NOTE: text routing no longer uses regex. All text-only messages are enqueued to
+// media_inbox and the drain's LLM decides log-vs-brief (see inbox_drain.py). guessKind
+// is now used ONLY as a hint for photo captions, so its tests below remain relevant.
 
 // A genuine workout/lab caption must still win over the broad food net (order matters).
 Deno.test("guessKind: specific kinds win over liberal food net", () => {
