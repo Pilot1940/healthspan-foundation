@@ -85,8 +85,9 @@ Maintainer-only RLS SELECT applies to `query_audit`, `wearable_sync_log`,
 **Extensions in use:**
 - **`pg_net`** — async HTTP from the DB. Drives the `fn_media_inbox_notify` trigger
   (migration 042) which POSTs to `trigger-drain` on every `media_inbox` INSERT.
-- **`vault`** — Supabase secret vault. Holds `TRIGGER_DRAIN_SECRET`, forwarded by
-  `fn_media_inbox_notify` to `trigger-drain` (migration 043).
+- **`vault`** — Supabase secret vault. `TRIGGER_DRAIN_SECRET` is no longer used (migration
+  047 reverted to no-auth): the call from `fn_media_inbox_notify` to `trigger-drain` carries
+  no auth header. The vault remains available for other secrets but is not in this path.
 - **`pgvector`** — **not currently used in this repo** (no embeddings tables defined
   here). Listed for completeness; the pgvector/semantic-search usage belongs to the
   separate BaySys system, not HealthSpan.
@@ -129,14 +130,15 @@ the per-function "additional secrets" lists below).
 
 #### `trigger-drain`
 - **verify_jwt:** `false`. No inbound user auth — called only by `pg_net`
-  (`net.http_post`) from `fn_media_inbox_notify`. The `TRIGGER_DRAIN_SECRET` (from the
-  Supabase vault) is forwarded in the request body for the function to verify.
+  (`net.http_post`) from `fn_media_inbox_notify`. The call carries **no auth header**
+  (migration 047 reverted to no-auth — see §7.4).
 - **Purpose:** Real-time drain dispatcher. Deduplicates within a **15-second** window via
   atomic CAS (`UPDATE system_config WHERE key = 'trigger_drain.last_dispatch_ts' AND
   updated_at < cutoff`). Only the winner fires a GitHub `repository_dispatch` `inbox-drain`
   event (`POST /repos/Pilot1940/healthspan-foundation/dispatches`). Returns
   `{ dispatched: true }` or `{ skipped: true }`.
-- **Additional secrets:** `GH_DISPATCH_TOKEN`, `TRIGGER_DRAIN_SECRET`.
+- **Additional secrets:** `GH_DISPATCH_TOKEN`. (`TRIGGER_DRAIN_SECRET` is deprecated/unused
+  — migration 047 reverted this path to no-auth.)
 
 #### `whoop-webhook`
 - **verify_jwt:** `false`. Verifies WHOOP **HMAC-SHA256** signature (key =
@@ -223,13 +225,14 @@ Set on the Supabase project (`supabase secrets set ...`); consumed by the edge f
 | `TELEGRAM_BOT_TOKEN` | active | telegram-webhook, whoop-webhook |
 | `TELEGRAM_WEBHOOK_SECRET` | active | telegram-webhook (inbound signature compare) |
 | `GH_DISPATCH_TOKEN` | active | telegram-webhook (send-brief), trigger-drain (inbox-drain) |
-| `TRIGGER_DRAIN_SECRET` | active | trigger-drain (verify forwarded body); also stored via `vault.create_secret` so `fn_media_inbox_notify` can forward it |
+| `TRIGGER_DRAIN_SECRET` | **deprecated / unused (mig 047)** | Formerly verified by trigger-drain and forwarded by `fn_media_inbox_notify`; migration 047 reverted this path to no-auth, so the secret is no longer consumed or forwarded anywhere. |
 | `ROUTINE_TRIGGER_URL` | **unused / legacy** | telegram-webhook (`maybeFireRoutine` fallback) |
 | `ROUTINE_BEARER` | **unused / legacy** | telegram-webhook (`maybeFireRoutine` fallback) |
 
-**⚠️ `TRIGGER_DRAIN_SECRET`** must be set via BOTH `supabase secrets set` AND
-`vault.create_secret`, then `trigger-drain` redeployed, before migration 043 has any
-effect.
+**Note:** `TRIGGER_DRAIN_SECRET` is **no longer required** — migration 047 reverted the
+`fn_media_inbox_notify` → `trigger-drain` call to no-auth (the vault scheme from migration
+043 was removed because `vault.decrypted_secrets` is not reachable from the pg_net trigger
+context). Nothing needs to be set or rotated for this secret. See §7.4.
 
 ### 2.5 AWS
 
@@ -294,7 +297,7 @@ telegram-webhook  (Edge fn, verify_jwt=false, service_role)
   │   AFTER INSERT ON media_inbox fires                        │
   │   fn_media_inbox_notify (SECURITY DEFINER, mig 042/043)    │
   │   net.http_post → POST /functions/v1/trigger-drain         │
-  │   (forwards TRIGGER_DRAIN_SECRET from Supabase vault)      │
+  │   (no auth header — mig 047)                               │
   │                          ▼                                 │
   │   trigger-drain (Edge fn, verify_jwt=false, service_role)  │
   │     Atomic CAS: UPDATE system_config                       │
@@ -527,7 +530,7 @@ rest-of-day actions, sends over Telegram, and returns the message text.
 ```
 Telegram photo
   → media_inbox INSERT (status=pending)
-  → pg_net trigger fn_media_inbox_notify  (forwards TRIGGER_DRAIN_SECRET)
+  → pg_net trigger fn_media_inbox_notify  (no auth header — mig 047)
   → trigger-drain edge fn  (15s CAS dedup on system_config.trigger_drain.last_dispatch_ts)
   → GitHub repository_dispatch: inbox-drain
   → GH Actions inbox-drain.yml
@@ -1114,7 +1117,7 @@ Run this after any migration that adds, removes, or renames tables or columns, o
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token (consumed by telegram-webhook and whoop-webhook) |
 | `TELEGRAM_WEBHOOK_SECRET` | Secret token for verifying Telegram webhook requests |
 | `GH_DISPATCH_TOKEN` | GitHub PAT used by trigger-drain to dispatch `inbox-drain` events |
-| `TRIGGER_DRAIN_SECRET` | Shared secret between `fn_media_inbox_notify` and the `trigger-drain` Edge function |
+| `TRIGGER_DRAIN_SECRET` | **Deprecated / unused (mig 047)** — this path reverted to no-auth; nothing to rotate. |
 
 After rotating a secret, redeploy any Edge function that consumes it — secrets are baked in at deploy time for Deno functions.
 

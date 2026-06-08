@@ -262,8 +262,8 @@ code{
 <p><strong>Extensions in use:</strong></p>
 <ul><li><strong><code>pg_net</code></strong> — async HTTP from the DB. Drives the <code>fn_media_inbox_notify</code> trigger</li></ul>
 <p>(migration 042) which POSTs to <code>trigger-drain</code> on every <code>media_inbox</code> INSERT.</p>
-<ul><li><strong><code>vault</code></strong> — Supabase secret vault. Holds <code>TRIGGER_DRAIN_SECRET</code>, forwarded by</li></ul>
-<p><code>fn_media_inbox_notify</code> to <code>trigger-drain</code> (migration 043).</p>
+<ul><li><strong><code>vault</code></strong> — Supabase secret vault. <code>TRIGGER_DRAIN_SECRET</code> is no longer used (migration</li></ul>
+<p>047 reverted to no-auth): the call from <code>fn_media_inbox_notify</code> to <code>trigger-drain</code> carries no auth header. The vault remains available for other secrets but is not in this path.</p>
 <ul><li><strong><code>pgvector</code></strong> — <strong>not currently used in this repo</strong> (no embeddings tables defined</li></ul>
 <p>here). Listed for completeness; the pgvector/semantic-search usage belongs to the separate BaySys system, not HealthSpan.</p>
 <p><strong>Connection modes:</strong></p>
@@ -298,10 +298,10 @@ code{
 <p>ordering — a crash between leaves no idempotency record, so Telegram retries the full path). The pg_net trigger fires independently and in parallel with <code>maybeFireRoutine</code>.</p>
 <h4><code>trigger-drain</code></h4>
 <ul><li><strong>verify_jwt:</strong> <code>false</code>. No inbound user auth — called only by <code>pg_net</code></li></ul>
-<p>(<code>net.http_post</code>) from <code>fn_media_inbox_notify</code>. The <code>TRIGGER_DRAIN_SECRET</code> (from the Supabase vault) is forwarded in the request body for the function to verify.</p>
+<p>(<code>net.http_post</code>) from <code>fn_media_inbox_notify</code>. The call carries <strong>no auth header</strong> (migration 047 reverted to no-auth — see §7.4).</p>
 <ul><li><strong>Purpose:</strong> Real-time drain dispatcher. Deduplicates within a <strong>15-second</strong> window via</li></ul>
 <p>atomic CAS (<code>UPDATE system_config WHERE key = &#x27;trigger_drain.last_dispatch_ts&#x27; AND updated_at &lt; cutoff</code>). Only the winner fires a GitHub <code>repository_dispatch</code> <code>inbox-drain</code> event (<code>POST /repos/Pilot1940/healthspan-foundation/dispatches</code>). Returns <code>{ dispatched: true }</code> or <code>{ skipped: true }</code>.</p>
-<ul><li><strong>Additional secrets:</strong> <code>GH_DISPATCH_TOKEN</code>, <code>TRIGGER_DRAIN_SECRET</code>.</li></ul>
+<ul><li><strong>Additional secrets:</strong> <code>GH_DISPATCH_TOKEN</code>. (<code>TRIGGER_DRAIN_SECRET</code> is deprecated/unused — migration 047 reverted this path to no-auth.)</li></ul>
 <h4><code>whoop-webhook</code></h4>
 <ul><li><strong>verify_jwt:</strong> <code>false</code>. Verifies WHOOP <strong>HMAC-SHA256</strong> signature (key =</li></ul>
 <p><code>WHOOP_CLIENT_SECRET</code>, message = timestamp + raw body, base64).</p>
@@ -419,8 +419,8 @@ code{
 </tr>
 <tr>
 <td><code>TRIGGER_DRAIN_SECRET</code></td>
-<td>active</td>
-<td>trigger-drain (verify forwarded body); also stored via <code>vault.create_secret</code> so <code>fn_media_inbox_notify</code> can forward it</td>
+<td><strong>deprecated / unused (mig 047)</strong></td>
+<td>Formerly verified by trigger-drain and forwarded by <code>fn_media_inbox_notify</code>; migration 047 reverted this path to no-auth, so the secret is no longer consumed or forwarded anywhere.</td>
 </tr>
 <tr>
 <td><code>ROUTINE_TRIGGER_URL</code></td>
@@ -433,7 +433,7 @@ code{
 <td>telegram-webhook (<code>maybeFireRoutine</code> fallback)</td>
 </tr>
 </tbody></table></div>
-<p><strong>⚠️ <code>TRIGGER_DRAIN_SECRET</code></strong> must be set via BOTH <code>supabase secrets set</code> AND <code>vault.create_secret</code>, then <code>trigger-drain</code> redeployed, before migration 043 has any effect.</p>
+<p><strong>Note:</strong> <code>TRIGGER_DRAIN_SECRET</code> is <strong>no longer required</strong> — migration 047 reverted the <code>fn_media_inbox_notify</code> → <code>trigger-drain</code> call to no-auth (the vault scheme from migration 043 was removed because <code>vault.decrypted_secrets</code> is not reachable from the pg_net trigger context). Nothing needs to be set or rotated for this secret. See §7.4.</p>
 <h3>2.5 AWS</h3>
 <ul><li><strong>S3 — <code>health-media</code>:</strong> private S3-backed Supabase Storage bucket. Access via **signed</li></ul>
 <p>URLs only**. Photo objects stored at <code>telegram/&lt;profile_id&gt;/&lt;update_id&gt;.jpg</code>. Created via <code>python scripts/hs_ops.py setup-telegram-storage</code>. Uploads use <code>upsert: false</code> (a retry fails silently but is non-fatal — the drain re-fetches).</p>
@@ -492,7 +492,7 @@ code{
 <li>AFTER INSERT ON media_inbox fires</li>
 <li>fn_media_inbox_notify (SECURITY DEFINER, mig 042/043)</li>
 <li>net.http_post → POST /functions/v1/trigger-drain</li>
-<li>(forwards TRIGGER_DRAIN_SECRET from Supabase vault)</li>
+<li>(no auth header — mig 047)</li>
 <li>trigger-drain (Edge fn, verify_jwt=false, service_role)</li>
 <li>Atomic CAS: UPDATE system_config</li>
 <li>WHERE key=&#x27;trigger_drain.last_dispatch_ts&#x27;</li>
@@ -770,18 +770,11 @@ code{
 </tr></thead><tbody>
 <tr>
 <td><strong>food_logs</strong></td>
-<td>`id, profile_id, meal_type (CHECK breakfast\</td>
-<td>lunch\</td>
-<td>dinner\</td>
-<td>snack\</td>
-<td>drink\</td>
-<td>supplement), description, calories, protein_g, carbs_g, fat_g, fiber_g, source, logged_at, log_date, meal_time, location, foods (jsonb), verdict, flags (text[]), is_day_summary, sprint_id, source_photo_path, source_log_path, image_url, notes<code>. </code>is_day_summary = TRUE` rows are daily totals, not meals — exclude from per-meal analysis. Calorie strings must have thousands separators stripped.</td>
+<td><code>id, profile_id, meal_type (CHECK breakfast|lunch|dinner|snack|drink|supplement), description, calories, protein_g, carbs_g, fat_g, fiber_g, source, logged_at, log_date, meal_time, location, foods (jsonb), verdict, flags (text[]), is_day_summary, sprint_id, source_photo_path, source_log_path, image_url, notes</code>. <code>is_day_summary = TRUE</code> rows are daily totals, not meals — exclude from per-meal analysis. Calorie strings must have thousands separators stripped.</td>
 </tr>
 <tr>
 <td>food_guidance</td>
-<td>Per-profile avoid/minimize/superfood list. `item, classification (CHECK avoid\</td>
-<td>minimize\</td>
-<td>superfood), reason, alternative, category, scope, profile_id (nullable — NULL = global family row), source, is_active`.</td>
+<td>Per-profile avoid/minimize/superfood list. <code>item, classification (CHECK avoid|minimize|superfood), reason, alternative, category, scope, profile_id (nullable — NULL = global family row), source, is_active</code>.</td>
 </tr>
 <tr>
 <td>food_reference</td>
@@ -804,25 +797,15 @@ code{
 </tr></thead><tbody>
 <tr>
 <td><strong>supplement_intake_logs</strong></td>
-<td>`id, profile_id, regimen_id, supplement_id, taken_at, taken_on, dose_amount, dose_unit, source (CHECK manual\</td>
-<td>journal\</td>
-<td>skill\</td>
-<td>csv\</td>
-<td>photo\</td>
-<td>telegram), notes, created_at<code>. **</code>taken_on<code> is </code>GENERATED ALWAYS AS ((taken_at AT TIME ZONE &#x27;UTC&#x27;)::date) STORED<code>** — never INSERT/UPDATE it (error 428C9); valid only as an </code>ON CONFLICT` target. UNIQUE (profile_id, supplement_id, taken_on, source).</td>
+<td><code>id, profile_id, regimen_id, supplement_id, taken_at, taken_on, dose_amount, dose_unit, source (CHECK manual|journal|skill|csv|photo|telegram), notes, created_at</code>. <strong><code>taken_on</code> is <code>GENERATED ALWAYS AS ((taken_at AT TIME ZONE &#x27;UTC&#x27;)::date) STORED</code></strong> — never INSERT/UPDATE it (error 428C9); valid only as an <code>ON CONFLICT</code> target. UNIQUE (profile_id, supplement_id, taken_on, source).</td>
 </tr>
 <tr>
 <td>supplements</td>
-<td>Catalog: `name, display_name, brand, key_active, category (CHECK supplement\</td>
-<td>medication\</td>
-<td>probiotic\</td>
-<td>other), default_unit, is_medication, is_compound, owner_profile_id, is_custom, is_active`.</td>
+<td>Catalog: <code>name, display_name, brand, key_active, category (CHECK supplement|medication|probiotic|other), default_unit, is_medication, is_compound, owner_profile_id, is_custom, is_active</code>.</td>
 </tr>
 <tr>
 <td>supplement_regimens</td>
-<td>Per-profile protocol: `supplement_id, dose_amount/unit, timing (text[]), frequency, cycle_days_on/off, start_date, end_date, status (active\</td>
-<td>discontinued\</td>
-<td>planned), purpose, program_id`. Cyclical on/off aware; date-window exposure drives correlation, not status.</td>
+<td>Per-profile protocol: <code>supplement_id, dose_amount/unit, timing (text[]), frequency, cycle_days_on/off, start_date, end_date, status (active|discontinued|planned), purpose, program_id</code>. Cyclical on/off aware; date-window exposure drives correlation, not status.</td>
 </tr>
 </tbody></table></div>
 <h4>Biomarkers</h4>
@@ -875,15 +858,7 @@ code{
 </tr></thead><tbody>
 <tr>
 <td><strong>media_inbox</strong></td>
-<td>`id, profile_id, chat_id, kind (CHECK food\</td>
-<td>workout\</td>
-<td>lab\</td>
-<td>dexa\</td>
-<td>unknown), storage_path, caption, status (CHECK pending\</td>
-<td>processing\</td>
-<td>done\</td>
-<td>failed\</td>
-<td>staged), stage_reason, whoop_id, media_group_id, created_at, processed_at, result_ref<code>. Durable inbound queue. </code>profile_id<code> derived only from </code>telegram_identities(chat_id)<code> — never from caption (injection rule); caption stored as data, never executed. </code>media_group_id` clusters Telegram album bursts.</td>
+<td><code>id, profile_id, chat_id, kind (CHECK food|workout|lab|dexa|unknown), storage_path, caption, status (CHECK pending|processing|done|failed|staged), stage_reason, whoop_id, media_group_id, created_at, processed_at, result_ref</code>. Durable inbound queue. <code>profile_id</code> derived only from <code>telegram_identities(chat_id)</code> — never from caption (injection rule); caption stored as data, never executed. <code>media_group_id</code> clusters Telegram album bursts.</td>
 </tr>
 <tr>
 <td>stg_food_log_review</td>
@@ -906,10 +881,7 @@ code{
 </tr></thead><tbody>
 <tr>
 <td>training_programs</td>
-<td>`profile_id, name, objective, target_event, start_date, end_date, status (planned\</td>
-<td>active\</td>
-<td>done\</td>
-<td>abandoned)`.</td>
+<td><code>profile_id, name, objective, target_event, start_date, end_date, status (planned|active|done|abandoned)</code>.</td>
 </tr>
 <tr>
 <td>program_phases</td>
@@ -936,14 +908,7 @@ code{
 </tr></thead><tbody>
 <tr>
 <td>wearable_sync_log</td>
-<td>`profile_id, provider, sync_type, status (CHECK pending\</td>
-<td>in_progress\</td>
-<td>success\</td>
-<td>failed), method (CHECK csv\</td>
-<td>screenshot\</td>
-<td>photo\</td>
-<td>manual\</td>
-<td>api), records_in/upserted/skipped/failed, document_id, source_path, started_at, completed_at`. Maintainer-only SELECT.</td>
+<td><code>profile_id, provider, sync_type, status (CHECK pending|in_progress|success|failed), method (CHECK csv|screenshot|photo|manual|api), records_in/upserted/skipped/failed, document_id, source_path, started_at, completed_at</code>. Maintainer-only SELECT.</td>
 </tr>
 <tr>
 <td>wearable_sync_errors</td>
@@ -951,8 +916,7 @@ code{
 </tr>
 <tr>
 <td>query_audit</td>
-<td>`profile_id, ts, kind (CHECK catalog\</td>
-<td>adhoc), name_or_sql, params (jsonb), quality_verdict (jsonb), row_count, flagged`. Every skill read lands here. Maintainer-only SELECT.</td>
+<td><code>profile_id, ts, kind (CHECK catalog|adhoc), name_or_sql, params (jsonb), quality_verdict (jsonb), row_count, flagged</code>. Every skill read lands here. Maintainer-only SELECT.</td>
 </tr>
 <tr>
 <td>trend_alerts</td>
@@ -975,8 +939,7 @@ code{
 </tr>
 <tr>
 <td>health_context_notes</td>
-<td>`profile_id, kind (CHECK current\</td>
-<td>log), summary, refs (jsonb), s3_keys (text[]), supersedes_id<code>. Narrative + references only — never store numeric values here (numbers always come from the live DB). One </code>current` note per profile.</td>
+<td><code>profile_id, kind (CHECK current|log), summary, refs (jsonb), s3_keys (text[]), supersedes_id</code>. Narrative + references only — never store numeric values here (numbers always come from the live DB). One <code>current</code> note per profile.</td>
 </tr>
 <tr>
 <td>travel_log</td>
@@ -1576,7 +1539,7 @@ supabase functions deploy telegram-webhook --no-verify-jwt</code></pre>
 </tr>
 <tr>
 <td><code>TRIGGER_DRAIN_SECRET</code></td>
-<td>Shared secret between <code>fn_media_inbox_notify</code> and the <code>trigger-drain</code> Edge function</td>
+<td><strong>Deprecated / unused (mig 047)</strong> — this path reverted to no-auth; nothing to rotate.</td>
 </tr>
 </tbody></table></div>
 <p>After rotating a secret, redeploy any Edge function that consumes it — secrets are baked in at deploy time for Deno functions.</p>
