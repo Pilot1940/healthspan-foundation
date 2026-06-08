@@ -422,20 +422,29 @@ push/confirmation wording (`compose_confirmation`, `composePush`): growth/perfor
 language only, never deficit/restriction words. This is enforced at the
 `telegram-webhook` ack and again in the Python drain.
 
-### 3.2 Text Message → Daily Brief Pipeline
+### 3.2 Text Message → Daily Brief (or Log) Pipeline
 
-A **text-only** Telegram message (no photo) skips `media_inbox` entirely.
+A **text-only** Telegram message has two routes. If it starts with an explicit log trigger
+(`log:` / `add:` / `/log` / `/add`, case-insensitive — `parseLogCommand`), the stripped body is
+enqueued as a **text-only `media_inbox` row** (`storage_path = null`, `kind = 'unknown'`) and flows
+through the *same* drain as photos (the unknown-classifier reads food/supplement/biomarker from the
+caption text — no image needed); the user gets "📥 Got it — logging…" then a "✅ … logged"
+confirmation from the drain. **All other text** (e.g. "how am I doing today?", "brief", "summary")
+defaults to the daily brief, skipping `media_inbox` entirely. (Bare-text-defaults-to-log was
+deliberately not done — see `BACKLOG.md` #6.)
 
 ```
-USER (Telegram text, e.g. "how am I doing today?")
+USER (Telegram text)
   ▼
-telegram-webhook  (no media → guessKind yields no media kind)
+telegram-webhook
   │  Identity + update_id dedup as above
-  │  Fires GitHub repository_dispatch: send-brief
-  │    POST api.github.com/.../dispatches
-  │    { event_type:"send-brief", client_payload:{ profile_id } }
-  ▼
-send-brief.yml  (ubuntu-latest, 10-min timeout)
+  │
+  ├─ "log:/add: …"  → INSERT media_inbox { kind:'unknown', storage_path:null, caption:body }
+  │                    → pg_net trigger → drain (extracts from text) → "✅ … logged"
+  │
+  └─ anything else  → Fires GitHub repository_dispatch: send-brief
+  ▼                     POST api.github.com/.../dispatches
+send-brief.yml          { event_type:"send-brief", client_payload:{ profile_id } }
   │  python3 -m monitor.brief --profile-id <payload.profile_id>
   ▼
 monitor/brief.py → compose_brief()

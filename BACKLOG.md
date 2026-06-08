@@ -105,9 +105,17 @@ take the magnesium?") → user reply lands as a follow-up message → correlated
 
 ---
 
-## #6 — Text-only messages can't log data (always route to brief) — **OPEN, usability**
+## #6 — Text-only messages can't log data (always route to brief) — **PARTIALLY SHIPPED**
 
-**Severity:** HIGH (usage-dropper) · **Owner:** PC (design) → CC (build) · **Status:** OPEN.
+**Severity:** HIGH (usage-dropper) · **Owner:** PC (design) → CC (build) · **Status:** PARTIALLY
+SHIPPED 2026-06-08 — explicit `log:`/`add:`/`/log`/`/add` trigger now logs via text (PC chose the
+additive option). Bare-text-defaults-to-log (full inversion) intentionally **deferred** — that's a
+production-routing change needing the clarification loop (#5) + confirmation UX designed first.
+
+**Shipped (additive):** `telegram-webhook` `parseLogCommand` — text starting with `log:`/`add:`/
+`/log`/`/add` enqueues a text-only `media_inbox` row (null storage_path, kind=unknown) → pg_net
+trigger fires the drain → unknown-classifier extracts food/supplement/biomarker from the caption →
+`maintainer_ingest_*` → confirmation ("✅ … logged"). Bare text still → brief. 15 parser cases pass.
 
 **Where it bites:** `telegram-webhook` routes **every** text-only message to the daily brief
 (`if (!isMediaMessage) → send-brief`). So "Supplements vitamin D3, vit K, magnesium, fish oil,
