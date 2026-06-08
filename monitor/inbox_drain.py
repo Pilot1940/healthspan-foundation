@@ -297,13 +297,33 @@ def lookup_metric(db: DbRest, query: str) -> list[dict]:
     )
 
 
+_GENERIC_SUPP_TERMS = frozenset({
+    "supplement", "supplements", "vitamin", "vitamins", "pill", "pills", "tablet",
+    "tablets", "capsule", "capsules", "med", "meds", "medication", "medicine",
+    "thing", "things", "stuff", "one", "it", "dose", "regimen", "stack",
+})
+_SUPP_STOPWORDS = frozenset({
+    "my", "a", "an", "the", "took", "take", "taken", "taking", "some", "of", "at",
+    "in", "on", "night", "nighttime", "morning", "evening", "bedtime", "lunch",
+    "dinner", "today", "tonight", "this", "that", "had", "have", "just",
+})
+
+
 def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
     """Resolve a supplement by name. The LLM returns human display names
     ("Magnesium Citrate", "Vitamin D3"), so match display_name first, then fall back
-    to the snake_case internal name."""
+    to the snake_case internal name.
+
+    Vague/generic references ("my supplement", "a pill", "vitamin") return NO match so the
+    caller stages for clarification instead of fuzzy-matching a random row (e.g. "supplement"
+    → "Precision Supplements")."""
     q = (query or "").strip()
     if not q:
         return []
+    tokens = [t for t in "".join(ch if ch.isalnum() else " " for ch in q.lower()).split()
+              if t not in _SUPP_STOPWORDS]
+    if not tokens or all(t in _GENERIC_SUPP_TERMS for t in tokens):
+        return []  # too vague to identify a specific supplement → clarify
     rows = db.select(
         "supplements",
         select="id,name,display_name,default_unit",
