@@ -821,6 +821,43 @@ def compose_confirmation(kind: str, rpc_status: str, extracted, is_minor: bool) 
     return "✅ Logged."
 
 
+def describe_stage(api_key: str, model: str, raw_text: str, kind: str,
+                   stage_reason: str | None, extracted) -> str:
+    """LLM-written, specific 'here's what was unclear and what to send' line for an adult
+    whose item went to review — instead of a bare 'Queued for review'. Best-effort: on any
+    error/timeout it falls back to a templated message that still surfaces the reason."""
+    reason = stage_reason or "I need a little more detail"
+    fallback = f"📋 Saved for review — {reason}. Reply with the missing detail and I'll finish it."
+    try:
+        items = extracted if isinstance(extracted, list) else [extracted]
+        names = ", ".join(
+            str(x.get("name") or x.get("description") or "").strip()
+            for x in items if isinstance(x, dict) and (x.get("name") or x.get("description"))
+        )
+        prompt = (
+            f'A user messaged a health logger: "{raw_text}". It could not be auto-saved.\n'
+            f'Internal reason: "{reason}". Detected item(s): {names or "n/a"}.\n'
+            'Reply with ONE short, warm line (max ~160 chars, plain text, NO emoji) that says '
+            'specifically what was unclear and exactly what to send back to complete it. '
+            'Name the item and the missing field; do not apologise or add filler.'
+        )
+        resp = httpx.post(
+            _ANTHROPIC_URL,
+            headers={"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION,
+                     "content-type": "application/json"},
+            json={"model": model, "max_tokens": 150,
+                  "system": "You write concise, friendly confirmations for a health-logging bot. No emoji.",
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        text = (resp.json()["content"][0]["text"] or "").strip()
+        return f"📋 {text}" if text else fallback
+    except Exception as exc:
+        log.warning("describe_stage failed, using fallback: %s", exc)
+        return fallback
+
+
 # ── running totals (PostgREST — no psycopg2 in cloud) ────────────────────────
 
 def _load_profile_contexts(identities: list[dict]) -> dict[str, dict]:
@@ -986,11 +1023,13 @@ def _process_cluster(
         pass
     elif "_stage_reason" in extracted:
         # Recoverable parse failure — stage for review, not a hard fail
-        mark_rows(db, _ids(cluster), "staged", stage_reason=extracted["_stage_reason"])
+        reason = extracted["_stage_reason"]
+        mark_rows(db, _ids(cluster), "staged", stage_reason=reason)
         summary["staged"] += 1
         if per_chat is not None:
             per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
-        msg = "📋 I'll check this one with PC. Thanks!" if is_minor else "📋 Queued for review."
+        msg = ("📋 I'll check this one with PC. Thanks!" if is_minor
+               else describe_stage(api_key, model, raw_text, kind, reason, {}))
         telegram_send(token, chat_id, msg)
         return
     elif "_error" in extracted:
@@ -1012,6 +1051,7 @@ def _process_cluster(
     confidence = float(extracted.get("confidence", 0.0)) if isinstance(extracted, dict) else 0.0
     rpc_status = "failed"
     n_written = 1  # how many rows this cluster wrote — multi-item food/supplement set this
+    stage_reason_out: str | None = None  # reason surfaced in the descriptive review message
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
@@ -1084,6 +1124,7 @@ def _process_cluster(
         elif "staged" in statuses:
             rpc_status = "staged"
             mark_rows(db, _ids(cluster), "staged", stage_reason=food_stage_reason)
+            stage_reason_out = food_stage_reason
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
@@ -1216,6 +1257,7 @@ def _process_cluster(
         elif "staged" in statuses:
             rpc_status = "staged"
             mark_rows(db, _ids(cluster), "staged", stage_reason=supp_stage_reason)
+            stage_reason_out = supp_stage_reason
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
@@ -1234,6 +1276,7 @@ def _process_cluster(
         result = write_food(db, cluster, profile_id, extracted, 0.0, raw_text,
                             force_stage=True, stage_reason=stage_rsn)
         rpc_status = result.get("status", "failed")
+        stage_reason_out = stage_rsn
 
     if rpc_status == "inserted":
         summary["written"] += n_written
@@ -1249,6 +1292,12 @@ def _process_cluster(
 
     # Telegram confirmation — append running food totals after a successful write
     msg = compose_confirmation(kind, rpc_status, extracted, is_minor)
+
+    # Descriptive, LLM-written review feedback for an adult whose item staged — replaces the
+    # bare "Queued for review" with what was unclear and what to send. Minors keep the gentle
+    # "I'll check with PC" wording (no machinery exposed).
+    if rpc_status == "staged" and not is_minor:
+        msg = describe_stage(api_key, model, raw_text, kind, stage_reason_out, extracted)
 
     # Viome cross-check lines (food, inserted, adult only)
     if kind == "food" and rpc_status == "inserted" and not is_minor and viome_verdicts:
