@@ -1,5 +1,22 @@
 # HealthSpan Skill — Changelog
 
+## v3.14.3 — Single extractor + confidence gate + portion scaling (2026-06-08, advisor clean pass)
+
+**The structural fix for "I fixed it but it happened again" — one prompt, one source of truth — plus clarify-on-uncertainty and portion-aware references. NEEDS LIVE VERIFICATION.**
+
+### One extractor (`inbox_drain.py`)
+- Collapsed `_VISION_PROMPTS` to a single `unknown` prompt used for every path (text + photo). Deleted the dead standalone `supplement` prompt (`guessKind` never emitted it) and the drifted `food`/`lab`/`dexa` copies. A fix now applies everywhere because there's one prompt. `vision_extract` always uses it; the re-dispatch always unwraps `{kind,data}` (the model's kind wins over the `guessKind` hint).
+- Enriched it with the full food decomposition + nutrition-label rules AND a first-class **"WHEN UNSURE OF IDENTITY, DO NOT GUESS — confidence <0.3"** escape into the clarify loop.
+
+### Confidence gate ENFORCED
+- `ingest.confidence_threshold` was stored but never used. Now food/supplement items with an **explicit** confidence below it stage → clarify. Safe default: missing confidence = 1.0 (estimates don't stage — only the model's own "I'm unsure" does). Threshold 0.7 → **0.3** (clarify on identity, estimate on quantity).
+
+### Portion-scaled references (#10)
+- The extractor returns a `servings` multiplier (half a shake → 0.5, two bottles → 2). When a `food_reference` matches, the drain scales its macros by `servings`, so "half a Thai Tea shake" logs 95 kcal / 17.5P instead of the full 190 / 35.
+
+### Reply-to-clarify storage fix
+- `clarify_message_id` is now stored on the **main** supplement/food staging path (it was only on the parse-fail path — the live test caught the gap, so replies had nothing to correlate to).
+
 ## v3.14.2 — Reply-to-clarify loop + BMR-correct energy balance (2026-06-08)
 
 **You can now REPLY to a staged item to fix it — the LLM asks what's unclear and re-extracts. Plus a real energy-balance bug fixed.**
