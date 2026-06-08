@@ -753,6 +753,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 046 | claim_inbox_cluster_atomic | `claim_inbox_cluster(uuid[])` — atomic all-or-nothing cluster claim (`FOR UPDATE`, no SKIP LOCKED); SECURITY INVOKER. |
 | 047 | fix_media_inbox_notify | Reverts `fn_media_inbox_notify` to NO auth header (vault lookup returned NULL in pg_net context, causing 401 stalls). trigger-drain runs no-auth. |
 | 048 | app_timezone | Seeds `app.timezone='Asia/Bangkok'` in `system_config`. The daily brief computes "today" as a LOCAL-day UTC window over `logged_at`/`taken_at` instead of the UTC-derived `log_date`/`taken_on` (fixes the 07:00-ICT day rollover + UTC display). |
+| 049 | clarify_loop | `media_inbox.clarify_message_id` + `clarify_count` for the reply-to-clarify loop: a staged item's review message id is stored, a user reply re-queues it (fresh INSERT → AFTER-INSERT trigger fires) with the clarification + original image; `clarify_count` caps rounds at 2. |
 
 ---
 

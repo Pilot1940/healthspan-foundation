@@ -99,6 +99,16 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   **047 (applied 2026-06-08)** reverts `fn_media_inbox_notify` to NO auth header (vault
   unreachable from pg_net → 401 stalls); trigger-drain runs no-auth (safe — only fires a GH
   dispatch). **048 (applied 2026-06-08)** seeds `app.timezone='Asia/Bangkok'` in `system_config`.
+  **049 (applied 2026-06-08)** `media_inbox.clarify_message_id` + `clarify_count` for the
+  reply-to-clarify loop.
+- **Reply-to-clarify loop (2026-06-08, telegram-webhook v6)**: a staged item gets an LLM-written
+  "what's unclear — reply to fix it" message (`describe_stage`, minor-aware); the drain stores that
+  message id on the staged rows (`telegram_send` returns it). A user REPLY → webhook INSERTs a fresh
+  `media_inbox` row (orig caption + `[clarification: …]` + orig image) so the **AFTER-INSERT** trigger
+  fires (UPDATE wouldn't); orig row retired; LLM re-extracts. `clarify_count` caps at 2 → hands to PC.
+  Supplements now log without a dose (`supplement_is_complete` = id-only; dose defaults from regimen).
+- **Brief energy balance (2026-06-08)**: expenditure = BMR (`calorie_floor` from context) + WHOOP
+  activity, not just the activity burn — fixes the false surplus. Adult-only line (minors: growth framing).
 - **LLM-routed text (2026-06-08, telegram-webhook v15 + inbox_drain)**: the regex gate is GONE.
   ALL text-only Telegram messages enqueue to `media_inbox` (kind=unknown); the drain's `unknown`
   prompt classifies each as a LOG (food/supplement/biomarker, **multi-item**) or `{kind:"brief"}`.

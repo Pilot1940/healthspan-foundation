@@ -1,5 +1,21 @@
 # HealthSpan Skill — Changelog
 
+## v3.14.2 — Reply-to-clarify loop + BMR-correct energy balance (2026-06-08)
+
+**You can now REPLY to a staged item to fix it — the LLM asks what's unclear and re-extracts. Plus a real energy-balance bug fixed.**
+
+### Reply-to-clarify loop (`telegram-webhook`, `inbox_drain.py`, migration 049)
+- When an item stages, the bot sends an **LLM-written** "here's what was unclear — reply to fix it" line (instead of "Queued for review") and stores that message's Telegram id on the staged rows.
+- **Reply** to that message → `telegram-webhook` INSERTs a fresh `media_inbox` row (original caption + `[clarification: …]` + the original image) so the AFTER-INSERT drain trigger fires (an UPDATE wouldn't — the trigger is INSERT-only); the original staged row is retired. The LLM re-extracts with the new detail. `clarify_count` caps rounds at 2, then hands off to PC.
+- `describe_stage` is **minor-aware** — warm, simple wording for Dea, so the loop works for minors too (not just adults).
+- Migration 049: `media_inbox.clarify_message_id` + `clarify_count` (additive).
+
+### Supplements log without a dose (`inbox_drain.py`)
+- `supplement_is_complete` now requires only a resolved supplement id; dose is optional (defaults from the regimen when present). Fixes Nutritional Yeast / Oral Lozenges (no regimen dose) staging every time.
+
+### Energy balance fixed (`brief.py`)
+- The brief did `intake − WHOOP_burn`, treating activity energy as the whole-day total and ignoring BMR — a 755 kcal activity burn read as a +1448 "surplus". Now `expenditure = BMR (calorie_floor from context) + activity` → e.g. 2203 in − 2690 out = −487 **deficit**. Flows into the Claude actions text so recommendations stop citing a fake surplus. Adult-only line (minors keep growth framing).
+
 ## v3.14.1 — Vision robustness + honest multi-item confirmations (2026-06-08)
 
 **Fixes that surfaced during onboarding: a labelled-bottle photo stuck in review, and a 2-item log reported as "1".**

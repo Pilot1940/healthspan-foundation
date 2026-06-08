@@ -72,9 +72,16 @@ sleep, supplements adherence, biomarker + weight trends) as a rendered image or 
 
 ---
 
-## #5 — Telegram clarification loop before LLM processes — **NEW, design wanted**
+## #5 — Telegram clarification loop before LLM processes — **SHIPPED 2026-06-08 (pending live verify)**
 
-**Severity:** MED · **Owner:** PC (design) → CC (build) · **Status:** OPEN.
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — reply-to-clarify built (migration 049 +
+`telegram-webhook` v6 + `inbox_drain` describe_stage). When an item stages, the bot sends an
+LLM-written "what's unclear — reply to fix it" message and stores its Telegram message id; a user
+REPLY re-queues the item (fresh INSERT so the AFTER-INSERT trigger fires) with the clarification +
+original image appended, and the LLM re-extracts. `clarify_count` caps at 2 rounds → hands to PC.
+Minor-aware (works for Dea with warm wording). **Acceptance test = one live reply round-trip in
+Telegram** (a staged item + a reply that logs it) — pending PC's confirmation. Design questions
+below are answered by the implementation; kept for reference.
 
 **Idea:** When an inbound ingestion is ambiguous or incomplete, Telegram itself should **ask the
 user back for the missing details** (in-chat reply), and only **after** the user answers does the
