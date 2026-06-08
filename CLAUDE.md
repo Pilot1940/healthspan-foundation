@@ -1,5 +1,27 @@
 # Healthspan Foundation — Claude Rules
 
+## 📖 Definitive Guide & Maintenance — read these first
+
+**`docs/SYSTEM.md`** is the single definitive manifest of this system — overview, infrastructure,
+event-driven pipelines, full schema, codebase map, new-user onboarding, and the **maintenance
+runbook (§7)**. Read it (Markdown is the LLM-friendly source) before doing any maintenance.
+**`docs/SYSTEM.html`** is the same content as a styled, navigable page for humans
+(`file://…/docs/SYSTEM.html`). Keep the two in sync — when you change `SYSTEM.md`, regenerate the HTML.
+
+**`BACKLOG.md`** is the living record of what's open, what's shipped, and how things were decided.
+Check it for context before building; log new gaps and shipped fixes there.
+
+Common maintenance tasks → SYSTEM.md §7:
+- **Clear the review queue** ("N to review") → §7.2a — impersonate maintainer, `maintainer_ingest_*`
+  with `p_force_stage := false`, then retire the `stg_*_review` + `media_inbox` rows.
+- **Force a stuck drain** → §7.2 (`gh workflow run inbox-drain -f settle_sec=0`).
+- **Apply a migration** → §7.1 (`python3 scripts/hs_ops.py apply migrations/NNN_*.sql`).
+- **Deploy an edge function** → §7.4 (run from repo root; watch for the "No change found" CLI skip).
+- **WHOOP sync / score states** → §7.3. **Rotate secrets** → §7.6. **Regenerate SCHEMA-MAP** → §7.5.
+
+This file (CLAUDE.md) + the auto-memory under `memory/` carry the *latest* deltas; SYSTEM.md carries
+the *full* picture. If they disagree, the live DB and this file win — then update SYSTEM.md.
+
 ## Non-Negotiable Rules
 
 1. **Never hardcode thresholds** — all thresholds must come from the `system_config` table.

@@ -995,6 +995,48 @@ ORDER BY created_at DESC LIMIT 20;
 
 Failed rows with a `stage_reason` are expected (completeness gate); rows with `_error` in stage_reason indicate a pipeline fault and need investigation.
 
+### 7.2a Clearing the Review Queue (the most common ops task)
+
+When the bot says "**N to review**", incomplete items are parked in `stg_*_review` with `status='pending'` and a `stage_reason`. To see and clear them:
+
+```sql
+-- What's waiting, and why
+SELECT id, description, meal_type, calories, protein_g, carbs_g, fat_g, stage_reason, created_at
+  FROM stg_food_log_review WHERE status = 'pending' ORDER BY created_at DESC;
+-- (also stg_supplement_intake_review, stg_biomarker_review)
+```
+
+To **complete** an item and write it to production, fill the missing fields and call the contract RPC `maintainer_ingest_food` / `maintainer_ingest_supplement` / `maintainer_ingest_biomarker` with `p_force_stage := false`. These RPCs are `SECURITY DEFINER` and gate on `is_maintainer() AND has_profile_access()`, both keyed on `auth.uid()`. From a direct `psql`/psycopg2 connection (role `postgres`, `auth.uid()` is NULL) you must **impersonate the maintainer** by setting the JWT claim first:
+
+```sql
+-- 1. Impersonate PC (auth_user_id from family_memberships where profiles.is_maintainer)
+SELECT set_config('request.jwt.claims',
+  json_build_object('sub','<maintainer_auth_user_id>','role','authenticated')::text, true);
+
+-- 2. Write to production (force_stage := false routes through to food_logs)
+SELECT maintainer_ingest_food(
+  p_profile_id := '<profile_id>', p_meal_type := 'snack',
+  p_description := 'alley High-Protein Shake (Original), 380ml bottle',
+  p_calories := 180, p_protein_g := 28, p_carbs_g := 24, p_fat_g := 4, p_fiber_g := 12,
+  p_source := 'telegram', p_force_stage := false,
+  p_notes := 'maintainer-completed from nutrition label');
+
+-- 3. Retire the staging row + its media_inbox rows so it leaves the queue
+UPDATE stg_food_log_review SET status='approved', reviewed_at=now() WHERE id = '<review_id>';
+UPDATE media_inbox SET status='done', processed_at=now() WHERE id IN (<inbox_ids>);
+```
+
+Resolve `<maintainer_auth_user_id>` with:
+```sql
+SELECT fm.auth_user_id FROM family_memberships fm JOIN profiles p ON p.id=fm.profile_id
+ WHERE p.is_maintainer = true LIMIT 1;
+```
+
+If the source was a photo and you need to read it, sign a URL for the `health-media` object and download it:
+`POST {SUPABASE_URL}/storage/v1/object/sign/health-media/<storage_path>` with the service-role key → `GET {SUPABASE_URL}/storage/v1{signedURL}`. `media_inbox.storage_path` holds the object path.
+
+> The completeness gate is **working as designed** when it parks an item — the usual root cause of a surprise review is the *extraction* missing data that was present (e.g. a nutrition label). Check the photo before assuming the data wasn't there. (See the 2026-06-08 vision-label fix in `BACKLOG.md`.)
+
 ### 7.3 WHOOP Sync
 
 ```bash
@@ -1033,12 +1075,9 @@ supabase functions deploy whoop-webhook --no-verify-jwt
 supabase functions deploy telegram-webhook --no-verify-jwt
 ```
 
-`trigger-drain` requires `TRIGGER_DRAIN_SECRET` to be set in both Supabase Vault and as an edge function secret before the `fn_media_inbox_notify` trigger has any effect:
+`trigger-drain` runs **no-auth** (migration 047). The earlier vault/Bearer scheme (migrations 043) was removed because `vault.decrypted_secrets` is not reachable from the pg_net trigger context — it silently returned NULL → empty Bearer → 401 → every photo stalled at `pending`. `fn_media_inbox_notify` now POSTs to `trigger-drain` with no auth header; the function is safe to leave open because it only fires a GitHub `repository_dispatch` (no tokens are spent until a real photo exists) and dedups via the `system_config` CAS. **Do not re-add Bearer auth to this path** without first solving pg_net's vault access.
 
-```bash
-supabase secrets set TRIGGER_DRAIN_SECRET=<secret>
-# Also set via vault.create_secret in a SQL migration (see migration 043)
-```
+> ⚠️ **CLI gotcha:** `supabase functions deploy` sometimes prints `No change found in Function` and skips a real upload even when the source changed (stale local bundle hash). If you changed the code and it says "no change", touch the file (e.g. bump a `// deploy: <marker>` comment) and redeploy — confirm you see `Deploying Function: … (script size: …)`.
 
 After deploying `whoop-webhook`, verify the webhook URL is registered with WHOOP by checking the WHOOP developer portal — the URL must point to the deployed function's endpoint.
 

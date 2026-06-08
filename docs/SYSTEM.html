@@ -1453,6 +1453,33 @@ curl -X POST https://api.github.com/repos/&lt;org&gt;/healthspan-foundation/disp
 WHERE status IN (&#x27;pending&#x27;, &#x27;failed&#x27;)
 ORDER BY created_at DESC LIMIT 20;</code></pre>
 <p>Failed rows with a <code>stage_reason</code> are expected (completeness gate); rows with <code>_error</code> in stage_reason indicate a pipeline fault and need investigation.</p>
+<h3>7.2a Clearing the Review Queue (the most common ops task)</h3>
+<p>When the bot says &quot;<strong>N to review</strong>&quot;, incomplete items are parked in <code>stg_*_review</code> with <code>status=&#x27;pending&#x27;</code> and a <code>stage_reason</code>. To see and clear them:</p>
+<pre><code class="language-sql">-- What&#x27;s waiting, and why
+SELECT id, description, meal_type, calories, protein_g, carbs_g, fat_g, stage_reason, created_at
+  FROM stg_food_log_review WHERE status = &#x27;pending&#x27; ORDER BY created_at DESC;
+-- (also stg_supplement_intake_review, stg_biomarker_review)</code></pre>
+<p>To <strong>complete</strong> an item and write it to production, fill the missing fields and call the contract RPC <code>maintainer_ingest_food</code> / <code>maintainer_ingest_supplement</code> / <code>maintainer_ingest_biomarker</code> with <code>p_force_stage := false</code>. These RPCs are <code>SECURITY DEFINER</code> and gate on <code>is_maintainer() AND has_profile_access()</code>, both keyed on <code>auth.uid()</code>. From a direct <code>psql</code>/psycopg2 connection (role <code>postgres</code>, <code>auth.uid()</code> is NULL) you must <strong>impersonate the maintainer</strong> by setting the JWT claim first:</p>
+<pre><code class="language-sql">-- 1. Impersonate PC (auth_user_id from family_memberships where profiles.is_maintainer)
+SELECT set_config(&#x27;request.jwt.claims&#x27;,
+  json_build_object(&#x27;sub&#x27;,&#x27;&lt;maintainer_auth_user_id&gt;&#x27;,&#x27;role&#x27;,&#x27;authenticated&#x27;)::text, true);
+
+-- 2. Write to production (force_stage := false routes through to food_logs)
+SELECT maintainer_ingest_food(
+  p_profile_id := &#x27;&lt;profile_id&gt;&#x27;, p_meal_type := &#x27;snack&#x27;,
+  p_description := &#x27;alley High-Protein Shake (Original), 380ml bottle&#x27;,
+  p_calories := 180, p_protein_g := 28, p_carbs_g := 24, p_fat_g := 4, p_fiber_g := 12,
+  p_source := &#x27;telegram&#x27;, p_force_stage := false,
+  p_notes := &#x27;maintainer-completed from nutrition label&#x27;);
+
+-- 3. Retire the staging row + its media_inbox rows so it leaves the queue
+UPDATE stg_food_log_review SET status=&#x27;approved&#x27;, reviewed_at=now() WHERE id = &#x27;&lt;review_id&gt;&#x27;;
+UPDATE media_inbox SET status=&#x27;done&#x27;, processed_at=now() WHERE id IN (&lt;inbox_ids&gt;);</code></pre>
+<p>Resolve <code>&lt;maintainer_auth_user_id&gt;</code> with:</p>
+<pre><code class="language-sql">SELECT fm.auth_user_id FROM family_memberships fm JOIN profiles p ON p.id=fm.profile_id
+ WHERE p.is_maintainer = true LIMIT 1;</code></pre>
+<p>If the source was a photo and you need to read it, sign a URL for the <code>health-media</code> object and download it: <code>POST {SUPABASE_URL}/storage/v1/object/sign/health-media/&lt;storage_path&gt;</code> with the service-role key → <code>GET {SUPABASE_URL}/storage/v1{signedURL}</code>. <code>media_inbox.storage_path</code> holds the object path.</p>
+<blockquote>The completeness gate is <strong>working as designed</strong> when it parks an item — the usual root cause of a surprise review is the <em>extraction</em> missing data that was present (e.g. a nutrition label). Check the photo before assuming the data wasn&#x27;t there. (See the 2026-06-08 vision-label fix in <code>BACKLOG.md</code>.)</blockquote>
 <h3>7.3 WHOOP Sync</h3>
 <pre><code class="language-bash"># Sync recent data (last 48h, all token-holding profiles)
 python3 -m ingest.whoop_sync --since 48h
@@ -1478,9 +1505,8 @@ supabase functions deploy whoop-webhook --no-verify-jwt
 
 # Telegram webhook (receives Telegram updates, routes to media_inbox or send-brief)
 supabase functions deploy telegram-webhook --no-verify-jwt</code></pre>
-<p><code>trigger-drain</code> requires <code>TRIGGER_DRAIN_SECRET</code> to be set in both Supabase Vault and as an edge function secret before the <code>fn_media_inbox_notify</code> trigger has any effect:</p>
-<pre><code class="language-bash">supabase secrets set TRIGGER_DRAIN_SECRET=&lt;secret&gt;
-# Also set via vault.create_secret in a SQL migration (see migration 043)</code></pre>
+<p><code>trigger-drain</code> runs <strong>no-auth</strong> (migration 047). The earlier vault/Bearer scheme (migrations 043) was removed because <code>vault.decrypted_secrets</code> is not reachable from the pg_net trigger context — it silently returned NULL → empty Bearer → 401 → every photo stalled at <code>pending</code>. <code>fn_media_inbox_notify</code> now POSTs to <code>trigger-drain</code> with no auth header; the function is safe to leave open because it only fires a GitHub <code>repository_dispatch</code> (no tokens are spent until a real photo exists) and dedups via the <code>system_config</code> CAS. <strong>Do not re-add Bearer auth to this path</strong> without first solving pg_net&#x27;s vault access.</p>
+<blockquote>⚠️ <strong>CLI gotcha:</strong> <code>supabase functions deploy</code> sometimes prints <code>No change found in Function</code> and skips a real upload even when the source changed (stale local bundle hash). If you changed the code and it says &quot;no change&quot;, touch the file (e.g. bump a <code>// deploy: &lt;marker&gt;</code> comment) and redeploy — confirm you see <code>Deploying Function: … (script size: …)</code>.</blockquote>
 <p>After deploying <code>whoop-webhook</code>, verify the webhook URL is registered with WHOOP by checking the WHOOP developer portal — the URL must point to the deployed function&#x27;s endpoint.</p>
 <h3>7.5 Regenerating SCHEMA-MAP</h3>
 <pre><code class="language-bash">python3 scripts/gen_schema_map.py &gt; docs/SCHEMA-MAP.md</code></pre>
