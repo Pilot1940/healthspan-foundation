@@ -132,6 +132,15 @@ code{
 <body>
 <aside class="sidebar">
   <div class="brand">HealthSpan<small>System Manifest · mig 047</small></div>
+  <div style="font-size:0.72rem; color:#9ca3af; line-height:1.5; padding:0 24px 14px; margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,.1);">
+    <div style="font-weight:700; color:#e5e7eb; margin-bottom:6px;">🟢 DEPLOY LOG</div>
+    <div style="margin-bottom:8px;">Live version is in every brief footer: <code>—v &lt;date&gt; · &lt;commit7&gt;</code></div>
+    <div style="margin-bottom:3px;"><code>506a61c</code> 2026-06-09 — learn-on-clarify supplements + maintainer review + brief version footer</div>
+    <div style="margin-bottom:3px;"><code>ef43472</code> 2026-06-09 — commands section + verification tests marked PASS</div>
+    <div style="margin-bottom:3px;"><code>a2b2045</code> 2026-06-09 — clarify loop (B1/B2) verified live</div>
+    <div style="margin-bottom:3px;"><code>ee434d8</code> 2026-06-09 — food kcal floor 25→0 + backlog #12</div>
+    <div><code>ad87e24</code> 2026-06-09 — energy line fix (WHOOP total) + context-slug fix</div>
+  </div>
   <nav>
 <a href="#sec-1">1. SYSTEM OVERVIEW</a>
 <a href="#sec-2">2. INFRASTRUCTURE</a>
@@ -152,7 +161,7 @@ code{
 <section id="sec-1">
 <h2 class="section-header">1. SYSTEM OVERVIEW</h2>
 <h3>What it is</h3>
-<p>A transportable, multi-tenant, DB-backed <strong>personal health intelligence platform</strong> for the Chitalkar household — currently <strong>PC</strong> (Parikshit Chitalkar, owner/maintainer) and <strong>Dea</strong> (minor, 13F), with a dormant profile slot for Dev. The system behaves as a longevity physician, exercise physiologist, nutrition coach, and mental-performance advisor, giving guidance grounded in each person&#x27;s actual longitudinal data (WHOOP, labs, DEXA, food logs, supplements) and their per-person context.</p>
+<p>A transportable, multi-tenant, DB-backed <strong>personal health intelligence platform</strong> for the Chitalkar household — currently <strong>PC</strong> (Parikshit Chitalkar, owner/maintainer) and <strong>Dea</strong> (minor, 13F), with <strong>Nanki</strong> (PC&#x27;s wife, 45F adult) ready to onboard when she is, and a dormant profile slot for Dev. The system behaves as a longevity physician, exercise physiologist, nutrition coach, and mental-performance advisor, giving guidance grounded in each person&#x27;s actual longitudinal data (WHOOP, labs, DEXA, food logs, supplements) and their per-person context.</p>
 <p>It ingests health data via a Telegram bot (food photos, lab PDFs, supplement labels) and real-time WHOOP webhooks, runs AI extraction through Anthropic Claude into staging, and surfaces evidence-based coaching through a skill (<code>SKILL.md</code>) plus a daily/event brief pipeline.</p>
 <h3>Core philosophy</h3>
 <ul><li><strong>DB is truth for numbers; context MD is truth for targets and voice.</strong> Every number in</li></ul>
@@ -227,6 +236,12 @@ code{
 <td>Non-owner, minor (<code>is_minor: true</code> in config + context MD — not a <code>profiles</code> column)</td>
 <td>Self only</td>
 <td>Per-ingest outcomes only (&quot;saved&quot;/&quot;flagged&quot;); 0 rows from any maintainer-only table</td>
+</tr>
+<tr>
+<td><strong>Nanki</strong></td>
+<td>Non-owner, <strong>adult</strong> (PC&#x27;s wife, 45F) — <em>ready to onboard when she is</em></td>
+<td>Self only</td>
+<td>Full adult framing (deficits/targets like PC), but non-maintainer — no audit/sync/staging visibility. Onboard exactly like §6: profile (<code>relationship</code> not <code>child</code> → <code>is_minor=false</code>), config + <code>context/nanki.context.md</code>, <code>mint-link-code</code>, she sends it from her phone. Supplement learn-on-clarify auto-adds under her own profile (adult).</td>
 </tr>
 </tbody></table></div>
 <p>Maintainer status resolves through <code>family_memberships</code> (not <code>profiles.auth_user_id</code>). Maintainer-only RLS SELECT applies to <code>query_audit</code>, <code>wearable_sync_log</code>, <code>wearable_sync_errors</code>, and all <code>stg_*_review</code> tables — a non-maintainer sees 0 rows.</p>

@@ -15,7 +15,8 @@
 
 A transportable, multi-tenant, DB-backed **personal health intelligence platform** for
 the Chitalkar household — currently **PC** (Parikshit Chitalkar, owner/maintainer) and
-**Dea** (minor, 13F), with a dormant profile slot for Dev. The system behaves as a
+**Dea** (minor, 13F), with **Nanki** (PC's wife, 45F adult) ready to onboard when she is, and a
+dormant profile slot for Dev. The system behaves as a
 longevity physician, exercise physiologist, nutrition coach, and mental-performance
 advisor, giving guidance grounded in each person's actual longitudinal data (WHOOP, labs,
 DEXA, food logs, supplements) and their per-person context.
@@ -63,6 +64,7 @@ pipeline.
 |---|---|---|---|
 | **PC** | Owner, sole maintainer (`profiles.is_maintainer = true`) | All managed profiles | Everything: query audit, sync logs/errors, staging queues |
 | **Dea** | Non-owner, minor (`is_minor: true` in config + context MD — not a `profiles` column) | Self only | Per-ingest outcomes only ("saved"/"flagged"); 0 rows from any maintainer-only table |
+| **Nanki** | Non-owner, **adult** (PC's wife, 45F) — *ready to onboard when she is* | Self only | Full adult framing (deficits/targets like PC), but non-maintainer — no audit/sync/staging visibility. Onboard exactly like §6: profile (`relationship` not `child` → `is_minor=false`), config + `context/nanki.context.md`, `mint-link-code`, she sends it from her phone. Supplement learn-on-clarify auto-adds under her own profile (adult). |
 
 Maintainer status resolves through `family_memberships` (not `profiles.auth_user_id`).
 Maintainer-only RLS SELECT applies to `query_audit`, `wearable_sync_log`,

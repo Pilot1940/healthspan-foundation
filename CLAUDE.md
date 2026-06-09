@@ -146,6 +146,14 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,
   resolved via `family_memberships`). Maintainer-only RLS SELECT on `query_audit`,
   `wearable_sync_log`/`_errors`, `stg_*_review`. Dea sees outcomes, never the machinery.
+  **Nanki** (PC's wife, 45F adult) is a supported profile to onboard when ready — full adult
+  framing (like PC), non-maintainer; onboard exactly like Dea but `relationship` ≠ `child` so
+  `is_minor=false`. Dev = dormant slot.
+- **Learn-on-clarify (049/051/052)**: a SPECIFIC supplement the user names that isn't in the
+  catalog auto-adds via `learn_supplement` RPC (dedups by normalized name; stamps
+  `source='learned'`, `verified=false`) — ADULTS only (minor's new item routes to PC). PC's
+  brief shows "🆕 Recently learned (review)" to prune. Brief ends with `—v <date>·<commit7>`
+  (GITHUB_SHA) for debug. `/learn` was a phantom command (removed); food auto-promote is backlog #13.
 - **Query logging** (025): every skill read lands in `query_audit` —
   `lib/views.run_view` (catalog) + `lib/sql_guard.run_adhoc_audited` (adhoc) via
   non-blocking `log_query`. Maintainer digest: `monitor/query_log.py`.
