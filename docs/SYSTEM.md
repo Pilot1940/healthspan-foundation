@@ -485,6 +485,21 @@ Note the env-var inconsistency: `monitor/brief.py` reads **`ANTHROPIC_API_KEY`**
 workflow maps `HS_ANTHROPIC_API_KEY` → `ANTHROPIC_API_KEY`), whereas
 `monitor/inbox_drain.py` reads **`HS_ANTHROPIC_API_KEY`** directly.
 
+### Commands & how to interact
+
+The bot is primarily **NATURAL LANGUAGE** — there's almost nothing to memorise. You just talk to it.
+
+| Input | What it does | Status |
+|-------|--------------|--------|
+| `/start <code>` | Link a Telegram account to a profile (onboarding) | ✅ implemented (telegram-webhook) |
+| type anything you ate/took (e.g. "took my magnesium", "ate 2 eggs", "half a thai tea shake") | Logs it — the drain's LLM extracts food/supplement/biomarker | ✅ implemented |
+| send a photo (meal, label, lab, DEXA) | Logs it; reads nutrition labels | ✅ implemented |
+| ask a question ("how am I doing?", "brief", "summary") | Returns the daily brief | ✅ implemented |
+| REPLY (Telegram reply) to a "needs clarification" message | Re-queues that item with your answer; the LLM re-extracts | ✅ implemented (reply-to-clarify loop) |
+| `/learn` | ADVERTISED in the food "logged X before — use /learn to add it to your food library" offer, but **NOT IMPLEMENTED** — typing it currently does nothing. The `promote_food_to_reference` RPC exists but isn't wired to a command. ⚠️ Flagged (backlog #13). | ⚠️ NOT implemented |
+
+⚠️ The `/learn` offer references a command that doesn't exist yet — it should either be wired to `promote_food_to_reference` or removed from the offer text (backlog #13).
+
 ### 3.3 WHOOP Sync Pipeline
 
 WHOOP data enters via two complementary paths — a real-time webhook push and a
@@ -1279,7 +1294,7 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 
 | ✓ | Test | Send | Expect | Proves |
 |---|------|------|--------|--------|
-| `[ ]` | **C1** | a clear meal photo, caption "lunch" | ✅ logged with macros | photo path survives single extractor |
+| ✅ **PASS** | **C1** | a clear meal photo, caption "lunch" | ✅ logged with macros — *verified 2026-06-09 · drain@a2b2045 / webhook v6: black coffee photo logged 2 kcal (after kcal-floor fix mig 050)* | photo path survives single extractor |
 | `[ ]` | **C2** | a nutrition-label photo ("this shake") | macros read from label (not "unidentified") | label reading + max_tokens fix |
 | `[ ]` | **C3** | a blurry/ambiguous food photo | 📋 asks what it is (clarify), not a wrong guess | clarify-on-uncertainty on photos |
 
@@ -1287,10 +1302,10 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 
 | ✓ | Test | Send / Check | Expect | Proves |
 |---|------|--------------|--------|--------|
-| `[ ]` | **D1** | `how am I doing?` | the daily brief (~25s) | brief routing |
-| `[ ]` | **D2** | check D1's Energy line | "… in − … out (BMR 1935 + … activity) · net −… deficit" (NOT "+ surplus") | energy-balance fix |
-| `[ ]` | **D3** | check D1's WHOOP line | fresh recovery, no false "⚠️ >24h old" | refresh-on-interaction + tz-safe staleness |
-| `[ ]` | **D4** | check D1's food day boundary | only today's (Thailand) meals counted | local-timezone fix |
+| ✅ **PASS** | **D1** | `how am I doing?` | the daily brief (~25s) — *verified 2026-06-09 · drain@a2b2045 / webhook v6* | brief routing |
+| ✅ **PASS** | **D2** | check D1's Energy line | "… in − … out (BMR 1935 + … activity) · net −… deficit" (NOT "+ surplus") — *verified 2026-06-09 · drain@a2b2045: '4 in − 671 out (WHOOP total) · net −667 deficit' — correct, no double-count* | energy-balance fix |
+| ✅ **PASS** | **D3** | check D1's WHOOP line | fresh recovery, no false "⚠️ >24h old" — *verified 2026-06-09 · drain@a2b2045: June-9 recovery 60% shown after the refresh-in-CI fix* | refresh-on-interaction + tz-safe staleness |
+| ✅ **PASS** | **D4** | check D1's food day boundary | only today's (Thailand) meals counted — *verified 2026-06-09 · drain@a2b2045: 'Calories: 4 / 2100 (2096 left)' targets now load (slug fix)* | local-timezone fix |
 | `[ ]` | **D5** | `thanks!` | the brief, NOT a junk log | junk rejection |
 
 ### Group E — Dea (minor-safe), after she links

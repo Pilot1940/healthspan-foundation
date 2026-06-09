@@ -678,6 +678,46 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 </div>
 </div></details>
 <p><code>send-brief.yml</code> also supports manual <code>workflow_dispatch</code>: with a <code>profile_id</code> input it briefs that one profile; without one it runs <code>monitor.brief --all</code> for every profile. Note the env-var inconsistency: <code>monitor/brief.py</code> reads <strong><code>ANTHROPIC_API_KEY</code></strong> (the workflow maps <code>HS_ANTHROPIC_API_KEY</code> → <code>ANTHROPIC_API_KEY</code>), whereas <code>monitor/inbox_drain.py</code> reads <strong><code>HS_ANTHROPIC_API_KEY</code></strong> directly.</p>
+<h3>Commands &amp; how to interact</h3>
+<p>The bot is primarily <strong>NATURAL LANGUAGE</strong> — there&#x27;s almost nothing to memorise. You just talk to it.</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Input</th>
+<th>What it does</th>
+<th>Status</th>
+</tr></thead><tbody>
+<tr>
+<td><code>/start &lt;code&gt;</code></td>
+<td>Link a Telegram account to a profile (onboarding)</td>
+<td>✅ implemented (telegram-webhook)</td>
+</tr>
+<tr>
+<td>type anything you ate/took (e.g. &quot;took my magnesium&quot;, &quot;ate 2 eggs&quot;, &quot;half a thai tea shake&quot;)</td>
+<td>Logs it — the drain&#x27;s LLM extracts food/supplement/biomarker</td>
+<td>✅ implemented</td>
+</tr>
+<tr>
+<td>send a photo (meal, label, lab, DEXA)</td>
+<td>Logs it; reads nutrition labels</td>
+<td>✅ implemented</td>
+</tr>
+<tr>
+<td>ask a question (&quot;how am I doing?&quot;, &quot;brief&quot;, &quot;summary&quot;)</td>
+<td>Returns the daily brief</td>
+<td>✅ implemented</td>
+</tr>
+<tr>
+<td>REPLY (Telegram reply) to a &quot;needs clarification&quot; message</td>
+<td>Re-queues that item with your answer; the LLM re-extracts</td>
+<td>✅ implemented (reply-to-clarify loop)</td>
+</tr>
+<tr>
+<td><code>/learn</code></td>
+<td>ADVERTISED in the food &quot;logged X before — use /learn to add it to your food library&quot; offer, but <strong>NOT IMPLEMENTED</strong> — typing it currently does nothing. The <code>promote_food_to_reference</code> RPC exists but isn&#x27;t wired to a command. ⚠️ Flagged (backlog #13).</td>
+<td>⚠️ NOT implemented</td>
+</tr>
+</tbody></table></div>
+<p>⚠️ The <code>/learn</code> offer references a command that doesn&#x27;t exist yet — it should either be wired to <code>promote_food_to_reference</code> or removed from the offer text (backlog #13).</p>
 <h3>3.3 WHOOP Sync Pipeline</h3>
 <p>WHOOP data enters via two complementary paths — a real-time webhook push and a pull-based sync — backed by an OAuth token store with lazy auto-refresh.</p>
 <h4>Push path (real-time webhook)</h4>
@@ -1813,19 +1853,19 @@ Run as PC unless noted.</p>
 <th>Expect</th>
 <th>Proves</th>
 </tr></thead><tbody>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>B1</strong></td>
 <td><code>took my supplement</code> (vague)</td>
-<td>📋 a SPECIFIC question (&quot;which supplement?&quot;), NOT a silent log</td>
+<td>📋 a SPECIFIC question — <em>verified 2026-06-09 · drain@a2b2045 / webhook v6: "Add electrolytes" → "which brand or product name should I log?"</em></td>
 <td>confidence gate + generic guard + descriptive feedback</td>
 </tr>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>B2</strong></td>
-<td>LONG-PRESS B1&#x27;s question → Reply → <code>magnesium bisglycinate</code></td>
-<td>📥 &quot;Got it — updating that…&quot; then ✅ logged</td>
-<td>reply-to-clarify round-trip (#5) — the unproven one</td>
+<td>LONG-PRESS the question → Reply → the name</td>
+<td>📥 &quot;Got it — updating that…&quot; then re-extract — <em>verified 2026-06-09 · drain@a2b2045 / webhook v6 (KEYSTONE): reply re-queued, reprocessed, asked follow-ups (name→dose→brand), capped at 2 rounds and handed to PC</em></td>
+<td>reply-to-clarify round-trip (#5) — proven end-to-end</td>
 </tr>
 <tr>
 <td><input type="checkbox"></td>
@@ -1848,11 +1888,11 @@ Run as PC unless noted.</p>
 <th>Expect</th>
 <th>Proves</th>
 </tr></thead><tbody>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>C1</strong></td>
 <td>a clear meal photo, caption &quot;lunch&quot;</td>
-<td>✅ logged with macros</td>
+<td>✅ logged with macros — <em>verified 2026-06-09 · drain@a2b2045 / webhook v6: black coffee photo logged 2 kcal (after kcal-floor fix mig 050)</em></td>
 <td>photo path survives single extractor</td>
 </tr>
 <tr>
@@ -1880,32 +1920,32 @@ Run as PC unless noted.</p>
 <th>Expect</th>
 <th>Proves</th>
 </tr></thead><tbody>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>D1</strong></td>
 <td><code>how am I doing?</code></td>
-<td>the daily brief (~25s)</td>
+<td>the daily brief (~25s) — <em>verified 2026-06-09 · drain@a2b2045 / webhook v6</em></td>
 <td>brief routing</td>
 </tr>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>D2</strong></td>
 <td>check D1&#x27;s Energy line</td>
-<td>&quot;… in − … out (BMR 1935 + … activity) · net −… deficit&quot; (NOT &quot;+ surplus&quot;)</td>
+<td>&quot;… in − … out (BMR 1935 + … activity) · net −… deficit&quot; (NOT &quot;+ surplus&quot;) — <em>verified 2026-06-09 · drain@a2b2045: &#x27;4 in − 671 out (WHOOP total) · net −667 deficit&#x27; — correct, no double-count</em></td>
 <td>energy-balance fix</td>
 </tr>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>D3</strong></td>
 <td>check D1&#x27;s WHOOP line</td>
-<td>fresh recovery, no false &quot;⚠️ &gt;24h old&quot;</td>
+<td>fresh recovery, no false &quot;⚠️ &gt;24h old&quot; — <em>verified 2026-06-09 · drain@a2b2045: June-9 recovery 60% shown after the refresh-in-CI fix</em></td>
 <td>refresh-on-interaction + tz-safe staleness</td>
 </tr>
-<tr>
-<td><input type="checkbox"></td>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>D4</strong></td>
 <td>check D1&#x27;s food day boundary</td>
-<td>only today&#x27;s (Thailand) meals counted</td>
+<td>only today&#x27;s (Thailand) meals counted — <em>verified 2026-06-09 · drain@a2b2045: &#x27;Calories: 4 / 2100 (2096 left)&#x27; targets now load (slug fix)</em></td>
 <td>local-timezone fix</td>
 </tr>
 <tr>

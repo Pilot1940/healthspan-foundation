@@ -212,6 +212,18 @@ reference macros by it, or only apply the reference when no explicit partial por
 
 ---
 
+## #13 — `/learn` is advertised but not implemented (phantom command) — **OPEN, low**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN (surfaced 2026-06-09).
+
+After logging a repeat food the bot says *"Logged 'X' N× before — use /learn to add it to your
+food library."* But there is **no `/learn` handler anywhere** — typing it does nothing (it just
+routes as a normal message). The `promote_food_to_reference` RPC exists; wire `/learn` (in
+telegram-webhook) to promote the most-recent food to `food_reference`, OR remove the offer text.
+General rule: any command the bot suggests must be handled.
+
+---
+
 ## #12 — Logging a supplement/product NOT in the catalog — **OPEN, med**
 
 **Severity:** MED · **Owner:** CC · **Status:** OPEN (surfaced 2026-06-09 testing).
