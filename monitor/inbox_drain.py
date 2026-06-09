@@ -31,8 +31,7 @@ log = logging.getLogger(__name__)
 _SETTLE_SEC_FALLBACK = 90
 _CONFIDENCE_FALLBACK = 0.3  # items with EXPLICIT confidence below this stage → clarify
                             # (identity uncertain). Low by design: estimates shouldn't stage.
-_VISION_MODEL_FALLBACK = models.SONNET    # vision/extraction (the strong model)
-_CLUSTER_MODEL_FALLBACK = models.HAIKU    # text-only clustering — trivial, use the cheap model
+_VISION_MODEL_FALLBACK = models.SONNET    # ONE model everywhere (drain.vision_model)
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 
@@ -1442,7 +1441,6 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     settle_sec = settle_sec_override if settle_sec_override is not None else int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
-    cluster_model = str(cfg.get("drain.cluster_model", _CLUSTER_MODEL_FALLBACK)).strip('"')
     learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(timezone.utc).date().isoformat()
@@ -1472,7 +1470,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
 
     content_clusters: list[list[dict]] = []
     for chat_items in by_chat.values():
-        content_clusters.extend(content_cluster_ungrouped(api_key, cluster_model, chat_items))
+        content_clusters.extend(content_cluster_ungrouped(api_key, model, chat_items))
 
     all_clusters = album_clusters + content_clusters
     summary["clustered"] = len(all_clusters)

@@ -94,10 +94,10 @@ Verdict guidance:
 
 Set confidence lower (< 0.7) when items are vague or portions are unknown."""
 
-    # Model id from system_config (ingest.food_model) with a current fallback. Routed through
-    # models.create_message so a retired/invalid id raises a clear error, not a silent 404.
+    # One model everywhere (models.SONNET); override via HS_FOOD_MODEL env if ever needed. Routed
+    # through models.create_message so a retired/invalid id raises a clear error, not a silent 404.
     # (Was hardcoded claude-3-5-haiku-20241022, RETIRED 2026-02-19 — see lib/models.py.)
-    model = os.environ.get("HS_FOOD_MODEL") or models.HAIKU
+    model = os.environ.get("HS_FOOD_MODEL") or models.SONNET
     message = models.create_message(
         client,
         model=model,

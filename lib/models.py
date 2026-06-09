@@ -7,6 +7,11 @@ a model swap is a one-line change in the DB or here.
 
 Last review 2026-06-09: `claude-3-5-haiku-20241022` RETIRED 2026-02-19 → `claude-haiku-4-5`.
 (`ingest/food.py` had the retired id hardcoded — it would have 404'd on every call.)
+
+POLICY (2026-06-09): **one model everywhere — SONNET.** Every path's fallback is `SONNET`; the
+quality is uniform and the cost delta vs mixing in Haiku is ~$0.50/month (negligible — vision
+dominates). `HAIKU` stays defined so you can cost-optimize a specific cheap path later WITHOUT a
+code change — just set its `system_config` key (e.g. `brief.model = claude-haiku-4-5`).
 """
 from __future__ import annotations
 
@@ -14,10 +19,10 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Fast / cheap — food classification, text clustering, daily brief actions.
-HAIKU = "claude-haiku-4-5"
-# Vision extraction + screenshot OCR (needs the stronger model).
+# Default everywhere (vision extraction, clustering, brief, food classify, screenshot OCR).
 SONNET = "claude-sonnet-4-6"
+# Available for a per-path cost override via system_config — not used by default.
+HAIKU = "claude-haiku-4-5"
 
 
 def is_model_error(exc: Exception) -> bool:

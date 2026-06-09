@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger(__name__)
 
 from lib import models  # central model-id registry + retired-model guard
-_BRIEF_MODEL = models.HAIKU
+_BRIEF_MODEL = models.SONNET  # one model everywhere (override per-path via system_config brief.model)
 _TIMING_ORDER = ["morning", "lunch", "dinner", "bedtime", "anytime"]
 
 
