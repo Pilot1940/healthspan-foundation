@@ -153,13 +153,13 @@ code{
 </head>
 <body>
 <aside class="sidebar">
-  <div class="brand">HealthSpan<small>System Manifest · mig 053</small></div>
+  <div class="brand">HealthSpan<small>System Manifest · mig 054</small></div>
   <div class="deploy-badge">
     <span class="db-dot"></span>
     <div class="db-meta">
       <span class="db-label">LIVE · DEPLOYED</span>
       <span class="db-date">2026-06-09</span>
-      <span class="db-ver">390985c</span>
+      <span class="db-ver">7c635fe</span>
     </div>
   </div>
   <nav>
@@ -2057,6 +2057,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td><code>7c635fe</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. <strong>⚠️ needs telegram-webhook redeploy</strong></td></tr>
 <tr><td><code>390985c</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Storage RLS policy so the drain can read <code>health-media</code> images (mig 053) — the real reason photos never reached the vision model</td></tr>
 <tr><td><code>aad3f4d</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>A photo is always a log, never a brief (C3) — enforce in drain + tests</td></tr>
 <tr><td><code>9964506</code></td><td>2026-06-09</td><td><span style="color:#6b7280;font-weight:600;">docs</span></td><td>Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model</td></tr>

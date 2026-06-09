@@ -44,6 +44,20 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-09)
 
+- **Reply-to-correct supersedes a logged food item (mig 054, commit `7c635fe`, 2026-06-09).**
+  Replying to an AUTO-LOGGED item used to double-count (the reply-to-clarify loop only matched
+  STAGED rows). Now the drain stores `clarify_message_id` + `logged_food_ids` on inserted **food**
+  rows; the telegram-webhook reply handler matches staged OR logged items and, for a logged item,
+  **DELETEs those `food_logs`** (service_role) before re-queuing the correction → re-extraction
+  REPLACES, not adds. Hard-error path now messages the user (no silent vanish after a supersede).
+  **⚠️ supplements still double-count on correction** (deferred — needs a kind-agnostic link, not
+  `uuid[]`; backlog). **⚠️ telegram-webhook needs redeploy** (`supabase functions deploy
+  telegram-webhook --no-verify-jwt`) for the supersede path to take effect — drain/prompt side is
+  already live via CI.
+- **Ambiguous food photos now STAGE instead of auto-logging a guess (same commit).** Vision prompt
+  sets confidence ≤0.2 when naming a food by guessing ("appears to be X or Y") or when it can't
+  identify the specific item from the image — so it asks rather than logging a guessed kcal. Also
+  HONORs user-stated macros/portions from a caption/clarification verbatim (the 34g-vs-25g miss).
 - **Drain could NEVER read image pixels — fixed (mig 053, 2026-06-09).** Root cause: `storage.objects`
   has RLS **enabled with ZERO policies** and `health-media` is private. The telegram-webhook uploads
   with the **service-role key** (bypasses RLS) so objects land fine, but the drain reads as the

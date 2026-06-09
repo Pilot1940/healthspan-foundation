@@ -1353,6 +1353,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `7c635fe` | 2026-06-09 | feat | Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. **⚠️ needs telegram-webhook redeploy** |
 | `390985c` | 2026-06-09 | fix | Storage RLS policy so the drain can read `health-media` images (mig 053) — the real reason photos never reached the vision model |
 | `aad3f4d` | 2026-06-09 | fix | A photo is always a log, never a brief (C3) — enforce in drain + tests |
 | `9964506` | 2026-06-09 | docs | Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model |
