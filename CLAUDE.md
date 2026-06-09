@@ -48,7 +48,9 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   A staged food item the user clarified used to leave its `stg_food_log_review` row `pending`
   forever (phantom in the maintainer review queue; no back-link to `media_inbox`). Drain now records
   `staged_review_ids` on the row; the webhook marks those review rows `merged` on clarify-supersede.
-  Mirrors `logged_food_ids` (mig 054). **⚠️ bundles with the pending telegram-webhook redeploy.**
+  Mirrors `logged_food_ids` (mig 054). ✅ **telegram-webhook v7 deployed 2026-06-09** — supersede +
+  orphan-retire are LIVE (script size 68.31kB; the CLI "No change found" skip needs a deploy-marker
+  bump per SYSTEM.md §7.4).
 - **Live-test results (2026-06-09, drain@176c53b):** ambiguous shake photo → **staged + asked** (C3
   PASS, conf 0.18, didn't auto-log a 300-kcal guess); reply re-extracted to **ONE** entry, 25g protein
   (honored user-stated macros, no double-count); image now genuinely read end-to-end (mig 053). C1
@@ -60,9 +62,7 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   **DELETEs those `food_logs`** (service_role) before re-queuing the correction → re-extraction
   REPLACES, not adds. Hard-error path now messages the user (no silent vanish after a supersede).
   **⚠️ supplements still double-count on correction** (deferred — needs a kind-agnostic link, not
-  `uuid[]`; backlog). **⚠️ telegram-webhook needs redeploy** (`supabase functions deploy
-  telegram-webhook --no-verify-jwt`) for the supersede path to take effect — drain/prompt side is
-  already live via CI.
+  `uuid[]`; backlog). ✅ **telegram-webhook v7 deployed 2026-06-09** — the supersede path is LIVE.
 - **Ambiguous food photos now STAGE instead of auto-logging a guess (same commit).** Vision prompt
   sets confidence ≤0.2 when naming a food by guessing ("appears to be X or Y") or when it can't
   identify the specific item from the image — so it asks rather than logging a guessed kcal. Also

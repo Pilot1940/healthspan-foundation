@@ -1951,7 +1951,7 @@ Run as PC unless noted.</p>
 <td><input type="checkbox"></td>
 <td><strong>C4</strong></td>
 <td>reply to correct a confidently-<strong>LOGGED</strong> photo</td>
-<td>replaces the entry, no double-count (&quot;📥 Updating that — replacing…&quot;) — <em>code live (mig 054, drain + tests); ⚠️ needs telegram-webhook redeploy to activate</em></td>
+<td>replaces the entry, no double-count (&quot;📥 Updating that — replacing…&quot;) — <em>LIVE — mig 054 + webhook v7 deployed 2026-06-09; ready for a live correct-a-logged-photo test</em></td>
 <td>supersede-on-reply (logged backstop)</td>
 </tr>
 </tbody></table></div>
@@ -2064,8 +2064,8 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
-<tr><td><code>ce91936</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Retire the <code>stg_food_log_review</code> row when a staged item is clarified (mig 055) — no more phantom review-queue entries. <strong>⚠️ bundles with the pending webhook redeploy</strong></td></tr>
-<tr><td><code>7c635fe</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. <strong>⚠️ needs telegram-webhook redeploy</strong></td></tr>
+<tr><td><code>ce91936</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Retire the <code>stg_food_log_review</code> row when a staged item is clarified (mig 055) — no more phantom review-queue entries. ✅ live (webhook v7 deployed 2026-06-09)</td></tr>
+<tr><td><code>7c635fe</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. ✅ live (webhook v7 deployed 2026-06-09)</td></tr>
 <tr><td><code>390985c</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Storage RLS policy so the drain can read <code>health-media</code> images (mig 053) — the real reason photos never reached the vision model</td></tr>
 <tr><td><code>aad3f4d</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>A photo is always a log, never a brief (C3) — enforce in drain + tests</td></tr>
 <tr><td><code>9964506</code></td><td>2026-06-09</td><td><span style="color:#6b7280;font-weight:600;">docs</span></td><td>Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model</td></tr>
