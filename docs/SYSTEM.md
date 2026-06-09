@@ -1247,3 +1247,61 @@ These rules are sourced from `CLAUDE.md` and apply to every code change, migrati
 6. **Never modify auth logic without explicit user instruction** — the authentication, JWT claim injection, RLS policy structure, and `is_maintainer()` / `has_profile_access()` DB functions are frozen. No refactoring, "cleanup", or "simplification" of these without an explicit instruction from the owner.
 
 7. **When stuck for more than 2 attempts, stop and ask** — do not keep trying variations on a failing approach. Surface the blocker clearly and ask for guidance.
+
+---
+
+## 10. Verification Tests
+
+Live verification for the 2026-06-08/09 changes — tick each as you confirm it in Telegram. Run as PC unless noted.
+
+(Markdown checkboxes are text `[ ]` — tick by editing to `[x]`.)
+
+### Group A — Text logging (single extractor)
+
+| ✓ | Test | Send | Expect | Proves |
+|---|------|------|--------|--------|
+| `[ ]` | **A1** | `took D3, K2, magnesium citrate, omega-3` | ✅ "Logged 4 supplements: …" (names all four) | multi-supplement + display-name match + item count |
+| `[ ]` | **A2** | `took my nutritional yeast` | ✅ logged (5g default) | dose-less supplement + regimen-dose default |
+| `[ ]` | **A3** | `ate 2 eggs and a banana` | ✅ "Logged 2 items: …" | multi-item food, natural phrasing |
+| `[ ]` | **A4** | `add half a thai tea shake` | ✅ ~95 kcal / 17.5P (NOT 190/35) | portion scaling (#10) + food_reference |
+
+### Group B — Clarification loop (the keystone)
+
+| ✓ | Test | Send | Expect | Proves |
+|---|------|------|--------|--------|
+| `[ ]` | **B1** | `took my supplement` (vague) | 📋 a SPECIFIC question ("which supplement?"), NOT a silent log | confidence gate + generic guard + descriptive feedback |
+| `[ ]` | **B2** | LONG-PRESS B1's question → Reply → `magnesium bisglycinate` | 📥 "Got it — updating that…" then ✅ logged | reply-to-clarify round-trip (#5) — the unproven one |
+| `[ ]` | **B3** | after B2, check no duplicate | only ONE Magnesium Bisglycinate entry | clarify supersedes, no dupe |
+
+> **NOTE:** B2 MUST be an actual Telegram reply (long-press the bot's message → Reply), not a typed follow-up — that's the correlation mechanism.
+
+### Group C — Photo path (consolidation didn't break it)
+
+| ✓ | Test | Send | Expect | Proves |
+|---|------|------|--------|--------|
+| `[ ]` | **C1** | a clear meal photo, caption "lunch" | ✅ logged with macros | photo path survives single extractor |
+| `[ ]` | **C2** | a nutrition-label photo ("this shake") | macros read from label (not "unidentified") | label reading + max_tokens fix |
+| `[ ]` | **C3** | a blurry/ambiguous food photo | 📋 asks what it is (clarify), not a wrong guess | clarify-on-uncertainty on photos |
+
+### Group D — Brief / summary
+
+| ✓ | Test | Send / Check | Expect | Proves |
+|---|------|--------------|--------|--------|
+| `[ ]` | **D1** | `how am I doing?` | the daily brief (~25s) | brief routing |
+| `[ ]` | **D2** | check D1's Energy line | "… in − … out (BMR 1935 + … activity) · net −… deficit" (NOT "+ surplus") | energy-balance fix |
+| `[ ]` | **D3** | check D1's WHOOP line | fresh recovery, no false "⚠️ >24h old" | refresh-on-interaction + tz-safe staleness |
+| `[ ]` | **D4** | check D1's food day boundary | only today's (Thailand) meals counted | local-timezone fix |
+| `[ ]` | **D5** | `thanks!` | the brief, NOT a junk log | junk rejection |
+
+### Group E — Dea (minor-safe), after she links
+
+| ✓ | Test | Send (as Dea) | Expect | Proves |
+|---|------|---------------|--------|--------|
+| `[ ]` | **E1** | Dea sends her link code from her phone | "✅ Account linked." | link + is_minor=true |
+| `[ ]` | **E2** | Dea sends `had a banana` | ✅ growth wording ("Tracked… Nice! 💪"), no deficit talk | minor-safe confirmation |
+| `[ ]` | **E3** | Dea sends `how am I doing?` | brief with no calorie-deficit line, no Viome restrictions | minor-safe brief |
+| `[ ]` | **E4** | Dea sends a vague one → reply to clarify | warm, simple question (no clinical language) | minor-aware clarify loop |
+
+### What pass means
+
+Must-pass before relying = **A1–A4, B1–B2, C1, D1–D2**. **B2 is the keystone** (proves the clarify architecture). If any C test logs a wrong guess instead of asking, the confidence calibration needs a nudge.

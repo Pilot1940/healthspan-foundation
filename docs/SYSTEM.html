@@ -142,6 +142,7 @@ code{
 <a href="#sec-7">7. MAINTENANCE RUNBOOK</a>
 <a href="#sec-8">8. NON-NEGOTIABLE RULES</a>
 <a href="#sec-9">9. BACKLOG</a>
+<a href="#sec-10">10. VERIFICATION TESTS</a>
   </nav>
 </aside>
 <main class="content">
@@ -1758,6 +1759,207 @@ produce duplicate <code>food_logs</code>. There is no guard against this in prod
 it cannot happen in normal flow (atomic CAS claim via <code>claim_inbox_cluster</code>).
 Document the manual cleanup query in <code>CLAUDE.md</code>.
 <strong>Priority: Low.</strong></p>
+</section>
+<section id="sec-10">
+<h2 class="section-header">10. VERIFICATION TESTS</h2>
+<p>Live verification for the 2026-06-08/09 changes — tick each as you confirm it in Telegram.
+Run as PC unless noted.</p>
+
+<h3>Group A — Text logging (single extractor)</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Send</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>A1</strong></td>
+<td><code>took D3, K2, magnesium citrate, omega-3</code></td>
+<td>✅ &quot;Logged 4 supplements: …&quot; (names all four)</td>
+<td>multi-supplement + display-name match + item count</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>A2</strong></td>
+<td><code>took my nutritional yeast</code></td>
+<td>✅ logged (5g default)</td>
+<td>dose-less supplement + regimen-dose default</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>A3</strong></td>
+<td><code>ate 2 eggs and a banana</code></td>
+<td>✅ &quot;Logged 2 items: …&quot;</td>
+<td>multi-item food, natural phrasing</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>A4</strong></td>
+<td><code>add half a thai tea shake</code></td>
+<td>✅ ~95 kcal / 17.5P (NOT 190/35)</td>
+<td>portion scaling (#10) + food_reference</td>
+</tr>
+</tbody></table></div>
+
+<h3>Group B — Clarification loop (the keystone)</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Send</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>B1</strong></td>
+<td><code>took my supplement</code> (vague)</td>
+<td>📋 a SPECIFIC question (&quot;which supplement?&quot;), NOT a silent log</td>
+<td>confidence gate + generic guard + descriptive feedback</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>B2</strong></td>
+<td>LONG-PRESS B1&#x27;s question → Reply → <code>magnesium bisglycinate</code></td>
+<td>📥 &quot;Got it — updating that…&quot; then ✅ logged</td>
+<td>reply-to-clarify round-trip (#5) — the unproven one</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>B3</strong></td>
+<td>after B2, check no duplicate</td>
+<td>only ONE Magnesium Bisglycinate entry</td>
+<td>clarify supersedes, no dupe</td>
+</tr>
+<tr>
+<td colspan="5"><strong>NOTE:</strong> B2 MUST be an actual Telegram reply (long-press the bot&#x27;s message → Reply), not a typed follow-up — that&#x27;s the correlation mechanism.</td>
+</tr>
+</tbody></table></div>
+
+<h3>Group C — Photo path (consolidation didn&#x27;t break it)</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Send</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>C1</strong></td>
+<td>a clear meal photo, caption &quot;lunch&quot;</td>
+<td>✅ logged with macros</td>
+<td>photo path survives single extractor</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>C2</strong></td>
+<td>a nutrition-label photo (&quot;this shake&quot;)</td>
+<td>macros read from label (not &quot;unidentified&quot;)</td>
+<td>label reading + max_tokens fix</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>C3</strong></td>
+<td>a blurry/ambiguous food photo</td>
+<td>📋 asks what it is (clarify), not a wrong guess</td>
+<td>clarify-on-uncertainty on photos</td>
+</tr>
+</tbody></table></div>
+
+<h3>Group D — Brief / summary</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Send / Check</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>D1</strong></td>
+<td><code>how am I doing?</code></td>
+<td>the daily brief (~25s)</td>
+<td>brief routing</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>D2</strong></td>
+<td>check D1&#x27;s Energy line</td>
+<td>&quot;… in − … out (BMR 1935 + … activity) · net −… deficit&quot; (NOT &quot;+ surplus&quot;)</td>
+<td>energy-balance fix</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>D3</strong></td>
+<td>check D1&#x27;s WHOOP line</td>
+<td>fresh recovery, no false &quot;⚠️ &gt;24h old&quot;</td>
+<td>refresh-on-interaction + tz-safe staleness</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>D4</strong></td>
+<td>check D1&#x27;s food day boundary</td>
+<td>only today&#x27;s (Thailand) meals counted</td>
+<td>local-timezone fix</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>D5</strong></td>
+<td><code>thanks!</code></td>
+<td>the brief, NOT a junk log</td>
+<td>junk rejection</td>
+</tr>
+</tbody></table></div>
+
+<h3>Group E — Dea (minor-safe), after she links</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Send (as Dea)</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>E1</strong></td>
+<td>Dea sends her link code from her phone</td>
+<td>&quot;✅ Account linked.&quot;</td>
+<td>link + is_minor=true</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>E2</strong></td>
+<td>Dea sends <code>had a banana</code></td>
+<td>✅ growth wording (&quot;Tracked… Nice! 💪&quot;), no deficit talk</td>
+<td>minor-safe confirmation</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>E3</strong></td>
+<td>Dea sends <code>how am I doing?</code></td>
+<td>brief with no calorie-deficit line, no Viome restrictions</td>
+<td>minor-safe brief</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>E4</strong></td>
+<td>Dea sends a vague one → reply to clarify</td>
+<td>warm, simple question (no clinical language)</td>
+<td>minor-aware clarify loop</td>
+</tr>
+</tbody></table></div>
+
+<h4>What pass means</h4>
+<p>Must-pass before relying = <strong>A1–A4, B1–B2, C1, D1–D2</strong>. <strong>B2 is the
+keystone</strong> (proves the clarify architecture). If any C test logs a wrong guess
+instead of asking, the confidence calibration needs a nudge.</p>
 </section>
 
   </div>
