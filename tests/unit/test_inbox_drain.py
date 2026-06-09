@@ -420,6 +420,65 @@ def test_run_once_failed_on_vision_error():
     assert len(summary["errors"]) == 1
 
 
+def test_run_once_photo_never_briefs():
+    """C3 regression: a caption-less / ambiguous PHOTO that the model classifies as
+    'brief' must STAGE for clarification (an image is ALWAYS a log), never silently
+    compose a brief and drop the photo. Reproduces the 2026-06-09 French-press miss."""
+    identities = [{"chat_id": 99, "is_minor": False,
+                   "profile_id": _PC_PROFILE_ID, "display_name": "PC"}]
+    item = _item("r1", kind="unknown", caption="")
+    item["storage_path"] = "telegram/x/1.jpg"  # a photo IS attached
+    db = _db([
+        (200, identities),                       # telegram_identities
+        (200, [item]),                           # fetch_settled
+        (200, [{"id": "r1", "status": "processing"}]),  # claim r1
+        (200, []),                               # mark_rows staged PATCH
+    ])
+
+    with patch("monitor.inbox_drain.vision_extract", return_value={"kind": "brief"}), \
+         patch("monitor.inbox_drain.get_signed_url", return_value="https://signed/url"), \
+         patch("monitor.inbox_drain._download_image", return_value=(b"img", "image/jpeg")), \
+         patch("monitor.inbox_drain.describe_stage", return_value="what is this?"), \
+         patch("monitor.inbox_drain.telegram_send", return_value=None):
+        summary = run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    # Image present + model said "brief" → staged for clarification, nothing written,
+    # and (crucially) NOT queued as a brief.
+    assert summary["staged"] == 1
+    assert summary["written"] == 0
+
+
+def test_run_once_textonly_brief_still_briefs():
+    """Guard is image-gated: a text-only 'brief' classification (no photo) is still a
+    brief — added to brief_profiles, nothing staged."""
+    identities = [{"chat_id": 99, "is_minor": False,
+                   "profile_id": _PC_PROFILE_ID, "display_name": "PC"}]
+    item = _item("r1", kind="unknown", caption="how am I doing?")  # storage_path stays None
+    db = _db([
+        (200, identities),
+        (200, [item]),
+        (200, [{"id": "r1", "status": "processing"}]),
+        (200, []),  # mark_rows done PATCH
+    ])
+
+    with patch("monitor.inbox_drain.vision_extract", return_value={"kind": "brief"}), \
+         patch("monitor.brief.compose_brief", return_value="brief text") as mock_brief, \
+         patch("monitor.inbox_drain.telegram_send", return_value=None):
+        summary = run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    assert summary["staged"] == 0
+    assert summary["written"] == 0
+    mock_brief.assert_called_once()  # text-only brief still composes a brief
+
+
 def test_run_once_empty_inbox():
     """Empty inbox → summary zeros, no API calls."""
     db = _db([

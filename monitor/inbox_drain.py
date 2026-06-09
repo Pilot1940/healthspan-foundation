@@ -1084,6 +1084,24 @@ def _process_cluster(
     meal_verdict: str = "clean"
     meal_flags: list[str] = []
 
+    # An image is ALWAYS a log, never a brief. The vision prompt says so, but the model
+    # occasionally returns "brief" for a caption-less / ambiguous photo (e.g. a French
+    # press with no caption). Enforce the rule in code: if a photo is attached, a "brief"
+    # classification means the model FAILED TO IDENTIFY the food — stage it for
+    # clarification (the C3 path) rather than silently composing a brief and dropping it.
+    if kind == "brief" and image_blocks:
+        reason = "couldn't tell what's in this photo — reply with what it is"
+        mark_rows(db, _ids(cluster), "staged", stage_reason=reason)
+        summary["staged"] += 1
+        if per_chat is not None:
+            per_chat.setdefault(str(chat_id), {"written": 0, "staged": 0})["staged"] += 1
+        msg = describe_stage(api_key, model, raw_text, "food", reason, {}, is_minor)
+        mid = telegram_send(token, chat_id, msg)
+        if mid:  # correlate a future reply back to these staged rows
+            db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"},
+                      {"clarify_message_id": mid})
+        return
+
     # Brief request — the LLM decided this message is a question/summary/greeting, not a
     # log. Record the profile so run_once sends ONE brief at end-of-run; write nothing.
     if kind == "brief":
