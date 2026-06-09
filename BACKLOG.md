@@ -368,3 +368,40 @@ narrow code fix:** linking a free-text message to a pending staged item without 
 worse than a stale row PC can dismiss). The genuine open question is a **design** one for PC: a minor's
 ambiguous photo currently does two things at once — asks the minor to reply-clarify AND queues for PC.
 Should those be one path or two? PC's call; not a code task until decided.
+
+---
+
+## #16 — The "15 environmental" unit-test failures are actually STALE-CONTRACT — **OPEN, MED**
+
+**Severity:** MED · **Owner:** CC · **Status:** OPEN — surfaced by the 2026-06-09 deep scan; CLAUDE.md note corrected.
+
+`tests/unit/test_inbox_drain.py` + `test_brief.py` have ~15 failures long labeled "environmental
+(real-API 401 + prompt drift)". The scan **disproved that**: none are API/network failures — all are
+deterministic assertions against code that intentionally evolved past them. Taxonomy:
+- **Removed surface** (delete/rewrite): `write_supplement` wrapper gone (`test_write_supplement_*` ×3);
+  `_VISION_PROMPTS` collapsed to one `unknown` key (`test_food_vision_prompt_*` ×2).
+- **Redefined contract**: `supplement_is_complete` now id-only/dose-optional (`test_supplement_is_complete_*`,
+  `test_supplement_missing_dose_stages`, `test_supplement_no_match_stages`); `summary["written"]` counts
+  per-item not per-cluster (`test_food_list_writes_each_item`); learn-on-clarify/regimen-default
+  (`test_unknown_kind_reclassified_as_food_list`); brief gained an unconditional `profiles` select
+  (`test_brief_composes_from_mocked_data`); `vision_extract` error shape (`test_vision_extract_*`).
+- **Product-significant** (`test_completeness_gate_complete_shake_autowrites`): the enforced confidence
+  gate (commit `ccc2eec`) force-stages any item below the confidence threshold regardless of completeness.
+  In PROD the threshold is `ingest.confidence_threshold = 0.3` (system_config), so a complete shake at
+  conf 0.5 AUTO-LOGS — the test's hardcoded 0.7 overstates blast radius. Fix: assert against the prod
+  value (0.3) or assert force_stage=True for the enforced gate.
+
+**Fix, don't xfail** — there is no pending product fix behind these, so xfail would mislabel them as known
+defects. Bring current in one `test:` commit. ~5 delete/rewrite, ~8 fixture/string repoint, 2 prompt-key
+repoint (the meal_type CHECK invariant at `inbox_drain.py` is still live — keep that assertion).
+
+## #17 — `biomarkers.source` has no controlled vocabulary / CHECK — **OPEN, LOW**
+
+**Severity:** LOW · **Owner:** PC/CC · **Status:** OPEN (data-hygiene). The Jun-6 reticulocyte backfill
+landed `source='lab_report'` while its 32 panel-siblings use `blood_test`. `biomarkers.source` is
+documented free-text (mig 016 comment: "manual_import | manual_skill | lab report etc.") with NO CHECK,
+so off-label values are silently accepted. Nothing consumes `source` today (no view/skill branches on
+it), so zero functional impact — but intra-panel inconsistency is avoidable. Options: normalize the one
+row to `blood_test`; optionally add a `system_config`-driven allowlist (rule #1) if `source` ever drives
+logic. Tied to the broader provenance gap: this row also bypassed `stg_biomarker_review` (rule #2) as a
+direct maintainer write, leaving no `staging_id`/`document_id` audit trail.

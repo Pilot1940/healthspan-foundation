@@ -44,6 +44,20 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-09)
 
+- **mig 057 + end-to-end deep scan (2026-06-09).** `reticulocyte_count` metric_definition added
+  (mig 057, commit `05669dc`) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal).
+  A scoped 5-dimension scan (biomarker integrity, brief pipeline, schema/RLS, docs drift, test health)
+  ran via Workflow + advisor. Verdicts: brief pipeline + schema/RLS clean; docs were materially stale
+  (now fixed — SYSTEM.md/html migration history → 057, table count 61 base/7 views, Haiku→Sonnet
+  contradiction, minor-brief narrative). **Two data-hygiene flags on the reticulocyte row** (manual
+  backfill, bypassed staging): `measured_at` Jun 6 vs the panel's Jun 5 (likely off-by-one; unverifiable
+  without the source PDF — NOT auto-changed), and `source='lab_report'` vs the panel's `blood_test`
+  (cosmetic; `biomarkers.source` is free-text, nothing consumes it). Both left for PC to confirm.
+- **Explicit brief request bypasses the post-log dedup (commit `d2d5d3d`, 2026-06-09).** The cross-run
+  `brief.dedup_sec` (600s) is for collapsing burst post-log briefs; it was wrongly swallowing an
+  explicit "how am I doing?" sent shortly after a food-log. Now only auto post-log briefs dedup; an
+  explicit request always sends. Also guarded: `push_log` only records `'sent'` when `compose_brief`
+  actually sent (truthy return), not for an inactive-identity no-op.
 - **Minors can now receive the daily brief via per-profile consent (mig 056, 2026-06-09).**
   Previously a minor got log confirmations only — never the full brief (food totals + WHOOP +
   plan), because both brief triggers excluded `is_minor`. New `system_config` key
@@ -117,8 +131,10 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   `{"kind":"brief"}`, the drain now STAGES for clarification (the C3 path) instead of silently
   composing a brief — `if kind == "brief" and image_blocks: …`. With mig 053 the image now reaches
   the model, so this is the residual-ambiguity backstop. Tests: `test_run_once_photo_never_briefs`,
-  `test_run_once_textonly_brief_still_briefs`. (Pre-existing drain test failures are environmental —
-  real-API 401 + prompt drift — not from this change.)
+  `test_run_once_textonly_brief_still_briefs`. (⚠️ The ~15 `test_inbox_drain`/`test_brief` failures were
+  long mislabeled "environmental — real-API 401"; the 2026-06-09 deep scan **disproved that** — they are
+  deterministic STALE-CONTRACT tests against intentionally-evolved code, NOT API/network failures. Fix
+  green, don't xfail — see BACKLOG #16.)
 - **Migrations 050–053 applied** — 050 food kcal floor 25→0; 051 supplements learned stamps;
   052 `learn_supplement` RPC; **053 storage drainer-read RLS** (above).
 

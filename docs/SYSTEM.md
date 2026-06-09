@@ -49,7 +49,7 @@ pipeline.
 | Layer | Technology |
 |---|---|
 | Database | Supabase (PostgreSQL **17.6** + Row Level Security) |
-| AI | Anthropic Claude API (`claude-sonnet-4-6` for drain vision; `claude-haiku-4-5-20251001` for daily brief) |
+| AI | Anthropic Claude API — **one model everywhere: `claude-sonnet-4-6`** (drain vision, clustering, brief, food-classify). `lib/models.HAIKU` stays available for a per-path `system_config` override (e.g. `brief.model`) but nothing uses it by default — see §2.6. |
 | Edge functions | Supabase Deno / TypeScript (`telegram-webhook`, `whoop-webhook`, `trigger-drain`, `whoop-oauth` + `_shared`) |
 | CI / automation | GitHub Actions (`inbox-drain`, `send-brief`, `ci`) |
 | Messaging | Telegram bot (ingestion + confirmations); Google Chat (future push — **not yet in code**) |
@@ -647,7 +647,10 @@ Supabase Postgres with Row Level Security on every table. The applied DB state i
 source of truth — there is no `schema_migrations` table; the migration filename sequence
 (`001`…`NNN`) is the canonical ordering record.
 
-### 4.1 Active Tables (36)
+### 4.1 Active Tables (36 active / 31 dormant)
+
+> Live DB as of 2026-06-09: **61 base tables + 7 views**. Of the base tables ~36 are written by v3; the rest carry RLS but hold no live rows (kept for forward use). Figures are point-in-time — re-count via `select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`.
+
 
 Grouped by domain. The six most-important tables carry full key-column lists; the rest
 carry a one-line purpose. Tables marked `(empty)` or `(dormant)` exist with RLS but hold
@@ -763,7 +766,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–047)
+### 4.4 Migration History (001–057)
 
 | # | File | Summary |
 |---|---|---|
@@ -823,6 +826,14 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 047 | fix_media_inbox_notify | Reverts `fn_media_inbox_notify` to NO auth header (vault lookup returned NULL in pg_net context, causing 401 stalls). trigger-drain runs no-auth. |
 | 048 | app_timezone | Seeds `app.timezone='Asia/Bangkok'` in `system_config`. The daily brief computes "today" as a LOCAL-day UTC window over `logged_at`/`taken_at` instead of the UTC-derived `log_date`/`taken_on` (fixes the 07:00-ICT day rollover + UTC display). |
 | 049 | clarify_loop | `media_inbox.clarify_message_id` + `clarify_count` for the reply-to-clarify loop: a staged item's review message id is stored, a user reply re-queues it (fresh INSERT → AFTER-INSERT trigger fires) with the clarification + original image; `clarify_count` caps rounds at 2. |
+| 050 | food_kcal_min_zero | Food kcal plausibility floor lowered 25→0 (zero-calorie items: black coffee, water). |
+| 051 | supplements_learned_stamps | `supplements.source`/`verified`/`created_at` stamps for the learn-on-clarify path. |
+| 052 | learn_supplement_rpc | `learn_supplement` RPC — auto-adds a user-named supplement not in the catalog (dedup by normalized name; `source='learned'`, `verified=false`). Adults only. |
+| 053 | storage_drainer_read | Storage RLS `SELECT` policy granting the drain service account read on the private `health-media` bucket (the real reason photos never reached the vision model). |
+| 054 | media_inbox_logged_food_ids | `media_inbox.logged_food_ids` — reply-to-correct supersedes an auto-LOGGED food item (webhook deletes those `food_logs`, re-queues; no double-count). |
+| 055 | media_inbox_staged_review_ids | `media_inbox.staged_review_ids` — clarify-supersede retires the staged `stg_food_log_review` row (no phantom review-queue entry). |
+| 056 | brief_minor_optin | Seeds `system_config` `brief.minor_optin_profile_ids` (JSON array) — per-profile maintainer-consent allowlist for sending the daily brief to a MINOR (Dea opted in; Dev/future minors off by default). Data-only (no new table). |
+| 057 | reticulocyte_count_definition | Adds the `reticulocyte_count` metric_definition (unit %, ref 0.5–2.5, plausible 0–15) so the last Jun 2026 Metropolis marker could ingest. Data-only; applied via the postgres role (authenticated cannot INSERT into `metric_definitions`). |
 
 ---
 
@@ -864,9 +875,9 @@ One paragraph per module: what it does, key public functions, and when to reach 
 
 #### monitor/
 
-**inbox_drain.py** — the autonomous ingestion pipeline, triggered by GH Actions on `repository_dispatch inbox-drain`: reads `media_inbox`, atomically claims rows, downloads images from Supabase Storage, sends them to Claude Vision, writes via the `maintainer_ingest_*` SECURITY DEFINER RPCs, and sends Telegram confirmations. `run_once(db, cfg, api_key, token, settle_sec_override)` is the full loop returning a summary dict; `fetch_settled`, `build_clusters` (album grouping by `media_group_id`), `vision_extract`, `write_food/supplement/biomarker`, the `*_is_complete` predicates (auto-write vs force-stage), `lookup_food_reference/lookup_viome_verdicts`, `compute_meal_verdict` (worst-case: avoid>minimize>superfood>clean), and `compose_confirmation` (minor-safe). Note: it uses `HS_ANTHROPIC_API_KEY` (not `ANTHROPIC_API_KEY`); cluster claims are all-or-nothing; it late-imports `monitor.brief` and composes a brief for any adult profile that had a successful food write.
+**inbox_drain.py** — the autonomous ingestion pipeline, triggered by GH Actions on `repository_dispatch inbox-drain`: reads `media_inbox`, atomically claims rows, downloads images from Supabase Storage, sends them to Claude Vision, writes via the `maintainer_ingest_*` SECURITY DEFINER RPCs, and sends Telegram confirmations. `run_once(db, cfg, api_key, token, settle_sec_override)` is the full loop returning a summary dict; `fetch_settled`, `build_clusters` (album grouping by `media_group_id`), `vision_extract`, `write_food/supplement/biomarker`, the `*_is_complete` predicates (auto-write vs force-stage), `lookup_food_reference/lookup_viome_verdicts`, `compute_meal_verdict` (worst-case: avoid>minimize>superfood>clean), and `compose_confirmation` (minor-safe). Note: it uses `HS_ANTHROPIC_API_KEY` (not `ANTHROPIC_API_KEY`); cluster claims are all-or-nothing; it late-imports `monitor.brief` and composes a brief for any profile that had a successful food write (post-log nudge) OR explicitly asked for one. **Minor consent gate:** a minor is briefed only if their profile_id is in `system_config` `brief.minor_optin_profile_ids` (mig 056; Dea opted in, Dev/future minors off by default) — applied to both the post-log and explicit-request triggers. Cross-run brief dedup (`brief.dedup_sec`, default 600s) collapses a burst of post-log briefs but is **bypassed for an explicit brief request** so "how am I doing?" always sends.
 
-**brief.py** — composes and sends the structured daily Telegram health brief after food ingestion (macros vs targets, supplement adherence by slot, WHOOP recovery/HRV/sleep, Viome flags, 2–4 Claude-generated actions). `compose_brief(db, profile_id, cfg, api_key, token, today)` is the single entry point; private `_fetch_*` section fetchers all return empty on error (best-effort) and `_food/_supps/_whoop/_viome_section` render minor-safely. Default model `claude-haiku-4-5-20251001` (override via `brief.model`); Viome is suppressed for minors; `PENDING_SCORE`/`UNSCORABLE` are shown with emoji rather than misleading zeros. CLI uses `ANTHROPIC_API_KEY` (inconsistent with inbox_drain — note when running locally).
+**brief.py** — composes and sends the structured daily Telegram health brief after food ingestion (macros vs targets, supplement adherence by slot, WHOOP recovery/HRV/sleep, Viome flags, 2–4 Claude-generated actions). `compose_brief(db, profile_id, cfg, api_key, token, today)` is the single entry point; private `_fetch_*` section fetchers all return empty on error (best-effort) and `_food/_supps/_whoop/_viome_section` render minor-safely. Default model `models.SONNET` (= `claude-sonnet-4-6`; per-path override via `system_config` `brief.model` — see §2.6); Viome is suppressed for minors; `PENDING_SCORE`/`UNSCORABLE` are shown with emoji rather than misleading zeros. CLI uses `ANTHROPIC_API_KEY` (inconsistent with inbox_drain — note when running locally). `--all` sends to active adults **plus any minor in `brief.minor_optin_profile_ids`**. Note: a CLI/event-driven send does not write the `push_log` brief ledger (only the drain's post-log path does), so it doesn't feed the cross-run dedup — bounded, since `send-brief.yml` has no cron.
 
 **ingest_health.py** — maintainer-only (PC) session-start data-quality surfacing: staging backlog counts and wearable sync failures, never shown to non-maintainers. `is_maintainer(conn)` calls the DB function; `check(conn, recent_days=7)` returns `{maintainer, items}` with `staging`, `sync_failure`, and per-code `errors`. Defence-in-depth (skill-level gate + maintainer-only RLS); psycopg2 only, so it cannot run in supabase_client mode.
 
@@ -1373,7 +1384,7 @@ There is no separate release number — **the deployed git commit IS the version
 The `<commit7>` is the short SHA injected at build time from `GITHUB_SHA`, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:
 
 - **Application code** — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.
-- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 050**. Full DB-side history: §4 + `CLAUDE.md`.
+- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 057**. Full DB-side history: §4 + `CLAUDE.md`.
 
 ### Recent deploys
 
@@ -1381,6 +1392,9 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `05669dc` | 2026-06-09 | schema | `reticulocyte_count` metric_definition (mig 057) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal). |
+| `d2d5d3d` | 2026-06-09 | fix | Explicit brief request ("how am I doing?") bypasses the post-log dedup — only auto post-log briefs are deduped, so a request after a food-log isn't silently swallowed. |
+| `13d51ef` | 2026-06-09 | feat | Minors get the daily brief via a per-profile consent allowlist (mig 056, `brief.minor_optin_profile_ids`; Dea opted in) — both post-log + explicit triggers; WHOOP now flows for her. Cleaned a phantom review-queue row. |
 | `d4e2590` | 2026-06-09 | chore | One model everywhere — Sonnet 4.6 (dropped the Haiku split + `cluster_model` knob) |
 | `bc672c9` | 2026-06-09 | fix | Central model registry (kill retired `claude-3-5-haiku` → 404; clear error on bad ids) + Haiku for clustering + drain concurrency guard + cross-run brief dedup |
 | `ce91936` | 2026-06-09 | fix | Retire the `stg_food_log_review` row when a staged item is clarified (mig 055) — no more phantom review-queue entries. ✅ live (webhook v7 deployed 2026-06-09) |
