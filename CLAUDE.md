@@ -44,6 +44,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-09)
 
+- **Model ids centralized + token-efficiency fixes (commit `bc672c9`, 2026-06-09).** `lib/models.py`
+  is the single source of truth (`HAIKU`/`SONNET`) + `models.create_message()` which turns a
+  retired/invalid model id into a clear error instead of a silent 404. Fixed `ingest/food.py` (was
+  hardcoded `claude-3-5-haiku-20241022`, **retired 2026-02-19** → would 404). `content_cluster_ungrouped`
+  now uses Haiku (`drain.cluster_model`). `inbox-drain.yml` has a `concurrency` group (serialize drains).
+  Cross-run **brief dedup** via `push_log` (`brief.dedup_sec`, default 600s) — no more multiple briefs
+  from a burst of logs. **Skipped** image/prompt caching (#3/#5): net-negative on the common single-vision
+  path. All live via CI (no deploy). New tunable system_config keys (fallbacks active if unset):
+  `drain.cluster_model`, `brief.dedup_sec`.
 - **Staged item clarified → its review row is retired (mig 055, commit `ce91936`, 2026-06-09).**
   A staged food item the user clarified used to leave its `stg_food_log_review` row `pending`
   forever (phantom in the maintainer review queue; no back-link to `media_inbox`). Drain now records

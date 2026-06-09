@@ -1354,6 +1354,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `bc672c9` | 2026-06-09 | fix | Central model registry (kill retired `claude-3-5-haiku` → 404; clear error on bad ids) + Haiku for clustering + drain concurrency guard + cross-run brief dedup |
 | `ce91936` | 2026-06-09 | fix | Retire the `stg_food_log_review` row when a staged item is clarified (mig 055) — no more phantom review-queue entries. ✅ live (webhook v7 deployed 2026-06-09) |
 | `7c635fe` | 2026-06-09 | feat | Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. ✅ live (webhook v7 deployed 2026-06-09) |
 | `390985c` | 2026-06-09 | fix | Storage RLS policy so the drain can read `health-media` images (mig 053) — the real reason photos never reached the vision model |

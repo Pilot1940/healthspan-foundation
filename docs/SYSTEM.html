@@ -159,7 +159,7 @@ code{
     <div class="db-meta">
       <span class="db-label">LIVE · DEPLOYED</span>
       <span class="db-date">2026-06-09</span>
-      <span class="db-ver">ce91936</span>
+      <span class="db-ver">bc672c9</span>
     </div>
   </div>
   <nav>
@@ -2064,6 +2064,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td><code>bc672c9</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Central model registry (kill retired <code>claude-3-5-haiku</code> 404; clear error on bad ids) + Haiku for clustering + drain concurrency guard + cross-run brief dedup</td></tr>
 <tr><td><code>ce91936</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Retire the <code>stg_food_log_review</code> row when a staged item is clarified (mig 055) — no more phantom review-queue entries. ✅ live (webhook v7 deployed 2026-06-09)</td></tr>
 <tr><td><code>7c635fe</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. ✅ live (webhook v7 deployed 2026-06-09)</td></tr>
 <tr><td><code>390985c</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Storage RLS policy so the drain can read <code>health-media</code> images (mig 053) — the real reason photos never reached the vision model</td></tr>
