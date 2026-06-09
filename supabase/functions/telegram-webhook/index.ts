@@ -311,42 +311,54 @@ Deno.serve(async (req) => {
       return new Response("ok", { status: 200 });
     }
 
-    // Reply-to-clarify: if this text is a REPLY to a staged item's review message, treat it
-    // as a clarification — re-queue the original (combined caption + its image) so the drain
-    // re-extracts with the new detail. We INSERT a fresh row (not UPDATE) so the AFTER-INSERT
-    // pg_net trigger fires; the original staged row is retired.
+    // Reply-to-clarify / reply-to-correct: a REPLY to a bot message that the drain tagged
+    // with clarify_message_id. Two cases, both re-queue the original (combined caption +
+    // image) so the drain re-extracts — we INSERT a fresh row (not UPDATE) so the AFTER-INSERT
+    // pg_net trigger fires, then retire the original:
+    //   • status='staged'  → ordinary clarify loop (item was never written).
+    //   • status='done' + logged_food_ids → SUPERSEDE: the item was auto-LOGGED; delete those
+    //     food_logs first so the re-extracted correction REPLACES it (no double-count).
     const replyToId: number | undefined = msg.reply_to_message?.message_id;
     if (replyToId) {
-      const { data: staged } = await db
+      const { data: target } = await db
         .from("media_inbox")
-        .select("id, caption, storage_path, clarify_count")
+        .select("id, caption, storage_path, clarify_count, status, logged_food_ids")
         .eq("clarify_message_id", replyToId)
         .eq("profile_id", profileId)
-        .eq("status", "staged")
+        .in("status", ["staged", "done"])
         .limit(1)
         .maybeSingle();
-      if (staged) {
+      if (target) {
         await db.from("telegram_processed_updates").insert({ update_id: updateId });
-        const prior = staged.clarify_count ?? 0;
+        const prior = target.clarify_count ?? 0;
         if (prior >= 2) {
           // Cap clarification rounds — hand off to the maintainer rather than loop.
           await telegramSend(chatId, "Thanks — I'll have PC take a look at this one.");
           return new Response("ok", { status: 200 });
         }
+        const isSupersede = target.status === "done"
+          && Array.isArray(target.logged_food_ids) && target.logged_food_ids.length > 0;
+        if (isSupersede) {
+          // Delete the original logged entry/entries before re-queuing the correction.
+          // service_role bypasses RLS; scope to this profile for safety.
+          await db.from("food_logs").delete()
+            .in("id", target.logged_food_ids).eq("profile_id", profileId);
+        }
         await db.from("media_inbox").insert({
           profile_id: profileId,
           chat_id: chatId,
           kind: "unknown",
-          storage_path: staged.storage_path,          // re-analyse the original image if any
-          caption: `${staged.caption ?? ""}\n[clarification: ${body}]`.trim(),
+          storage_path: target.storage_path,          // re-analyse the original image if any
+          caption: `${target.caption ?? ""}\n[clarification: ${body}]`.trim(),
           status: "pending",
           clarify_count: prior + 1,
         });
         await db
           .from("media_inbox")
           .update({ status: "done", clarify_message_id: null, stage_reason: "superseded by clarification" })
-          .eq("id", staged.id);
-        await telegramSend(chatId, "📥 Got it — updating that…");
+          .eq("id", target.id);
+        await telegramSend(chatId, isSupersede ? "📥 Updating that — replacing the previous entry…"
+                                               : "📥 Got it — updating that…");
         return new Response("ok", { status: 200 });
       }
     }

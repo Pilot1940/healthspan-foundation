@@ -567,9 +567,16 @@ _VISION_PROMPTS: dict[str, str] = {
         'supplement it is (vague references like "my supplement", "a pill", "that thing", '
         '"the usual"), set its name/description to exactly what the user said and confidence '
         'below 0.3 — the user will be asked to clarify. NEVER invent a specific product. '
-        '(Estimating a reasonable QUANTITY or calories for a food you CAN identify is fine '
-        'and expected — only lower confidence for IDENTITY ambiguity, or a PORTION that '
-        'materially changes the record, e.g. "half or a full bottle?")\n\n'
+        'This applies to IMAGES too: if you are naming a food by GUESSING between options '
+        '("appears to be X or Y") or cannot identify the specific item/brand from the image '
+        'alone, set confidence <= 0.2 and DO NOT log a guessed calorie number — the user '
+        'will be asked what it is. '
+        '(Estimating a reasonable QUANTITY or calories for a food you CAN confidently identify '
+        'is fine and expected — only lower confidence for IDENTITY ambiguity, or a PORTION that '
+        'materially changes the record, e.g. "half or a full bottle?")\n'
+        'HONOR USER-STATED NUMBERS: when the caption/clarification gives explicit macros, '
+        'portions, or quantities (e.g. "25g protein, 125ml skim milk, 7g creatine"), use those '
+        'values verbatim — do NOT re-estimate or override them with your own guess.\n\n'
         'Brief request — questions, status/summary asks, greetings, thanks, or anything that '
         'is NOT a record of intake/measurement (e.g. "how am I doing?", "brief", "summary", '
         '"what\'s my recovery", "hi", "thanks", "did I take my magnesium?"):\n'
@@ -1061,6 +1068,9 @@ def _process_cluster(
         summary["failed"] += 1
         summary["errors"].append(extracted["_error"])
         mark_rows(db, _ids(cluster), "failed", stage_reason=extracted["_error"])
+        # Surface hard failures to the user — a correction that superseded a prior entry
+        # (webhook deleted it) must not vanish silently if re-extraction then errors.
+        telegram_send(token, chat_id, "⚠️ Couldn't read that one — please re-send it.")
         return
 
     # The single extractor ALWAYS returns {"kind":…, "data":…} — re-dispatch on the kind
@@ -1078,6 +1088,7 @@ def _process_cluster(
     rpc_status = "failed"
     n_written = 1  # how many rows this cluster wrote — multi-item food/supplement set this
     stage_reason_out: str | None = None  # reason surfaced in the descriptive review message
+    written_food_ids: list[str] = []  # food_logs ids written (for supersede-on-reply); food only
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
@@ -1188,6 +1199,7 @@ def _process_cluster(
         else:
             rpc_status = "inserted"
             mark_rows(db, _ids(cluster), "done")
+            written_food_ids = list(inserted_ids)  # for supersede-on-reply correlation
 
         # Viome cross-check — collect all ingredient + description candidates across items
         if rpc_status == "inserted" and not is_minor:
@@ -1397,11 +1409,18 @@ def _process_cluster(
         if tline:
             msg = f"{msg}\n{tline}"
     mid = telegram_send(token, chat_id, msg)
-    # If this item staged, store the review message's id so a user REPLY to it correlates
-    # back here (reply-to-clarify loop). Without this the reply can't be matched.
-    if rpc_status == "staged" and mid:
-        db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"},
-                  {"clarify_message_id": mid})
+    # Correlate a future REPLY back to this message:
+    #   • staged item        → reply re-extracts (existing clarify loop), OR
+    #   • inserted FOOD item  → reply SUPERSEDES (webhook deletes logged_food_ids, re-queues).
+    # We store clarify_message_id for both; logged_food_ids only for inserted food so the
+    # webhook knows which rows to delete. Supplements/biomarkers are intentionally NOT
+    # correlated yet (they'd double-count on correction — deferred; see migration 054).
+    if mid and (rpc_status == "staged"
+                or (rpc_status == "inserted" and kind == "food")):
+        patch: dict[str, Any] = {"clarify_message_id": mid}
+        if rpc_status == "inserted" and kind == "food" and written_food_ids:
+            patch["logged_food_ids"] = written_food_ids
+        db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"}, patch)
 
 
 def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_override: int | None = None) -> dict:

@@ -362,7 +362,7 @@ def test_run_once_written():
     with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"), \
+         patch("monitor.inbox_drain.telegram_send", return_value=4242), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}):
         summary = run_once(db, {
@@ -389,7 +389,7 @@ def test_run_once_staged():
     with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         summary = run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -409,7 +409,7 @@ def test_run_once_failed_on_vision_error():
     ])
 
     with patch("monitor.inbox_drain.vision_extract", return_value=error_extraction), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         summary = run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -477,6 +477,39 @@ def test_run_once_textonly_brief_still_briefs():
     assert summary["staged"] == 0
     assert summary["written"] == 0
     mock_brief.assert_called_once()  # text-only brief still composes a brief
+
+
+def test_run_once_logged_food_stores_supersede_link():
+    """Inserted food stores clarify_message_id (the 'Logged' msg id) + logged_food_ids so a
+    REPLY to that message can SUPERSEDE the entry (webhook deletes those food_logs, re-queues)
+    instead of double-counting."""
+    db = _make_db_for_run_once([
+        (200, {"id": "food-uuid-1", "status": "inserted"}),  # maintainer_ingest_food
+        (200, []),
+    ])
+    captured: list[tuple] = []
+    orig_update = db.update
+    def spy(table, match, patch, **kwargs):
+        captured.append((table, patch))
+        return orig_update(table, match, patch, **kwargs)
+    db.update = spy  # type: ignore[method-assign]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
+         patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}), \
+         patch("monitor.inbox_drain.telegram_send", return_value=7777):
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    store = [p for (t, p) in captured if t == "media_inbox" and "clarify_message_id" in p]
+    assert store, "expected a media_inbox update storing clarify_message_id for logged food"
+    assert store[0]["clarify_message_id"] == 7777
+    assert store[0].get("logged_food_ids") == ["food-uuid-1"]
 
 
 def test_run_once_empty_inbox():
@@ -580,7 +613,7 @@ def test_completeness_gate_complete_shake_autowrites():
     with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["written"] == 1
@@ -602,7 +635,7 @@ def test_completeness_gate_bare_caption_stages():
     with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -634,7 +667,7 @@ def test_food_list_writes_each_item():
     with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
@@ -665,7 +698,7 @@ def test_food_list_mixed_status_stages_cluster():
     with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -689,7 +722,7 @@ def test_empty_vision_stages_not_fails():
 
     stage_result = {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
     with patch("monitor.inbox_drain.vision_extract", return_value=stage_result), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -711,7 +744,7 @@ def test_unknown_kind_forces_stage_not_prod():
     # extraction with no kind re-dispatch → falls to the else branch
     extraction = {"confidence": 0.9, "notes": "ran 5k"}
     with patch("monitor.inbox_drain.vision_extract", return_value=extraction), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -851,7 +884,7 @@ def test_run_once_sends_end_summary_written():
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value={}), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={}), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -876,7 +909,7 @@ def test_run_once_sends_end_summary_staged():
     with patch("monitor.inbox_drain.vision_extract", return_value=incomplete), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -896,7 +929,7 @@ def test_run_once_no_summary_on_failure_only():
     db = _make_db_for_run_once([(200, [])])  # mark_rows
 
     with patch("monitor.inbox_drain.vision_extract", return_value=error_extraction), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         run_once(db, {
             "push.inbox_settle_sec": "0",
             "ingest.confidence_threshold": "0.7",
@@ -926,7 +959,7 @@ def test_process_cluster_appends_totals_on_write():
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals", return_value=totals), \
          patch("monitor.inbox_drain.fetch_today_supplement_counts", return_value={"taken": 4, "total": 16}), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {},
                          "tok", summary,
                          profile_ctx={cluster[0]["profile_id"]: ctx},
@@ -954,7 +987,7 @@ def test_process_cluster_no_totals_on_staged():
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.fetch_today_food_totals") as mock_totals, \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {},
                          "tok", summary,
                          profile_ctx={}, today="2026-06-07")
@@ -1000,7 +1033,7 @@ def test_stage_reason_vision_parse_failure():
 
     stage_result = {"confidence": 0.0, "_stage_reason": "vision returned no parseable extraction"}
     with patch("monitor.inbox_drain.vision_extract", return_value=stage_result), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     patch_call = next(c for c in captured if "media_inbox" in c["url"])
@@ -1017,7 +1050,7 @@ def test_stage_reason_vision_error():
 
     with patch("monitor.inbox_drain.vision_extract",
                return_value={"confidence": 0.0, "_error": "connection timeout"}), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     patch_call = next(c for c in captured if "media_inbox" in c["url"])
@@ -1040,7 +1073,7 @@ def test_stage_reason_incomplete_food():
     with patch("monitor.inbox_drain.vision_extract", return_value=_BARE_CAPTION), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
@@ -1067,7 +1100,7 @@ def test_stage_reason_implausible_kcal_from_rpc():
     with patch("monitor.inbox_drain.vision_extract", return_value=implausible), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
@@ -1094,7 +1127,7 @@ def test_stage_reason_unknown_kind():
 
     with patch("monitor.inbox_drain.vision_extract",
                return_value={"confidence": 0.9, "notes": "ran 5k"}), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_call = next(c for c in captured if "maintainer_ingest_food" in c["url"])
@@ -1117,7 +1150,7 @@ def test_stage_reason_absent_on_successful_write():
     with patch("monitor.inbox_drain.vision_extract", return_value=_COMPLETE_SHAKE), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     patch_call = next(c for c in captured if "media_inbox" in c["url"])
@@ -1207,7 +1240,7 @@ def test_supplement_complete_with_match_autowrites():
     with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_FULL), \
          patch("monitor.inbox_drain.lookup_supplement_by_name",
                return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["written"] == 1
@@ -1231,7 +1264,7 @@ def test_supplement_missing_dose_stages():
     with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_DOSE), \
          patch("monitor.inbox_drain.lookup_supplement_by_name",
                return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -1253,7 +1286,7 @@ def test_supplement_no_match_stages():
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_MATCH), \
          patch("monitor.inbox_drain.lookup_supplement_by_name", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -1341,7 +1374,7 @@ def test_unknown_kind_reclassified_as_food_list():
     with patch("monitor.inbox_drain.vision_extract", return_value=classified), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
@@ -1373,7 +1406,7 @@ def test_unknown_kind_reclassified_as_supplement():
     with patch("monitor.inbox_drain.vision_extract", return_value=classified), \
          patch("monitor.inbox_drain.lookup_supplement_by_name",
                return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     rpc_calls = [c for c in captured if "maintainer_ingest_supplement" in c["url"]]
@@ -1395,7 +1428,7 @@ def test_unknown_kind_stays_unknown_stages_with_could_not_classify():
 
     with patch("monitor.inbox_drain.vision_extract",
                return_value={"kind": "unknown", "data": {}}), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     assert summary["staged"] == 1
@@ -1517,7 +1550,7 @@ def test_hooray_resolves_global_macros():
     with patch("monitor.inbox_drain.vision_extract", return_value=_HOORAY_VISION), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=_HOORAY_REF_ROW) as mock_ref, \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
     # lookup_food_reference was called with candidates that include the caption "Hooray"
@@ -1552,7 +1585,7 @@ def test_viome_avoid_food_flags_in_confirmation():
     with patch("monitor.inbox_drain.vision_extract", return_value=coconut_dish), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=avoid_verdict) as mock_viome, \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, cluster := [_item("r1", caption="thai curry")],
                          "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1583,7 +1616,7 @@ def test_viome_superfood_flags_positive_in_confirmation():
     with patch("monitor.inbox_drain.vision_extract", return_value=blueberry_dish), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=superfood_verdict), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, [_item("r1", caption="blueberry bowl")],
                          "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1608,7 +1641,7 @@ def test_viome_verdict_suppressed_for_minor():
     with patch("monitor.inbox_drain.vision_extract", return_value=_FOOD_EXTRACTION), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=avoid_verdict), \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, [minor_item], "key", "model", "now", 0.7,
                          {"42": True}, "tok", summary)
 
@@ -1650,7 +1683,7 @@ def test_learn_from_past_offer_when_no_reference():
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.lookup_past_food_macros", return_value=past_macros) as mock_past, \
-         patch("monitor.inbox_drain.telegram_send") as mock_tg:
+         patch("monitor.inbox_drain.telegram_send", return_value=4242) as mock_tg:
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary,
                          learn_min_logs=2)
 
@@ -1685,7 +1718,7 @@ def test_green_curry_decomposes_to_coconut_milk():
     with patch("monitor.inbox_drain.vision_extract", return_value=green_curry), \
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]) as mock_viome, \
-         patch("monitor.inbox_drain.telegram_send"):
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, [_item("r1", caption="thai green curry")],
                          "key", "model", "now", 0.7, {}, "tok", summary)
 
