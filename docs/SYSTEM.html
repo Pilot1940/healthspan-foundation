@@ -153,13 +153,13 @@ code{
 </head>
 <body>
 <aside class="sidebar">
-  <div class="brand">HealthSpan<small>System Manifest · mig 054</small></div>
+  <div class="brand">HealthSpan<small>System Manifest · mig 055</small></div>
   <div class="deploy-badge">
     <span class="db-dot"></span>
     <div class="db-meta">
       <span class="db-label">LIVE · DEPLOYED</span>
       <span class="db-date">2026-06-09</span>
-      <span class="db-ver">7c635fe</span>
+      <span class="db-ver">ce91936</span>
     </div>
   </div>
   <nav>
@@ -1930,22 +1930,29 @@ Run as PC unless noted.</p>
 <td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
 <td><strong>C1</strong></td>
 <td>a clear meal photo, caption &quot;lunch&quot;</td>
-<td>✅ logged with macros — <em>verified 2026-06-09 · drain@a2b2045 / webhook v6: black coffee photo logged 2 kcal (after kcal-floor fix mig 050)</em></td>
-<td>photo path survives single extractor</td>
+<td>✅ logged with macros — <em>re-verified 2026-06-09 · drain@176c53b: the image is now GENUINELY READ (mig 053 storage RLS); French-press coffee photo logged 5 kcal. The earlier a2b2045 pass was caption-only — photos never reached the model until mig 053.</em></td>
+<td>photo path survives single extractor + image actually reaches vision</td>
 </tr>
 <tr>
 <td><input type="checkbox"></td>
 <td><strong>C2</strong></td>
 <td>a nutrition-label photo (&quot;this shake&quot;)</td>
-<td>macros read from label (not &quot;unidentified&quot;)</td>
+<td>macros read from label (not &quot;unidentified&quot;) — <em>image-read prerequisite now FIXED (mig 053); pending a label-photo test</em></td>
 <td>label reading + max_tokens fix</td>
+</tr>
+<tr style="background:#ecfdf5">
+<td><input type="checkbox" checked> <strong style="color:#16a34a">PASS</strong></td>
+<td><strong>C3</strong></td>
+<td>a blurry/ambiguous food photo</td>
+<td>📋 asks what it is (clarify), not a wrong guess — <em>verified 2026-06-09 · drain@176c53b: ambiguous shake photo (confidence 0.18) STAGED + asked &quot;reply here with what is in it&quot;; the reply re-extracted to ONE entry (180 kcal, 25g protein — honored user-stated macros, no double-count). Pre-mig-053 this silently auto-logged a 300-kcal guess.</em></td>
+<td>clarify-on-uncertainty on photos (stage hedged guesses)</td>
 </tr>
 <tr>
 <td><input type="checkbox"></td>
-<td><strong>C3</strong></td>
-<td>a blurry/ambiguous food photo</td>
-<td>📋 asks what it is (clarify), not a wrong guess</td>
-<td>clarify-on-uncertainty on photos</td>
+<td><strong>C4</strong></td>
+<td>reply to correct a confidently-<strong>LOGGED</strong> photo</td>
+<td>replaces the entry, no double-count (&quot;📥 Updating that — replacing…&quot;) — <em>code live (mig 054, drain + tests); ⚠️ needs telegram-webhook redeploy to activate</em></td>
+<td>supersede-on-reply (logged backstop)</td>
 </tr>
 </tbody></table></div>
 
@@ -2057,6 +2064,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td><code>ce91936</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Retire the <code>stg_food_log_review</code> row when a staged item is clarified (mig 055) — no more phantom review-queue entries. <strong>⚠️ bundles with the pending webhook redeploy</strong></td></tr>
 <tr><td><code>7c635fe</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. <strong>⚠️ needs telegram-webhook redeploy</strong></td></tr>
 <tr><td><code>390985c</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Storage RLS policy so the drain can read <code>health-media</code> images (mig 053) — the real reason photos never reached the vision model</td></tr>
 <tr><td><code>aad3f4d</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>A photo is always a log, never a brief (C3) — enforce in drain + tests</td></tr>

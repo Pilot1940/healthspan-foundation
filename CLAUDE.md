@@ -44,6 +44,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-09)
 
+- **Staged item clarified → its review row is retired (mig 055, commit `ce91936`, 2026-06-09).**
+  A staged food item the user clarified used to leave its `stg_food_log_review` row `pending`
+  forever (phantom in the maintainer review queue; no back-link to `media_inbox`). Drain now records
+  `staged_review_ids` on the row; the webhook marks those review rows `merged` on clarify-supersede.
+  Mirrors `logged_food_ids` (mig 054). **⚠️ bundles with the pending telegram-webhook redeploy.**
+- **Live-test results (2026-06-09, drain@176c53b):** ambiguous shake photo → **staged + asked** (C3
+  PASS, conf 0.18, didn't auto-log a 300-kcal guess); reply re-extracted to **ONE** entry, 25g protein
+  (honored user-stated macros, no double-count); image now genuinely read end-to-end (mig 053). C1
+  re-verified, C3 PASS, C4 (logged-supersede) pending webhook deploy. Maintainer review queue clean.
 - **Reply-to-correct supersedes a logged food item (mig 054, commit `7c635fe`, 2026-06-09).**
   Replying to an AUTO-LOGGED item used to double-count (the reply-to-clarify loop only matched
   STAGED rows). Now the drain stores `clarify_message_id` + `logged_food_ids` on inserted **food**

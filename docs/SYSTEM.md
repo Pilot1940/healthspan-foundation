@@ -1305,9 +1305,10 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 
 | ✓ | Test | Send | Expect | Proves |
 |---|------|------|--------|--------|
-| ✅ **PASS** | **C1** | a clear meal photo, caption "lunch" | ✅ logged with macros — *verified 2026-06-09 · drain@a2b2045 / webhook v6: black coffee photo logged 2 kcal (after kcal-floor fix mig 050)* | photo path survives single extractor |
-| `[ ]` | **C2** | a nutrition-label photo ("this shake") | macros read from label (not "unidentified") | label reading + max_tokens fix |
-| `[ ]` | **C3** | a blurry/ambiguous food photo | 📋 asks what it is (clarify), not a wrong guess | clarify-on-uncertainty on photos |
+| ✅ **PASS** | **C1** | a clear meal photo, caption "lunch" | ✅ logged with macros — *re-verified 2026-06-09 · drain@176c53b: image now GENUINELY READ (mig 053 storage RLS); French-press coffee photo logged 5 kcal. Earlier a2b2045 pass was caption-only — photos never reached the model until mig 053.* | photo path survives single extractor + image actually reaches vision |
+| `[ ]` | **C2** | a nutrition-label photo ("this shake") | macros read from label (not "unidentified") — *image-read prerequisite now FIXED (mig 053); pending a label-photo test* | label reading + max_tokens fix |
+| ✅ **PASS** | **C3** | a blurry/ambiguous food photo | 📋 asks what it is (clarify), not a wrong guess — *verified 2026-06-09 · drain@176c53b: ambiguous shake photo (confidence 0.18) STAGED + asked "reply here with what is in it"; reply re-extracted to ONE entry (180 kcal, 25g protein — honored user-stated macros, no double-count). Pre-mig-053 this silently auto-logged a 300-kcal guess.* | clarify-on-uncertainty on photos (stage hedged guesses) |
+| `[ ]` | **C4** | reply to correct a confidently-**LOGGED** photo | replaces the entry, no double-count ("📥 Updating that — replacing…") — *code live (mig 054, drain + tests); ⚠️ needs telegram-webhook redeploy to activate* | supersede-on-reply (logged backstop) |
 
 ### Group D — Brief / summary
 
@@ -1353,6 +1354,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `ce91936` | 2026-06-09 | fix | Retire the `stg_food_log_review` row when a staged item is clarified (mig 055) — no more phantom review-queue entries. **⚠️ bundles with the pending webhook redeploy** |
 | `7c635fe` | 2026-06-09 | feat | Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. **⚠️ needs telegram-webhook redeploy** |
 | `390985c` | 2026-06-09 | fix | Storage RLS policy so the drain can read `health-media` images (mig 053) — the real reason photos never reached the vision model |
 | `aad3f4d` | 2026-06-09 | fix | A photo is always a log, never a brief (C3) — enforce in drain + tests |
