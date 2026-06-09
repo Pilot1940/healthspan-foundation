@@ -262,6 +262,33 @@ context). Nothing needs to be set or rotated for this secret. See §7.4.
   entirely Telegram, and the planned future push channel (backlog #1) is Google Chat, not
   email.
 
+### 2.6 Claude models & token cost
+
+Model ids are centralized in `lib/models.py` (`HAIKU` = `claude-haiku-4-5`, `SONNET` =
+`claude-sonnet-4-6`); call sites read `system_config` first then fall back. `models.create_message()`
+turns a retired/invalid id into a clear error (the old hardcoded `claude-3-5-haiku-20241022` in
+`food.py` would have 404'd — retired 2026-02-19).
+
+| Path | Model | $/1M (in/out) | ~tokens/call | Frequency |
+|------|-------|---------------|--------------|-----------|
+| Vision extract (photo) | Sonnet 4.6 | $3 / $15 | ~2,460 in · 400 out (image ≈1,600) | per photo — **the cost driver** |
+| Vision extract (text) | Sonnet 4.6 | $3 / $15 | ~860 in · 300 out | per text log |
+| describe_stage (clarify msg) | Sonnet 4.6 | $3 / $15 | ~400 in · 150 out | per staged item |
+| content clustering | **Haiku 4.5** | $1 / $5 | ~300 in · 100 out | per chat w/ ≥2 ungrouped (cheap) |
+| daily brief actions | Haiku 4.5 | $1 / $5 | ~600 in · 150 out | per brief (dedup'd) |
+| food.py classify / WHOOP screenshot | Haiku / Sonnet | — | ~1k / ~4k in | rare / manual |
+
+> **Estimated Anthropic API cost ≈ $6–12/month** (point estimate **~$8**) for **2 active adults**
+> logging ~25 items/day (~half photos). Sonnet vision ~$8 (dominant); all Haiku calls ~$0.25.
+> **~1.3¢ per photo.** Swing factor is photo volume, not model choice. 3 active users (Nanki) ≈
+> $10–15/mo. Infra (Supabase / GH Actions / AWS) is separate, mostly free-tier. App cost — not the
+> Claude Code dev session (`/cost`).
+
+> **"Everything on Sonnet" diff: +~$0.50/month (negligible)** — the only Haiku calls are low-token and
+> vision is already Sonnet. #4 (clustering→Haiku) saves ~$0.02/mo (principle, not dollars). Caching
+> (#3/#5) not worth it: vision prompt (~730 tok) is below Sonnet's 2,048-token cache minimum, and
+> image caching costs +25% on the common single-vision path to save only the rare clarify re-vision.
+
 ---
 
 ## 3. EVENT-DRIVEN PIPELINES
