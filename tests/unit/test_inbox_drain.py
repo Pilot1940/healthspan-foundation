@@ -129,7 +129,9 @@ def test_vision_extract_parse_error_returns_stage_reason():
         result = vision_extract("key", "model", [], "", "food", "now")
 
     assert result["confidence"] == 0.0
-    assert result.get("_stage_reason") == "vision returned no parseable extraction"
+    # vision_extract retries once on a parse miss, then surfaces the unparseable-JSON reason
+    # (with the model's stop_reason) so the caller STAGES rather than fails.
+    assert result.get("_stage_reason") == "vision returned unparseable JSON (stop_reason=None)"
     assert "_error" not in result
 
 
@@ -140,7 +142,8 @@ def test_vision_extract_empty_body_returns_stage_reason():
         result = vision_extract("key", "model", [], "", "food", "now")
 
     assert result["confidence"] == 0.0
-    assert result.get("_stage_reason") == "vision returned no parseable extraction"
+    # Missing "content" key → KeyError caught as a bad response shape (retried once, then staged).
+    assert result.get("_stage_reason") == "vision returned unexpected response shape: 'content'"
 
 
 def test_vision_extract_api_error_returns_error_dict():
@@ -293,21 +296,21 @@ def test_write_biomarker_missing_metric_id_does_not_raise():
     assert isinstance(result, dict)
 
 
-def test_write_supplement_missing_supplement_id_does_not_raise():
+def test_supplement_rpc_args_missing_supplement_id_passes_none():
     """When lookup_supplement_by_name finds no match, extracted has no supplement_id.
-    write_supplement must not KeyError — it should pass None and let the RPC decide."""
-    from monitor.inbox_drain import write_supplement
+    Building the RPC args must not KeyError — it passes p_supplement_id=None and lets the
+    RPC decide (the supplement write path is inline in _process_cluster now; there is no
+    write_supplement wrapper). Preserves the original None-safety invariant."""
+    from monitor.inbox_drain import _supplement_rpc_args
 
-    rpc_result = {"id": "stg-uuid", "status": "staged"}
-    db = _db([
-        (200, rpc_result),
-        (200, []),
-    ])
-    rows = [_item("r1", kind="supplement")]
-    result = write_supplement(db, rows, rows[0]["profile_id"],
-                              {"name": "Unknown Herb", "dose_amount": 500, "dose_unit": "mg"},
-                              confidence=0.6, raw_text="Unknown Herb 500mg")
-    assert isinstance(result, dict)
+    args = _supplement_rpc_args(
+        "profile-1",
+        {"name": "Unknown Herb", "dose_amount": 500, "dose_unit": "mg"},
+        0.6, "Unknown Herb 500mg", False,
+    )
+    assert args["p_supplement_id"] is None  # absent → None, never a KeyError
+    assert args["p_dose_amount"] == 500
+    assert args["p_extracted_name"] == "Unknown Herb"
 
 
 # ── compose_confirmation (minor framing) ──────────────────────────────────────
@@ -710,7 +713,11 @@ def _db_capture(responses: list[tuple[int, Any]]) -> tuple[DbRest, list[dict]]:
 
 
 def test_completeness_gate_complete_shake_autowrites():
-    """The 0.5-confidence full-macro shake must be WRITTEN (force_stage=False)."""
+    """The 0.5-confidence full-macro shake must be WRITTEN (force_stage=False) at the
+    PRODUCTION confidence threshold of 0.3 (ingest.confidence_threshold in system_config).
+    The enforced gate force-stages only items BELOW that threshold; 0.5 >= 0.3 so a
+    complete shake auto-logs — low SELF-REPORTED confidence alone must not block a complete
+    extraction (the original 0.7 threshold here was a test artefact, not the prod value)."""
     db, captured = _db_capture([
         (200, {"id": "food-uuid", "status": "inserted"}),  # rpc
         (200, []),                                          # mark_rows
@@ -723,7 +730,7 @@ def test_completeness_gate_complete_shake_autowrites():
          patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
          patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
          patch("monitor.inbox_drain.telegram_send", return_value=4242):
-        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+        _process_cluster(db, cluster, "key", "model", "now", 0.3, {}, "tok", summary)
 
     assert summary["written"] == 1
     assert summary["staged"] == 0
@@ -781,11 +788,19 @@ def test_food_list_writes_each_item():
 
     rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
     assert len(rpc_calls) == 3
-    assert summary["written"] == 1  # cluster counts once, all items inserted
+    assert summary["written"] == 3  # written counts per ITEM; all 3 items inserted
     assert summary["failed"] == 0
-    # one mark_rows PATCH on media_inbox
-    patches = [c for c in captured if "media_inbox" in c["url"]]
-    assert len(patches) == 1
+    # Cluster STATUS is marked exactly once (by aggregate status), not per-item.
+    status_patches = [c for c in captured
+                      if "media_inbox" in c["url"] and "status" in (c["body"] or {})]
+    assert len(status_patches) == 1
+    assert status_patches[0]["body"]["status"] == "done"
+    # A separate media_inbox PATCH stores the supersede-on-reply link (clarify_message_id +
+    # logged_food_ids) — not a status mark; it carries the inserted food_logs ids.
+    link_patches = [c for c in captured
+                    if "media_inbox" in c["url"] and "logged_food_ids" in (c["body"] or {})]
+    assert len(link_patches) == 1
+    assert link_patches[0]["body"]["logged_food_ids"] == ["f1", "f2", "f3"]
 
 
 def test_food_list_mixed_status_stages_cluster():
@@ -1282,11 +1297,14 @@ def test_supplement_is_complete_missing_id():
 
 
 def test_supplement_is_complete_missing_dose_amount():
-    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_unit": "mg"}) is False
+    # Dose is now OPTIONAL — a resolved supplement id alone is complete (dose defaults
+    # from the regimen, or "I took it" is a valid adherence record without a dose).
+    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_unit": "mg"}) is True
 
 
 def test_supplement_is_complete_missing_dose_unit():
-    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_amount": 500}) is False
+    # Dose is now OPTIONAL — id-only is complete (see above).
+    assert supplement_is_complete({"supplement_id": "uuid-123", "dose_amount": 500}) is True
 
 
 def test_biomarker_is_complete_with_metric_value_unit():
@@ -1359,11 +1377,12 @@ def test_supplement_complete_with_match_autowrites():
     assert rpc["body"]["p_stage_reason"] is None
 
 
-def test_supplement_missing_dose_stages():
-    """Matched supplement but no dose → staged with 'incomplete: missing dose or unit'."""
+def test_supplement_missing_dose_autowrites():
+    """Matched supplement with NO dose now AUTO-WRITES (dose is optional). With no regimen
+    dose to default from, it logs id-only as a valid adherence record — force_stage=False.
+    (Was: missing dose staged. The completeness contract changed to id-only.)"""
     db, captured = _db_capture([
-        (200, {"id": "stg-uuid", "status": "staged",
-               "stage_reason": "incomplete: missing dose or unit"}),
+        (200, {"id": "sl-uuid", "status": "inserted"}),
         (200, []),
     ])
     from monitor.inbox_drain import _process_cluster
@@ -1373,21 +1392,27 @@ def test_supplement_missing_dose_stages():
     with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_DOSE), \
          patch("monitor.inbox_drain.lookup_supplement_by_name",
                return_value=[{"id": "supp-uuid", "name": "berberine"}]), \
+         patch("monitor.inbox_drain.lookup_regimen_dose", return_value=None), \
          patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
-    assert summary["staged"] == 1
+    assert summary["written"] == 1
+    assert summary["staged"] == 0
     rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
-    assert rpc["body"]["p_force_stage"] is True
-    assert rpc["body"]["p_stage_reason"] == "incomplete: missing dose or unit"
+    assert rpc["body"]["p_force_stage"] is False
+    assert rpc["body"]["p_stage_reason"] is None
 
 
 def test_supplement_no_match_stages():
-    """Unresolved supplement (no lookup match) → staged with 'incomplete: no supplement match'."""
+    """Unresolved supplement (no lookup match, even after learn-on-clarify) → staged with
+    'incomplete: no supplement match'. This invariant is STILL live: a supplement that can't
+    be resolved to an id must clarify, never auto-write. A SPECIFIC name triggers a
+    learn_supplement attempt first; here the re-lookup still misses (mock stays empty)."""
     db, captured = _db_capture([
+        (200, {"learned": False}),                       # learn_supplement RPC (no-op here)
         (200, {"id": "stg-uuid", "status": "staged",
                "stage_reason": "incomplete: no supplement match"}),
-        (200, []),
+        (200, []),                                        # mark_rows
     ])
     from monitor.inbox_drain import _process_cluster
     summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
@@ -1395,6 +1420,7 @@ def test_supplement_no_match_stages():
 
     with patch("monitor.inbox_drain.vision_extract", return_value=_SUPP_NO_MATCH), \
          patch("monitor.inbox_drain.lookup_supplement_by_name", return_value=[]), \
+         patch("monitor.inbox_drain.describe_stage", return_value="which supplement?"), \
          patch("monitor.inbox_drain.telegram_send", return_value=4242):
         _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
 
@@ -1404,41 +1430,34 @@ def test_supplement_no_match_stages():
     assert rpc["body"]["p_stage_reason"] == "incomplete: no supplement match"
 
 
-# ── write_supplement / write_biomarker now accept force_stage ─────────────────
+# ── supplement RPC args forward force_stage (inline write path) ───────────────
+# The write_supplement wrapper was removed — supplements write inline in
+# _process_cluster's multi-item loop via maintainer_ingest_supplement, with args built
+# by _supplement_rpc_args. These assert the force_stage/stage_reason are forwarded
+# through that arg builder (the surface the wrapper used to provide).
 
-def test_write_supplement_forwards_force_stage_true():
-    """write_supplement(force_stage=True) sends p_force_stage=True to the RPC."""
-    from monitor.inbox_drain import write_supplement
+def test_supplement_rpc_args_forwards_force_stage_true():
+    """_supplement_rpc_args(force_stage=True) sends p_force_stage=True + stage_reason."""
+    from monitor.inbox_drain import _supplement_rpc_args
 
-    db, captured = _db_capture([
-        (200, {"id": "stg-uuid", "status": "staged"}),
-        (200, []),
-    ])
-    rows = [_item("r1", kind="supplement")]
-    write_supplement(db, rows, rows[0]["profile_id"],
-                     {"name": "berberine"}, confidence=0.9, raw_text="berberine",
-                     force_stage=True, stage_reason="incomplete: no supplement match")
-
-    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
-    assert rpc["body"]["p_force_stage"] is True
-    assert rpc["body"]["p_stage_reason"] == "incomplete: no supplement match"
+    args = _supplement_rpc_args(
+        "profile-1", {"name": "berberine"}, 0.9, "berberine",
+        True, "incomplete: no supplement match",
+    )
+    assert args["p_force_stage"] is True
+    assert args["p_stage_reason"] == "incomplete: no supplement match"
 
 
-def test_write_supplement_forwards_force_stage_false():
-    """write_supplement(force_stage=False) sends p_force_stage=False to the RPC."""
-    from monitor.inbox_drain import write_supplement
+def test_supplement_rpc_args_forwards_force_stage_false():
+    """_supplement_rpc_args(force_stage=False) sends p_force_stage=False."""
+    from monitor.inbox_drain import _supplement_rpc_args
 
-    db, captured = _db_capture([
-        (200, {"id": "sl-uuid", "status": "inserted"}),
-        (200, []),
-    ])
-    rows = [_item("r1", kind="supplement")]
-    write_supplement(db, rows, rows[0]["profile_id"],
-                     {"supplement_id": "s1", "dose_amount": 500, "dose_unit": "mg"},
-                     confidence=0.9, raw_text="berberine 500mg", force_stage=False)
-
-    rpc = next(c for c in captured if "maintainer_ingest_supplement" in c["url"])
-    assert rpc["body"]["p_force_stage"] is False
+    args = _supplement_rpc_args(
+        "profile-1",
+        {"supplement_id": "s1", "dose_amount": 500, "dose_unit": "mg"},
+        0.9, "berberine 500mg", False,
+    )
+    assert args["p_force_stage"] is False
 
 
 def test_write_biomarker_forwards_force_stage_true():
@@ -1488,7 +1507,7 @@ def test_unknown_kind_reclassified_as_food_list():
 
     rpc_calls = [c for c in captured if "maintainer_ingest_food" in c["url"]]
     assert len(rpc_calls) == 2
-    assert summary["written"] == 1
+    assert summary["written"] == 2  # written counts per ITEM; both items inserted
     assert summary["failed"] == 0
 
 
@@ -1548,17 +1567,19 @@ def test_unknown_kind_stays_unknown_stages_with_could_not_classify():
 # ── 040 write-contract audit ──────────────────────────────────────────────────
 
 def test_food_vision_prompt_has_no_unknown_meal_type():
-    """_VISION_PROMPTS['food'] must not offer 'unknown' as a meal_type option.
-    'unknown' is not in food_logs_meal_type_check; offering it causes CHECK violations.
+    """The (single) vision prompt's food schema must not offer 'unknown' as a meal_type
+    option. 'unknown' is not in food_logs_meal_type_check; offering it causes CHECK
+    violations. The regex-gate removal collapsed _VISION_PROMPTS to one 'unknown' key
+    (the router+extractor) — the food meal_type example now lives there.
     """
     from monitor.inbox_drain import _VISION_PROMPTS
-    prompt = _VISION_PROMPTS["food"]
+    prompt = _VISION_PROMPTS["unknown"]
     # 'unknown' must not appear as a meal_type value (it could still appear in prose)
-    assert "meal_type" in prompt, "food prompt should still instruct on meal_type"
+    assert "meal_type" in prompt, "vision prompt should still instruct on meal_type"
     # The prompt uses 'breakfast|lunch|dinner|...' format — check 'unknown' not in that list
     import re as _re
     m = _re.search(r'"meal_type":"([^"]+)"', prompt)
-    assert m, "food prompt should have meal_type example"
+    assert m, "vision prompt should have meal_type example"
     meal_type_options = m.group(1).split("|")
     assert "unknown" not in meal_type_options, (
         f"'unknown' must not be a meal_type option — it fails food_logs_meal_type_check. "
@@ -1567,11 +1588,12 @@ def test_food_vision_prompt_has_no_unknown_meal_type():
 
 
 def test_food_vision_prompt_meal_types_all_valid():
-    """All meal_type options in the food prompt must be in food_logs_meal_type_check."""
+    """All meal_type options in the (single) vision prompt must be in
+    food_logs_meal_type_check."""
     from monitor.inbox_drain import _VISION_PROMPTS
     import re as _re
     valid = {"breakfast", "lunch", "dinner", "snack", "drink", "supplement"}
-    m = _re.search(r'"meal_type":"([^"]+)"', _VISION_PROMPTS["food"])
+    m = _re.search(r'"meal_type":"([^"]+)"', _VISION_PROMPTS["unknown"])
     assert m
     for opt in m.group(1).split("|"):
         assert opt in valid, (

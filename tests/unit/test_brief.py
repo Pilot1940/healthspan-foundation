@@ -27,32 +27,56 @@ from monitor.brief import (
 
 def _mock_db(
     identity=None,
+    profile=None,
     food_rows=None,
     regimens=None,
     supplements=None,
     intakes=None,
     whoop=None,
     viome_food=None,
+    is_maintainer=None,
 ):
-    """Return a MagicMock db whose select() yields test data in call order."""
+    """Return a MagicMock db whose select() yields test data in call order.
+
+    compose_brief's select() call order (current contract):
+      1. telegram_identities
+      2. profiles (display_name → context slug)        ← unconditional, brief.py ~438
+      3. food_logs (food_full)
+      4. supplement_regimens
+      5. supplements (one per regimen)                 ← one call per regimen row
+      6. supplement_intake_logs
+      7. whoop_cycles
+      8. food_logs (viome flags)                       ← adult only (skipped for minors)
+      9. profiles (is_maintainer)                       ← wrapped in try/except
+     10. supplements (learned, review)                  ← only if maintainer
+    The maintainer block (9–10) is best-effort; when side_effect runs out it raises
+    StopIteration which the try/except swallows — so we only need to supply through #8
+    plus an is_maintainer row (default: not a maintainer → block ends after #9).
+    """
     db = MagicMock()
-    # Build a sequence of returns for each select() call order in compose_brief:
-    # 1. telegram_identities
-    # 2. food_logs (food_full)
-    # 3. supplement_regimens
-    # 4. supplements (one per regimen)
-    # 5. supplement_intake_logs
-    # 6. whoop_cycles
-    # 7. food_logs (viome flags)
+    ident = identity if identity is not None else [_default_identity()]
+    is_minor = bool(ident and ident[0].get("is_minor"))
+    regimen_rows = regimens if regimens is not None else []
+    supp_rows = supplements if supplements is not None else []
+
     calls = [
-        identity if identity is not None else [_default_identity()],
-        food_rows if food_rows is not None else [],
-        regimens if regimens is not None else [],
-        supplements if supplements is not None else [],
-        intakes if intakes is not None else [],
-        whoop if whoop is not None else [],
-        viome_food if viome_food is not None else [],
+        ident,                                              # 1. telegram_identities
+        profile if profile is not None else [{"display_name": "PC"}],  # 2. profiles (slug)
+        food_rows if food_rows is not None else [],         # 3. food_logs (full)
+        regimen_rows,                                       # 4. supplement_regimens
     ]
+    # _fetch_supplement_status: only when regimens is non-empty does it then do one
+    # supplements lookup per UNIQUE regimen supplement_id, followed by one intake_logs call.
+    if regimen_rows:
+        unique_ids = list({str(r["supplement_id"]) for r in regimen_rows})
+        for i in range(len(unique_ids)):
+            calls.append([supp_rows[i]] if i < len(supp_rows) else [])
+        calls.append(intakes if intakes is not None else [])  # supplement_intake_logs
+    calls.append(whoop if whoop is not None else [])        # whoop_cycles
+    if not is_minor:
+        calls.append(viome_food if viome_food is not None else [])  # food_logs (viome)
+    # profiles (is_maintainer) — best-effort; default not a maintainer (block ends here).
+    calls.append(is_maintainer if is_maintainer is not None else [{"is_maintainer": False}])
     db.select.side_effect = calls
     return db
 
