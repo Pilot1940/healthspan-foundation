@@ -55,6 +55,8 @@ def classify_food(items: list[str], guidance_hits: list[dict]) -> dict:
     """
     import anthropic  # lazy import so the module loads without the package present
 
+    from lib import models
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -92,8 +94,13 @@ Verdict guidance:
 
 Set confidence lower (< 0.7) when items are vague or portions are unknown."""
 
-    message = client.messages.create(
-        model="claude-3-5-haiku-20241022",
+    # Model id from system_config (ingest.food_model) with a current fallback. Routed through
+    # models.create_message so a retired/invalid id raises a clear error, not a silent 404.
+    # (Was hardcoded claude-3-5-haiku-20241022, RETIRED 2026-02-19 — see lib/models.py.)
+    model = os.environ.get("HS_FOOD_MODEL") or models.HAIKU
+    message = models.create_message(
+        client,
+        model=model,
         max_tokens=512,
         messages=[{"role": "user", "content": prompt}],
     )

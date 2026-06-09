@@ -18,7 +18,8 @@ from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
-_BRIEF_MODEL = "claude-haiku-4-5-20251001"
+from lib import models  # central model-id registry + retired-model guard
+_BRIEF_MODEL = models.HAIKU
 _TIMING_ORDER = ["morning", "lunch", "dinner", "bedtime", "anytime"]
 
 
@@ -377,7 +378,8 @@ def _call_claude_actions(
             "Never use restriction or deficit language. Focus on what to DO."
         )
         client = anthropic.Anthropic(api_key=api_key)
-        resp = client.messages.create(
+        resp = models.create_message(
+            client,
             model=model,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],

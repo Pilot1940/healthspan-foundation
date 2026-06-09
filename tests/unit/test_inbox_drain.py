@@ -42,6 +42,11 @@ def _db(responses: list[tuple[int, Any]]) -> DbRest:
 
     def _handler(request: httpx.Request) -> httpx.Response:
         nonlocal idx
+        # push_log is the cross-run brief-dedup ledger — always empty in unit tests. Short-circuit
+        # it (GET dedup check → [], POST record → ignored) WITHOUT consuming the response cycle, so
+        # adding the dedup didn't shift every downstream mock response.
+        if "push_log" in str(request.url):
+            return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
         status, body = responses[idx % len(responses)]
         idx += 1
         # Build response with explicit content bytes so .json() works reliably

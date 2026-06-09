@@ -44,7 +44,8 @@ from lib.db import get_conn, resolve_profile
 from lib.contract import close_sync_log, log_error, open_sync_log
 
 DEFAULT_SCAN = "~/Library/CloudStorage/Dropbox/Personal/Health - Fitness/Whoop Files/Processed"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+from lib import models  # central model-id registry + retired-model guard
+DEFAULT_MODEL = models.SONNET
 RAW_DATA_DIRNAME = "Whoop RAW Data"   # CSV exports — counted, never imported (API has them)
 MATCH_WINDOW_SEC = 120                # ±2 min start-time match window
 
@@ -120,7 +121,8 @@ def _extract_via_vision(image_path: Path, model: str) -> dict:
     img_b64 = base64.standard_b64encode(image_path.read_bytes()).decode()
 
     client = anthropic.Anthropic(api_key=api_key)
-    resp = client.messages.create(
+    resp = models.create_message(
+        client,
         model=model,
         max_tokens=4096,
         messages=[{

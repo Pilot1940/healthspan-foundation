@@ -7,6 +7,13 @@ on:
     - cron: '30 3 * * *'   # 09:00 IST — daily backstop
   workflow_dispatch:        # manual trigger for debugging
 
+# Serialize drain runs: never two at once (they'd both spend tokens even though the row-level
+# claim() prevents double-writes). cancel-in-progress:false QUEUES a run rather than dropping it,
+# so nothing is lost — the queued run picks up whatever settled while the first was busy.
+concurrency:
+  group: inbox-drain
+  cancel-in-progress: false
+
 jobs:
   drain:
     runs-on: ubuntu-latest
