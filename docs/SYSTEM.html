@@ -153,13 +153,13 @@ code{
 </head>
 <body>
 <aside class="sidebar">
-  <div class="brand">HealthSpan<small>System Manifest · mig 047</small></div>
+  <div class="brand">HealthSpan<small>System Manifest · mig 053</small></div>
   <div class="deploy-badge">
     <span class="db-dot"></span>
     <div class="db-meta">
       <span class="db-label">LIVE · DEPLOYED</span>
       <span class="db-date">2026-06-09</span>
-      <span class="db-ver">506a61c</span>
+      <span class="db-ver">390985c</span>
     </div>
   </div>
   <nav>
@@ -475,6 +475,7 @@ code{
 <h3>2.5 AWS</h3>
 <ul><li><strong>S3 — <code>health-media</code>:</strong> private S3-backed Supabase Storage bucket. Access via **signed</li></ul>
 <p>URLs only**. Photo objects stored at <code>telegram/&lt;profile_id&gt;/&lt;update_id&gt;.jpg</code>. Created via <code>python scripts/hs_ops.py setup-telegram-storage</code>. Uploads use <code>upsert: false</code> (a retry fails silently but is non-fatal — the drain re-fetches).</p>
+<blockquote><strong>Storage RLS (mig 053, 2026-06-09):</strong> <code>storage.objects</code> has RLS <strong>enabled</strong>; the only policy is <code>drainer_read_health_media</code> — <code>SELECT</code> for the drainer service account (<code>healthspan.drainer@chitalkar.com</code>) on <code>bucket_id = 'health-media'</code>. The telegram-webhook <strong>uploads with the service-role key</strong> (bypasses RLS); the drain reads as the <strong>authenticated</strong> drainer user, so it needs this policy. Without it <code>get_signed_url()</code> returns NULL, <code>image_blocks</code> is empty, and the vision model never sees the pixels — the bug that made caption-less photos "brief" and captioned photos read from caption text only. End-users have <strong>no</strong> direct media read access yet; only the drainer is granted (broaden here if a user-facing media viewer is ever built).</blockquote>
 <ul><li><strong>SES (email):</strong> Listed in the stack as the email layer on the <strong><code>bayst.finance</code></strong></li></ul>
 <p>verified domain. <strong>Correctness flag:</strong> <code>pc@baysys.ai</code> is the developer&#x27;s *other* company (BaySys / Bayst Finance), not HealthSpan. It appears in the source material as the intended SES sender, but <strong>no SES sender code exists in this repo</strong> — there is no <code>boto3</code>/<code>sesv2</code>/<code>send_email</code> call and no from-address in <code>lib/</code>, <code>ingest/</code>, <code>monitor/</code>, or any config. SES is therefore <strong>infra-level / aspirational, not yet wired into code</strong>. Treat the <code>bayst.finance</code> domain and <code>pc@baysys.ai</code> from-address as <strong>unverified for this repo</strong> and confirm with PC before relying on them — current outbound messaging is entirely Telegram, and the planned future push channel (backlog #1) is Google Chat, not email.</p>
 </section>
@@ -2056,6 +2057,8 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td><code>390985c</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Storage RLS policy so the drain can read <code>health-media</code> images (mig 053) — the real reason photos never reached the vision model</td></tr>
+<tr><td><code>aad3f4d</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>A photo is always a log, never a brief (C3) — enforce in drain + tests</td></tr>
 <tr><td><code>9964506</code></td><td>2026-06-09</td><td><span style="color:#6b7280;font-weight:600;">docs</span></td><td>Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model</td></tr>
 <tr><td><code>506a61c</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Learn-on-clarify for supplements + maintainer review + brief version footer</td></tr>
 <tr><td><code>ef43472</code></td><td>2026-06-09</td><td><span style="color:#6b7280;font-weight:600;">docs</span></td><td>Commands section + mark C1 / D1–D4 / B1 / B2 PASS; backlog #13</td></tr>

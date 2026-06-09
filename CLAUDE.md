@@ -42,7 +42,29 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
-## Current State (2026-06-08)
+## Current State (2026-06-09)
+
+- **Drain could NEVER read image pixels — fixed (mig 053, 2026-06-09).** Root cause: `storage.objects`
+  has RLS **enabled with ZERO policies** and `health-media` is private. The telegram-webhook uploads
+  with the **service-role key** (bypasses RLS) so objects land fine, but the drain reads as the
+  **authenticated** service-account user `healthspan.drainer@chitalkar.com`, which RLS **denied** →
+  `get_signed_url()` returned NULL → `image_blocks` empty → the vision model never saw the image.
+  Symptom: caption-less photos (e.g. a French press) classified as `brief`; captioned photos were
+  extracted from the **caption TEXT only**, never the pixels. **mig 053** adds a single `SELECT` policy
+  granting ONLY the drainer read access to `health-media` (UID resolved by email, mirrors mig 035;
+  works across ALL profiles' media — the drain is the shared ingestion identity). End-users still have
+  no direct media access; service_role still bypasses for uploads. Verified at the RLS layer (drainer
+  SELECT allowed, other authed user denied). ⚠️ Storage RLS for end-user media access (if ever needed)
+  is still unbuilt — only the drainer is granted.
+- **Photo never routes to `brief` (commit `aad3f4d`, 2026-06-09).** Defense-in-depth in
+  `monitor/inbox_drain.py:_process_cluster`: when an image is attached but the vision model returns
+  `{"kind":"brief"}`, the drain now STAGES for clarification (the C3 path) instead of silently
+  composing a brief — `if kind == "brief" and image_blocks: …`. With mig 053 the image now reaches
+  the model, so this is the residual-ambiguity backstop. Tests: `test_run_once_photo_never_briefs`,
+  `test_run_once_textonly_brief_still_briefs`. (Pre-existing drain test failures are environmental —
+  real-API 401 + prompt drift — not from this change.)
+- **Migrations 050–053 applied** — 050 food kcal floor 25→0; 051 supplements learned stamps;
+  052 `learn_supplement` RPC; **053 storage drainer-read RLS** (above).
 
 - **Migrations 024–028 all applied** (024 drop-backup, 025 query_audit reshape, 026 drop 8
   dead SaaS tables, 027 supplement source vocab +photo, 028 drop 4 more fossils —

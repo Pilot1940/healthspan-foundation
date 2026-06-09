@@ -242,6 +242,15 @@ context). Nothing needs to be set or rotated for this secret. See §7.4.
   URLs only**. Photo objects stored at `telegram/<profile_id>/<update_id>.jpg`. Created via
   `python scripts/hs_ops.py setup-telegram-storage`. Uploads use `upsert: false` (a retry
   fails silently but is non-fatal — the drain re-fetches).
+  - **Storage RLS (mig 053, 2026-06-09):** `storage.objects` has RLS **enabled**; the only policy is
+    `drainer_read_health_media` — `SELECT` for the drainer service account
+    (`healthspan.drainer@chitalkar.com`) on `bucket_id = 'health-media'`. The telegram-webhook
+    **uploads with the service-role key** (bypasses RLS). The drain reads as the **authenticated**
+    drainer user, so it needs this policy — without it `get_signed_url()` returns NULL,
+    `image_blocks` is empty, and the vision model never sees the pixels (the bug that made caption-less
+    photos "brief" and captioned photos read from caption text only). End-users have **no** direct
+    media read access yet — only the drainer is granted (broaden here if a user-facing media viewer is
+    ever built).
 - **SES (email):** Listed in the stack as the email layer on the **`bayst.finance`**
   verified domain. **Correctness flag:** `pc@baysys.ai` is the developer's *other* company
   (BaySys / Bayst Finance), not HealthSpan. It appears in the source material as the
@@ -1344,6 +1353,8 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `390985c` | 2026-06-09 | fix | Storage RLS policy so the drain can read `health-media` images (mig 053) — the real reason photos never reached the vision model |
+| `aad3f4d` | 2026-06-09 | fix | A photo is always a log, never a brief (C3) — enforce in drain + tests |
 | `9964506` | 2026-06-09 | docs | Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model |
 | `506a61c` | 2026-06-09 | feat | Learn-on-clarify for supplements + maintainer review + brief version footer |
 | `ef43472` | 2026-06-09 | docs | Commands section + mark C1 / D1–D4 / B1 / B2 PASS; backlog #13 |
