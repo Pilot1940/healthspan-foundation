@@ -1288,7 +1288,7 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 |---|------|------|--------|--------|
 | ✅ **PASS** | **B1** | `took my supplement` (vague) | 📋 a SPECIFIC question — *verified 2026-06-09: "Add electrolytes" → "For electrolytes, which brand or product name should I log?"* | confidence gate + generic guard + descriptive feedback |
 | ✅ **PASS** | **B2** | LONG-PRESS B1's question → Reply → the name | 📥 "Got it — updating that…" then re-extract | *verified 2026-06-09 (KEYSTONE): reply re-queued, reprocessed, asked an intelligent follow-up (name → dose → brand), then capped at 2 rounds and handed to PC. Reply-to-clarify round-trip (#5) works end-to-end.* |
-| `[ ]` | **B3** | after B2, check no duplicate | only ONE Magnesium Bisglycinate entry | clarify supersedes, no dupe |
+| ✅ **PASS** | **B3** | *(no message — DB check after B2)*: query `supplement_intake_logs` for Magnesium Bisglycinate | only ONE Magnesium Bisglycinate entry — *verified 2026-06-09 via DB: exactly 1 row (2026-06-08 22:43 ICT, 1 tab); the B2 clarify reply superseded the original staged row rather than logging both* | clarify supersedes, no dupe |
 
 > **NOTE:** B2 MUST be an actual Telegram reply (long-press the bot's message → Reply), not a typed follow-up — that's the correlation mechanism.
 
@@ -1322,3 +1322,39 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 ### What pass means
 
 Must-pass before relying = **A1–A4, B1–B2, C1, D1–D2**. **B2 is the keystone** (proves the clarify architecture). If any C test logs a wrong guess instead of asking, the confidence calibration needs a nudge.
+
+---
+
+## 📜 Deploy log
+
+### How versioning works
+
+There is no separate release number — **the deployed git commit IS the version**. Every daily brief ends with a footer:
+
+> `—v <date> · <commit7>` — e.g. `—v 2026-06-09 · 506a61c`
+
+The `<commit7>` is the short SHA injected at build time from `GITHUB_SHA`, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:
+
+- **Application code** — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.
+- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 050**. Full DB-side history: §4 + `CLAUDE.md`.
+
+### Recent deploys
+
+Most-recent first. Curated to deploys that changed live behaviour — keep to the last ~15; full history is `git log`.
+
+| Commit | Date | Type | Change |
+|--------|------|------|--------|
+| `9964506` | 2026-06-09 | docs | Deploy-log sidebar block + Nanki (45F adult) in the multi-tenant model |
+| `506a61c` | 2026-06-09 | feat | Learn-on-clarify for supplements + maintainer review + brief version footer |
+| `ef43472` | 2026-06-09 | docs | Commands section + mark C1 / D1–D4 / B1 / B2 PASS; backlog #13 |
+| `a2b2045` | 2026-06-09 | docs | Mark B1 / B2 PASS — clarify loop verified live |
+| `ee434d8` | 2026-06-09 | fix | Food kcal plausibility floor 25→0 (mig 050) + backlog #12 (catalog gap) |
+| `608467e` | 2026-06-09 | docs | Mark A1 / A2 PASS (webhook v6 / drain@main) |
+| `ad87e24` | 2026-06-09 | fix | Energy line — WHOOP burn IS total (no BMR double-add) + brief context slug |
+| `97d1f76` | 2026-06-09 | docs | Add Verification Tests checklist (§10) |
+| `405f574` | 2026-06-09 | fix | `get_conn` uses `DATABASE_URL` env — refresh-on-interaction was silently failing in CI |
+| `ac47c60` | 2026-06-08 | feat | Portion-scaled `food_reference` (#10) — `servings` multiplier scales the matched serving |
+| `ccc2eec` | 2026-06-08 | refactor | Single extractor + enforced confidence gate (advisor clean pass, #11) |
+| `2627d03` | 2026-06-08 | fix | Store `clarify_message_id` on the MAIN staged path (loop was broken) |
+| `594aaff` | 2026-06-08 | fix | Vague supplement references clarify instead of fuzzy-matching a random row |
+| `093de8a` | 2026-06-08 | docs | Sync migration 049 (clarify loop) into the manifest |
