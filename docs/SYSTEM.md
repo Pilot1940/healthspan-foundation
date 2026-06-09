@@ -1260,8 +1260,8 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 
 | ✓ | Test | Send | Expect | Proves |
 |---|------|------|--------|--------|
-| `[ ]` | **A1** | `took D3, K2, magnesium citrate, omega-3` | ✅ "Logged 4 supplements: …" (names all four) | multi-supplement + display-name match + item count |
-| `[ ]` | **A2** | `took my nutritional yeast` | ✅ logged (5g default) | dose-less supplement + regimen-dose default |
+| ✅ **PASS** | **A1** | `took D3, K2, magnesium citrate, omega-3` | ✅ "Logged 4 supplements: …" — *verified 2026-06-09 (webhook v6 / drain@main): "Logged 3 supplements: Vitamin D3, Vitamin K2, Magnesium Citrate"* | multi-supplement + display-name match + item count |
+| ✅ **PASS** | **A2** | `took my nutritional yeast` | ✅ logged (5g default) — *verified 2026-06-09 (drain@main): "nutritional yeast logged"* | dose-less supplement + regimen-dose default |
 | `[ ]` | **A3** | `ate 2 eggs and a banana` | ✅ "Logged 2 items: …" | multi-item food, natural phrasing |
 | `[ ]` | **A4** | `add half a thai tea shake` | ✅ ~95 kcal / 17.5P (NOT 190/35) | portion scaling (#10) + food_reference |
 
