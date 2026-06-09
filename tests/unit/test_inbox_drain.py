@@ -487,6 +487,54 @@ def test_run_once_textonly_brief_still_briefs():
 _DEA_PROFILE_ID = "3eed5503-a26f-4b88-bb76-075208fa5de3"
 
 
+def test_run_once_explicit_brief_bypasses_dedup():
+    """An EXPLICITLY-requested brief ('how am I doing?') must send even when a post-log brief
+    went out within brief.dedup_sec. The dedup is only for burst post-log nudges. Regression
+    for 2026-06-09: a user logged food (auto brief at 7:17), asked for a brief at 7:22, got
+    'On it…' but no brief — the 4½-min-old auto brief deduped the explicit request away."""
+    identities = [{"chat_id": 99, "is_minor": False,
+                   "profile_id": _PC_PROFILE_ID, "display_name": "PC"}]
+    item = _item("r1", kind="unknown", caption="how am I doing?")  # text-only, no food write
+
+    responses = [
+        (200, identities),
+        (200, [item]),
+        (200, [{"id": "r1", "status": "processing"}]),
+        (200, []),  # mark_rows done
+    ]
+    idx = 0
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        nonlocal idx
+        if "push_log" in str(request.url):
+            # GET = dedup check → a brief sent "just now" (would skip an AUTO brief). POST = insert.
+            body = [{"sent_at": "2999-01-01T00:00:00Z"}] if request.method == "GET" else []
+            return httpx.Response(200, content=json.dumps(body).encode(),
+                                  headers={"content-type": "application/json"})
+        status, b = responses[idx % len(responses)]
+        idx += 1
+        return httpx.Response(status, content=json.dumps(b).encode(),
+                              headers={"content-type": "application/json"})
+
+    client = httpx.Client(transport=httpx.MockTransport(_handler))
+    db = DbRest.__new__(DbRest)
+    db._base = "https://test.supabase.co"
+    db._anon_key = "anon"
+    db._jwt = "jwt"
+    db._client = client
+
+    with patch("monitor.inbox_drain.vision_extract", return_value={"kind": "brief"}), \
+         patch("monitor.brief.compose_brief", return_value="brief text") as mock_brief, \
+         patch("monitor.inbox_drain.telegram_send", return_value=None):
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+        }, "api-key", "tg-token")
+
+    mock_brief.assert_called_once()  # explicit request sends despite a recent brief
+
+
 def test_run_once_minor_no_brief_without_consent():
     """A MINOR's brief request must NOT compose a brief unless their profile_id is in the
     `brief.minor_optin_profile_ids` consent allowlist (default: minors get confirmations only)."""

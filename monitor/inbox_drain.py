@@ -1540,21 +1540,27 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
         if not is_minor_by_pid.get(pid, False) or pid in minor_brief_optin
     }
     if brief_targets:
-        # Cross-run dedup: a burst of logs spanning multiple drain runs (the GH concurrency
-        # guard serializes runs but doesn't merge them) shouldn't each fire a brief for the
-        # same profile. Skip a profile already briefed within brief.dedup_sec; record each
+        # Cross-run dedup: a burst of food LOGS spanning multiple drain runs (the GH concurrency
+        # guard serializes runs but doesn't merge them) shouldn't each fire a post-log brief for
+        # the same profile. Skip a profile already briefed within brief.dedup_sec; record each
         # send in push_log (the outbound-push ledger) so the next run can see it.
+        # EXEMPTION: an EXPLICIT brief request (the user typed "how am I doing?") bypasses the
+        # dedup entirely — it's a direct ask, not a burst side-effect. Only the auto post-log
+        # nudge is deduped, else a user who logs food then asks for their brief gets silently
+        # skipped (you got "On it…" but no brief).
         brief_dedup_sec = int(float(cfg.get("brief.dedup_sec", 600)))
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=brief_dedup_sec)).isoformat()
         try:
             from monitor.brief import compose_brief
             for pid in brief_targets:
-                recent = db.select("push_log", filters={
-                    "profile_id": f"eq.{pid}", "push_type": "eq.brief", "sent_at": f"gt.{cutoff}",
-                }, limit=1)
-                if recent:
-                    log.info("brief dedup: %s briefed within %ss — skipping", pid, brief_dedup_sec)
-                    continue
+                explicit = pid in brief_profiles  # user-requested → never dedup
+                if not explicit:
+                    recent = db.select("push_log", filters={
+                        "profile_id": f"eq.{pid}", "push_type": "eq.brief", "sent_at": f"gt.{cutoff}",
+                    }, limit=1)
+                    if recent:
+                        log.info("brief dedup: %s post-log brief within %ss — skipping", pid, brief_dedup_sec)
+                        continue
                 try:
                     compose_brief(db, pid, cfg, api_key, token, today_date)
                     db.insert("push_log", {"profile_id": pid, "push_type": "brief", "status": "sent"},
