@@ -336,3 +336,35 @@ single ALL policy `has_profile_access(profile_id)`, enabled.
   completeness gate was working correctly — it was the extraction that was blind.
 - v3.2 (2026-06-05): supabase_client auth fix, lazy psycopg2, pinned cold-start, schema-map freshness, 924-char description. Webhook duration/zone-pct/sleep-fields fix deployed; prior-cycle refresh live.
 - Pending elsewhere: migration 016c schema-comment completion (35 unmapped tables) — prompt already with CC.
+
+---
+
+## #14 — Minor daily brief via per-profile consent — **SHIPPED 2026-06-09 (pending commit/push)**
+
+**Severity:** — · **Owner:** PC · **Status:** SHIPPED to working tree + live DB; CI runs `monitor/` directly so it goes live on push.
+
+**What:** Minors were excluded from the daily brief at both triggers (post-log nudge in `run_once`,
+scheduled `send-brief --all`), so Dea got only "Tracked: …" confirmations — no food totals / WHOOP /
+plan, and (because `refresh_recent` lives in `compose_brief`) no WHOOP refresh either. PC consented as
+father+maintainer. Added `system_config` key `brief.minor_optin_profile_ids` (JSON array; mig 056) —
+an explicit per-profile allowlist; Dea opted in, Dev / future minors stay off by default. Both gates now
+admit a minor iff listed. Brief content already minor-safe. WHOOP refresh verified live for Dea.
+
+## #15 — Ambiguous-photo clarify: non-reply correction orphans the staged item — **DESIGN Q, LOW**
+
+**Severity:** LOW · **Where it bites:** PC's maintainer review queue (stale row after the item is already resolved).
+
+The 2026-06-09 incident: Dea's photo couldn't be identified → staged (review row `906847f9` + clarify
+prompt msg 324). Her first correction "No that's banana bread" arrived as a **fresh message, NOT a
+Telegram reply** to msg 324 — so the webhook's clarify-match (keyed on `reply_to_message.message_id`)
+never fired, the staged photo row stayed `staged`, its review row stayed `pending`, and the text was
+*independently* logged as food. She then replied properly to the confirmation → that superseded
+correctly ("Sugar free banana bread", `d6c9fb01`). **Data cleaned 2026-06-09** (906847f9 → `merged`,
+3f831e27 → `done`); item is correctly logged.
+
+**Not a carry-through bug** (earlier hypothesis disproven — the match simply never fired). **No safe
+narrow code fix:** linking a free-text message to a pending staged item without a reply pointer means
+*guessing* which staged item it corrects → would mis-attach unrelated logs to a review row (strictly
+worse than a stale row PC can dismiss). The genuine open question is a **design** one for PC: a minor's
+ambiguous photo currently does two things at once — asks the minor to reply-clarify AND queues for PC.
+Should those be one path or two? PC's call; not a code task until decided.

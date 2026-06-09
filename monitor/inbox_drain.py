@@ -1521,16 +1521,24 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
         telegram_send(token, int(chat_id_str), f"Done — {', '.join(parts)}.")
 
     # Compose and send daily brief — best-effort. Two triggers:
-    #   1. an adult profile that had a food write (post-log nudge), and
+    #   1. a profile that had a food write (post-log nudge), and
     #   2. any profile whose message the LLM classified as a brief request.
+    # Minor consent gate: a MINOR receives a brief (either trigger) ONLY if their
+    # profile_id is in the `brief.minor_optin_profile_ids` allowlist — explicit
+    # per-profile maintainer consent (so a future minor slot, e.g. Dev, stays off by
+    # default). Adults are always eligible.
     # Import here to avoid circular imports at module level.
-    written_adult_profiles: set[str] = {
+    minor_brief_optin: set[str] = {str(p) for p in (cfg.get("brief.minor_optin_profile_ids") or [])}
+    is_minor_by_pid = {str(r["profile_id"]): bool(r.get("is_minor")) for r in identities}
+    written_profiles: set[str] = {
         str(r["profile_id"])
         for r in identities
-        if not r.get("is_minor")
-        and per_chat.get(str(r["chat_id"]), {}).get("written", 0) > 0
+        if per_chat.get(str(r["chat_id"]), {}).get("written", 0) > 0
     }
-    brief_targets = written_adult_profiles | brief_profiles
+    brief_targets = {
+        pid for pid in (written_profiles | brief_profiles)
+        if not is_minor_by_pid.get(pid, False) or pid in minor_brief_optin
+    }
     if brief_targets:
         # Cross-run dedup: a burst of logs spanning multiple drain runs (the GH concurrency
         # guard serializes runs but doesn't merge them) shouldn't each fire a brief for the

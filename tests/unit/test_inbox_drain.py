@@ -484,6 +484,62 @@ def test_run_once_textonly_brief_still_briefs():
     mock_brief.assert_called_once()  # text-only brief still composes a brief
 
 
+_DEA_PROFILE_ID = "3eed5503-a26f-4b88-bb76-075208fa5de3"
+
+
+def test_run_once_minor_no_brief_without_consent():
+    """A MINOR's brief request must NOT compose a brief unless their profile_id is in the
+    `brief.minor_optin_profile_ids` consent allowlist (default: minors get confirmations only)."""
+    identities = [{"chat_id": 99, "is_minor": True,
+                   "profile_id": _DEA_PROFILE_ID, "display_name": "Dea"}]
+    item = _item("r1", kind="unknown", caption="how am I doing?")  # text-only
+    item["profile_id"] = _DEA_PROFILE_ID
+    db = _db([
+        (200, identities),
+        (200, [item]),
+        (200, [{"id": "r1", "status": "processing"}]),
+        (200, []),
+    ])
+
+    with patch("monitor.inbox_drain.vision_extract", return_value={"kind": "brief"}), \
+         patch("monitor.brief.compose_brief", return_value="brief text") as mock_brief, \
+         patch("monitor.inbox_drain.telegram_send", return_value=None):
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+            # no brief.minor_optin_profile_ids → Dea is not consented
+        }, "api-key", "tg-token")
+
+    mock_brief.assert_not_called()  # minor without consent → no brief
+
+
+def test_run_once_minor_brief_with_consent():
+    """A MINOR in the consent allowlist DOES receive a (minor-safe) brief — PC-consented Dea."""
+    identities = [{"chat_id": 99, "is_minor": True,
+                   "profile_id": _DEA_PROFILE_ID, "display_name": "Dea"}]
+    item = _item("r1", kind="unknown", caption="how am I doing?")  # text-only
+    item["profile_id"] = _DEA_PROFILE_ID
+    db = _db([
+        (200, identities),
+        (200, [item]),
+        (200, [{"id": "r1", "status": "processing"}]),
+        (200, []),
+    ])
+
+    with patch("monitor.inbox_drain.vision_extract", return_value={"kind": "brief"}), \
+         patch("monitor.brief.compose_brief", return_value="brief text") as mock_brief, \
+         patch("monitor.inbox_drain.telegram_send", return_value=None):
+        run_once(db, {
+            "push.inbox_settle_sec": "0",
+            "ingest.confidence_threshold": "0.7",
+            "drain.vision_model": '"claude-sonnet-4-6"',
+            "brief.minor_optin_profile_ids": [_DEA_PROFILE_ID],
+        }, "api-key", "tg-token")
+
+    mock_brief.assert_called_once()  # consented minor → brief composes
+
+
 def test_run_once_logged_food_stores_supersede_link():
     """Inserted food stores clarify_message_id (the 'Logged' msg id) + logged_food_ids so a
     REPLY to that message can SUPERSEDE the entry (webhook deletes those food_logs, re-queues)

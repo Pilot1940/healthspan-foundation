@@ -400,7 +400,8 @@ def compose_brief(
     token: str,
     today: str,
 ) -> str:
-    """Compose and send the daily brief for one adult profile. Returns the message text.
+    """Compose and send the daily brief for one profile (minor-safe content when is_minor).
+    Returns the message text.
 
     Called from run_once() (best-effort, never raises) and by the CLI.
     """
@@ -506,7 +507,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Send a daily brief for a profile.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--profile-id", help="Send brief for a specific profile UUID")
-    group.add_argument("--all", action="store_true", help="Send brief for all active adult profiles")
+    group.add_argument("--all", action="store_true",
+                       help="Send brief for all active adult profiles + opted-in minors")
     parser.add_argument("--today", default=datetime.now(timezone.utc).date().isoformat())
     args = parser.parse_args()
 
@@ -525,13 +527,18 @@ def main() -> None:
         token   = os.environ["TELEGRAM_BOT_TOKEN"]
 
         if args.all:
-            # Send to all active adult profiles that have a linked Telegram identity
+            # Send to all active adult profiles + any MINOR explicitly opted in via the
+            # `brief.minor_optin_profile_ids` consent allowlist (per-profile maintainer consent).
+            optin = {str(p) for p in (cfg.get("brief.minor_optin_profile_ids") or [])}
             identities = db.select(
                 "telegram_identities",
-                select="profile_id",
-                filters={"status": "eq.active", "is_minor": "eq.false"},
+                select="profile_id,is_minor",
+                filters={"status": "eq.active"},
             )
-            profile_ids = [r["profile_id"] for r in identities]
+            profile_ids = [
+                r["profile_id"] for r in identities
+                if not r.get("is_minor") or str(r["profile_id"]) in optin
+            ]
         else:
             profile_ids = [args.profile_id]
 

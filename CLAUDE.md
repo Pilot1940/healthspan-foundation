@@ -44,6 +44,26 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-09)
 
+- **Minors can now receive the daily brief via per-profile consent (mig 056, 2026-06-09).**
+  Previously a minor got log confirmations only — never the full brief (food totals + WHOOP +
+  plan), because both brief triggers excluded `is_minor`. New `system_config` key
+  `brief.minor_optin_profile_ids` (JSON array of profile_ids) is an explicit maintainer-consent
+  allowlist: a minor gets a brief (post-log trigger in `monitor/inbox_drain.py:run_once` AND the
+  `send-brief --all` scheduled trigger in `monitor/brief.py`) ONLY if listed. **Dea is opted in**
+  (PC consented as father+maintainer); the dormant Dev slot / any future minor stays brief-off by
+  default. Brief content was already minor-safe (no deficit language, no Viome, no "learned" list).
+  Side-effect: WHOOP now surfaces for Dea — `refresh_recent` runs inside `compose_brief`, so a minor
+  who never got a brief never had her WHOOP refreshed. Verified: Dea's token refreshes + syncs live
+  (3 workouts/3 cycles/2 sleeps on 2026-06-09). Tests: `test_run_once_minor_{no_,}brief_with{out,}_consent`.
+  Goes live on push — CI runs `monitor/` directly (no edge-function deploy).
+  Phantom review row from the same incident **cleaned 2026-06-09**: `stg_food_log_review` 906847f9
+  ("fried chicken") → `merged`, orphaned `media_inbox` 3f831e27 → `done`. Real cause was NOT a
+  carry-through bug — Dea's first correction ("banana bread") arrived as a *fresh message, not a
+  Telegram reply* to the clarify prompt, so the staged photo never entered the clarify-match path and
+  was independently logged; the item is correctly logged as `d6c9fb01`. No safe narrow code fix (linking
+  a free-text message to a pending staged item without a reply pointer would mis-attach). Open design
+  question, not a bug — see BACKLOG #15.
+
 - **Model ids centralized + token-efficiency fixes (commit `bc672c9`, 2026-06-09).** `lib/models.py`
   is the single source of truth (`HAIKU`/`SONNET`) + `models.create_message()` which turns a
   retired/invalid model id into a clear error instead of a silent 404. Fixed `ingest/food.py` (was
