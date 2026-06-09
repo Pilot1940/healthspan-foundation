@@ -322,7 +322,7 @@ Deno.serve(async (req) => {
     if (replyToId) {
       const { data: target } = await db
         .from("media_inbox")
-        .select("id, caption, storage_path, clarify_count, status, logged_food_ids")
+        .select("id, caption, storage_path, clarify_count, status, logged_food_ids, staged_review_ids")
         .eq("clarify_message_id", replyToId)
         .eq("profile_id", profileId)
         .in("status", ["staged", "done"])
@@ -343,6 +343,14 @@ Deno.serve(async (req) => {
           // service_role bypasses RLS; scope to this profile for safety.
           await db.from("food_logs").delete()
             .in("id", target.logged_food_ids).eq("profile_id", profileId);
+        }
+        // Staged item being clarified → retire its review row(s) so they don't linger as
+        // phantoms in the maintainer review queue (the clarified re-extraction replaces them).
+        if (target.status === "staged"
+            && Array.isArray(target.staged_review_ids) && target.staged_review_ids.length > 0) {
+          await db.from("stg_food_log_review")
+            .update({ status: "merged", reviewed_at: new Date().toISOString() })
+            .in("id", target.staged_review_ids).eq("profile_id", profileId);
         }
         await db.from("media_inbox").insert({
           profile_id: profileId,

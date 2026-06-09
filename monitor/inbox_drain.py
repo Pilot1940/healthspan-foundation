@@ -1089,6 +1089,7 @@ def _process_cluster(
     n_written = 1  # how many rows this cluster wrote — multi-item food/supplement set this
     stage_reason_out: str | None = None  # reason surfaced in the descriptive review message
     written_food_ids: list[str] = []  # food_logs ids written (for supersede-on-reply); food only
+    staged_review_ids_out: list[str] = []  # stg_food_log_review ids staged (retire on clarify); food only
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
@@ -1175,8 +1176,11 @@ def _process_cluster(
                 statuses.append(s)
                 if s == "inserted" and res.get("id"):
                     inserted_ids.append(str(res["id"]))
-                if s == "staged" and food_stage_reason is None:
-                    food_stage_reason = res.get("stage_reason") or item_stage_reason
+                if s == "staged":
+                    if res.get("id"):
+                        staged_review_ids_out.append(str(res["id"]))  # retire on clarify-supersede
+                    if food_stage_reason is None:
+                        food_stage_reason = res.get("stage_reason") or item_stage_reason
             except Exception as exc:
                 log.error("maintainer_ingest_food failed: %s", exc)
                 statuses.append("failed")
@@ -1420,6 +1424,8 @@ def _process_cluster(
         patch: dict[str, Any] = {"clarify_message_id": mid}
         if rpc_status == "inserted" and kind == "food" and written_food_ids:
             patch["logged_food_ids"] = written_food_ids
+        if rpc_status == "staged" and kind == "food" and staged_review_ids_out:
+            patch["staged_review_ids"] = staged_review_ids_out  # retire on clarify-supersede
         db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"}, patch)
 
 
