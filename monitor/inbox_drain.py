@@ -1562,9 +1562,13 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                         log.info("brief dedup: %s post-log brief within %ss — skipping", pid, brief_dedup_sec)
                         continue
                 try:
-                    compose_brief(db, pid, cfg, api_key, token, today_date)
-                    db.insert("push_log", {"profile_id": pid, "push_type": "brief", "status": "sent"},
-                              prefer_return=False)
+                    # compose_brief returns "" (not an exception) when the pid has no active
+                    # telegram_identity — nothing was sent, so don't record a 'sent' push_log
+                    # (which would wrongly satisfy the dedup ledger for a brief that never went out).
+                    msg = compose_brief(db, pid, cfg, api_key, token, today_date)
+                    if msg:
+                        db.insert("push_log", {"profile_id": pid, "push_type": "brief", "status": "sent"},
+                                  prefer_return=False)
                 except Exception as exc:
                     log.warning("compose_brief failed for %s: %s", pid, exc)
         except ImportError:
