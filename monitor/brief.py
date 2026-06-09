@@ -230,22 +230,16 @@ def _food_section(totals: dict, targets: dict, is_minor: bool,
         f"  Fat:      {_vs(fat, t_fat, 'g')}",
     ]
     if energy_burned and energy_burned > 0 and not is_stale:
-        # TRUE daily expenditure = BMR + activity. The old line did intake − WHOOP_burn,
-        # treating activity energy as the whole-day total and ignoring BMR entirely — so a
-        # 755 kcal activity burn read as a +1448 "surplus" when it's really a deficit.
-        # WHOOP energy below BMR is activity-only/partial → add BMR; if it already exceeds
-        # BMR it's a full-day total → use as-is.
-        bmr = targets.get("calorie_floor")  # measured BMR from the context MD
-        if bmr and energy_burned < bmr:
-            expenditure = round(bmr + energy_burned)
-            basis = f"BMR {round(bmr)} + {energy_burned} activity"
-        else:
-            expenditure = energy_burned
-            basis = f"{energy_burned} kcal expenditure"
-        balance = kcal - expenditure
+        # energy_burned_cal is WHOOP's cycle TOTAL expenditure (score.kilojoule → kcal),
+        # which already INCLUDES BMR — confirmed: ~652 for a 7.8h overnight cycle (≈ BMR
+        # rate) and ~2410 for a full day. So net = intake − total; do NOT add BMR again
+        # (that double-counts). The earlier "+1448 surplus" was a STALE 755 from a broken
+        # refresh, not a formula bug.
+        balance = kcal - energy_burned
         sign = "+" if balance > 0 else "−"
         word = "surplus" if balance > 0 else "deficit"
-        lines.append(f"  Energy: {kcal} in − {expenditure} out ({basis}) · net {sign}{abs(balance)} kcal {word}")
+        lines.append(f"  Energy: {kcal} in − {energy_burned} out (WHOOP total) · "
+                     f"net {sign}{abs(round(balance))} kcal {word}")
     return "\n".join(lines)
 
 
@@ -434,7 +428,14 @@ def compose_brief(
 
     try:
         from lib.context import load_context
-        slug = (identity.get("display_name") or "").strip().lower()
+        # Context slug = the PROFILE's display_name, first token lowercased
+        # ("PC"→pc, "Dea Singh Chitalkar"→dea → matches pc.context.md / dea.context.md).
+        # The Telegram identity display_name ("P c") is the chat nickname, NOT the context
+        # filename — using it silently failed load_context, so targets/BMR never loaded.
+        prof = db.select("profiles", select="display_name",
+                         filters={"id": f"eq.{profile_id}"}, limit=1)
+        pname = ((prof[0].get("display_name") if prof else "") or "").strip()
+        slug = pname.split()[0].lower() if pname else ""
         ctx  = load_context(slug) if slug else {}
     except Exception:
         ctx = {}
