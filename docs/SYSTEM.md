@@ -274,20 +274,20 @@ turns a retired/invalid id into a clear error (the old hardcoded `claude-3-5-hai
 | Vision extract (photo) | Sonnet 4.6 | $3 / $15 | ~2,460 in · 400 out (image ≈1,600) | per photo — **the cost driver** |
 | Vision extract (text) | Sonnet 4.6 | $3 / $15 | ~860 in · 300 out | per text log |
 | describe_stage (clarify msg) | Sonnet 4.6 | $3 / $15 | ~400 in · 150 out | per staged item |
-| content clustering | **Haiku 4.5** | $1 / $5 | ~300 in · 100 out | per chat w/ ≥2 ungrouped (cheap) |
-| daily brief actions | Haiku 4.5 | $1 / $5 | ~600 in · 150 out | per brief (dedup'd) |
-| food.py classify / WHOOP screenshot | Haiku / Sonnet | — | ~1k / ~4k in | rare / manual |
+| content clustering | Sonnet 4.6 | $3 / $15 | ~300 in · 100 out | per chat w/ ≥2 ungrouped |
+| daily brief actions | Sonnet 4.6 | $3 / $15 | ~600 in · 150 out | per brief (dedup'd) |
+| food.py classify / WHOOP screenshot | Sonnet 4.6 | $3 / $15 | ~1k / ~4k in | rare / manual |
 
 > **Estimated Anthropic API cost ≈ $6–12/month** (point estimate **~$8**) for **2 active adults**
-> logging ~25 items/day (~half photos). Sonnet vision ~$8 (dominant); all Haiku calls ~$0.25.
+> logging ~25 items/day (~half photos). **one model everywhere = Sonnet 4.6** (2026-06-09, commit `d4e2590`) — the brief/clustering/food calls are now Sonnet too (+~$0.50/mo vs the old Haiku split).
 > **~1.3¢ per photo.** Swing factor is photo volume, not model choice. 3 active users (Nanki) ≈
 > $10–15/mo. Infra (Supabase / GH Actions / AWS) is separate, mostly free-tier. App cost — not the
 > Claude Code dev session (`/cost`).
 
-> **"Everything on Sonnet" diff: +~$0.50/month (negligible)** — the only Haiku calls are low-token and
-> vision is already Sonnet. #4 (clustering→Haiku) saves ~$0.02/mo (principle, not dollars). Caching
-> (#3/#5) not worth it: vision prompt (~730 tok) is below Sonnet's 2,048-token cache minimum, and
-> image caching costs +25% on the common single-vision path to save only the rare clarify re-vision.
+> **One model (Sonnet) by policy** — `lib/models.py` keeps `HAIKU` available for a per-path
+> `system_config` override (e.g. `brief.model = claude-haiku-4-5`) if cost ever matters, but nothing
+> uses it by default. Caching (#3/#5) is not worth it: vision prompt (~730 tok) is below Sonnet's
+> 2,048-token cache minimum, and image caching costs +25% on the common single-vision path.
 
 ---
 
@@ -1381,6 +1381,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| `d4e2590` | 2026-06-09 | chore | One model everywhere — Sonnet 4.6 (dropped the Haiku split + `cluster_model` knob) |
 | `bc672c9` | 2026-06-09 | fix | Central model registry (kill retired `claude-3-5-haiku` → 404; clear error on bad ids) + Haiku for clustering + drain concurrency guard + cross-run brief dedup |
 | `ce91936` | 2026-06-09 | fix | Retire the `stg_food_log_review` row when a staged item is clarified (mig 055) — no more phantom review-queue entries. ✅ live (webhook v7 deployed 2026-06-09) |
 | `7c635fe` | 2026-06-09 | feat | Reply-to-correct supersedes a logged food item (mig 054, no double-count) + stage ambiguous photos instead of auto-logging a guess. ✅ live (webhook v7 deployed 2026-06-09) |

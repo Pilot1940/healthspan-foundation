@@ -47,12 +47,16 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Model ids centralized + token-efficiency fixes (commit `bc672c9`, 2026-06-09).** `lib/models.py`
   is the single source of truth (`HAIKU`/`SONNET`) + `models.create_message()` which turns a
   retired/invalid model id into a clear error instead of a silent 404. Fixed `ingest/food.py` (was
-  hardcoded `claude-3-5-haiku-20241022`, **retired 2026-02-19** → would 404). `content_cluster_ungrouped`
-  now uses Haiku (`drain.cluster_model`). `inbox-drain.yml` has a `concurrency` group (serialize drains).
-  Cross-run **brief dedup** via `push_log` (`brief.dedup_sec`, default 600s) — no more multiple briefs
-  from a burst of logs. **Skipped** image/prompt caching (#3/#5): net-negative on the common single-vision
-  path. All live via CI (no deploy). New tunable system_config keys (fallbacks active if unset):
-  `drain.cluster_model`, `brief.dedup_sec`.
+  hardcoded `claude-3-5-haiku-20241022`, **retired 2026-02-19** → would 404). `inbox-drain.yml` has a
+  `concurrency` group (serialize drains). Cross-run **brief dedup** via `push_log` (`brief.dedup_sec`,
+  default 600s) — no more multiple briefs from a burst of logs. **Skipped** image/prompt caching (#3/#5):
+  net-negative on the common single-vision path. All live via CI (no deploy).
+- **ONE model everywhere = Sonnet 4.6 (commit `d4e2590`, 2026-06-09).** Per request, dropped the
+  Haiku/Sonnet split: brief + clustering + food-classify now Sonnet (was Haiku); removed the
+  `drain.cluster_model` knob (clustering reuses the vision model). `lib/models.py` keeps `HAIKU`
+  available for a per-path `system_config` override (e.g. `brief.model`) but nothing uses it by
+  default. Cost delta ~+$0.50/mo (vision dominates). App cost estimate ≈ **$6–12/mo** for 2 active
+  adults (~1.3¢/photo) — see SYSTEM.md §2.6.
 - **Staged item clarified → its review row is retired (mig 055, commit `ce91936`, 2026-06-09).**
   A staged food item the user clarified used to leave its `stg_food_log_review` row `pending`
   forever (phantom in the maintainer review queue; no back-link to `media_inbox`). Drain now records
