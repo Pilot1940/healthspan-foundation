@@ -212,6 +212,20 @@ reference macros by it, or only apply the reference when no explicit partial por
 
 ---
 
+## #12 — Logging a supplement/product NOT in the catalog — **OPEN, med**
+
+**Severity:** MED · **Owner:** CC · **Status:** OPEN (surfaced 2026-06-09 testing).
+
+`supplement_intake_logs.supplement_id` is NOT NULL, so you can only log a supplement that
+exists in the `supplements` catalog. A new product the user names ("Metabolic Shift Ketone
+Electrolytes") never matches → the clarify loop asks name, then dose, then caps at 2 rounds
+and hands to PC — it can never resolve because the row doesn't exist. Fix: when the user
+confirms a name (and ideally a dose) for an unmatched supplement, AUTO-ADD it to the catalog
+(`is_custom=true, owner_profile_id`) like `promote_food_to_reference` does for foods, then log
+the intake. Workaround today: maintainer adds the catalog row manually.
+
+---
+
 ## #11 — Extraction-prompt architecture (advisor review 2026-06-08) — **SHIPPED, pending live verify**
 
 **Severity:** MED · **Owner:** CC · **Status:** SHIPPED 2026-06-08 (clean pass) — collapsed to ONE
@@ -262,15 +276,24 @@ stray extra row is not.
 2. **The actual work (not the DDL):** every READ/aggregation path must filter voided rows —
    `WHERE voided_at IS NULL` in the brief's adherence count, `query_log`, any supplement rollup.
    Adding the column alone is **cosmetic**; a voided dose still counts as taken until the reads filter.
-3. **Skill capability:** the skill role already has UPDATE → it can set `voided_at`/`void_reason`
-   itself. No new privilege needed. Add a `void`/`undo last` command surface (Telegram + skill).
-4. Once shipped: void `6276da9f` properly and migrate its interim `notes` flag. **No hard DELETE /
-   service-role escalation needed, ever** — voiding becomes the permanent fix.
+3. **Do it via a SECURITY DEFINER RPC, not a raw grant.** Verified 2026-06-08: writes for
+   `healthspan_app` go through definer RPCs (the role has INSERT=False/UPDATE=False on the base
+   table); and the interactive skill runs `supabase_client` → queries as `authenticated`
+   (DELETE=False, no RLS DELETE policy). A raw `GRANT DELETE TO healthspan_app` therefore (a) does
+   NOT reach the supabase_client path the maintainer skill actually uses, and (b) bypasses the
+   audited write-boundary. A `maintainer_void_supplement(p_id, p_reason)` (and/or
+   `maintainer_delete_*`) SECURITY DEFINER function runs as owner → works for BOTH connection modes,
+   stays inside `is_maintainer()/has_profile_access()` checks, and is auditable. Soft-void preferred
+   over hard delete; expose `void`/`undo last` (Telegram + skill) on top of it.
+4. **REVOKE the raw grant.** `REVOKE DELETE ON ALL TABLES IN SCHEMA public FROM healthspan_app;` —
+   PC granted it 2026-06-08 ("as I manage it"), but verification showed it landed on the shared role
+   (so Dea's minor connection + the unattended drain also got DELETE) and missed the maintainer
+   skill's actual path. The RPC in (3) is the correct, scoped replacement.
+5. Once shipped: confirm `6276da9f` stays gone (already hard-deleted via SQL editor 2026-06-08).
 
-**Note (PC, 2026-06-08):** PC asked to grant the skill full privilege (incl. DELETE) "as I manage it".
-Recommendation on record: keep DELETE off the role; this soft-delete column gives full self-correct
-ability without exposing the autonomous drain to unrecoverable LLM-driven deletes. If PC still wants
-raw DELETE after this lands, it's a `GRANT` PC/CC runs via the admin/service path — not the skill.
+**Verified privilege state (2026-06-08, `supplement_intake_logs`):** healthspan_app
+DELETE=True/INSERT=False/UPDATE=False · authenticated DELETE=False/INSERT=True/UPDATE=True · RLS
+single ALL policy `has_profile_access(profile_id)`, enabled.
 
 ---
 
