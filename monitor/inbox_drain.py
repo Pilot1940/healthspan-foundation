@@ -310,6 +310,14 @@ _SUPP_STOPWORDS = frozenset({
 })
 
 
+def _is_generic_supplement(query: str) -> bool:
+    """True when a name is too vague to identify a specific product ("my supplement", "a
+    pill", "vitamin") — such names must clarify, never fuzzy-match or get learned."""
+    tokens = [t for t in "".join(ch if ch.isalnum() else " " for ch in (query or "").lower()).split()
+              if t not in _SUPP_STOPWORDS]
+    return (not tokens) or all(t in _GENERIC_SUPP_TERMS for t in tokens)
+
+
 def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
     """Resolve a supplement by name. The LLM returns human display names
     ("Magnesium Citrate", "Vitamin D3"), so match display_name first, then fall back
@@ -319,12 +327,8 @@ def lookup_supplement_by_name(db: DbRest, query: str) -> list[dict]:
     caller stages for clarification instead of fuzzy-matching a random row (e.g. "supplement"
     → "Precision Supplements")."""
     q = (query or "").strip()
-    if not q:
-        return []
-    tokens = [t for t in "".join(ch if ch.isalnum() else " " for ch in q.lower()).split()
-              if t not in _SUPP_STOPWORDS]
-    if not tokens or all(t in _GENERIC_SUPP_TERMS for t in tokens):
-        return []  # too vague to identify a specific supplement → clarify
+    if not q or _is_generic_supplement(q):
+        return []  # empty or too vague to identify a specific supplement → clarify
     rows = db.select(
         "supplements",
         select="id,name,display_name,default_unit",
@@ -1204,10 +1208,10 @@ def _process_cluster(
                 if desc:
                     past = lookup_past_food_macros(db, desc, str(profile_id), learn_min_logs)
                     if past:
-                        learn_offer = (
-                            f"💡 Logged '{desc}' {past['count']}× before — "
-                            "use /learn to add it to your food library."
-                        )
+                        # NOTE: '/learn' was a phantom command (never handled). Just an
+                        # informational nudge now; food auto-promote-to-reference is the
+                        # follow-up to the supplement learn-on-clarify (backlog #13).
+                        learn_offer = f"💡 You've logged '{desc}' {past['count']}× before."
                         break
 
         # Keep the FULL item list so the confirmation names every item, not just the first
@@ -1255,6 +1259,18 @@ def _process_cluster(
                 continue
             name = supp.get("name", "")
             matches = lookup_supplement_by_name(db, name) if name else []
+            # Learn-on-clarify: a SPECIFIC supplement the user named that isn't in the
+            # catalog → auto-add it (PC chose live-immediately) so it resolves now and next
+            # time. Adults only — a minor's new item routes to PC (no auto-add). Generic
+            # names still clarify (the loop asks which one). learn_supplement dedups +
+            # stamps source='learned', verified=false for the maintainer review surface.
+            if (not matches and name and not is_minor
+                    and not _is_generic_supplement(name)):
+                try:
+                    db.rpc("learn_supplement", {"p_profile_id": str(profile_id), "p_name": name})
+                    matches = lookup_supplement_by_name(db, name)  # re-resolve the learned row
+                except Exception as exc:
+                    log.warning("learn_supplement failed for %r: %s", name, exc)
             if matches:
                 supp["supplement_id"] = matches[0]["id"]
             # Default the dose from the user's regimen when not stated ("took my magnesium

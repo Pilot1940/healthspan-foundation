@@ -464,7 +464,29 @@ def compose_brief(
         sections.append(viome_txt)
     if actions_txt:
         sections.append(f"Rest of day:\n{actions_txt}")
+
+    # Maintainer-only: surface recently auto-learned (unverified) catalog items so PC can
+    # review/prune them — the guardrail against a "context mess" from learn-on-clarify.
+    try:
+        prow = db.select("profiles", select="is_maintainer",
+                         filters={"id": f"eq.{profile_id}"}, limit=1)
+        if prow and prow[0].get("is_maintainer"):
+            learned = db.select(
+                "supplements", select="display_name",
+                filters={"source": "eq.learned", "verified": "eq.false"},
+                order="created_at.desc", limit=8) or []
+            names = [r.get("display_name") for r in learned if r.get("display_name")]
+            if names:
+                sections.append("🆕 Recently learned (review): " + ", ".join(names))
+    except Exception:
+        pass
+
     msg = "\n\n".join(s for s in sections if s)
+
+    # Version footer — the deployed commit, for easy debugging ("which build sent this?").
+    import os as _os
+    ver = (_os.environ.get("GITHUB_SHA") or "")[:7] or "local"
+    msg = f"{msg}\n\n—v {today} · {ver}"
 
     from monitor.inbox_drain import telegram_send
     telegram_send(token, chat_id, msg)
