@@ -1,3 +1,4 @@
+// deploy: 2026-06-09 ce91936 — supersede-on-reply (logged food) + retire review row on clarify
 // telegram-webhook — Phase 1 + 3A ingestion: auth, dedup, media→Storage, enqueue, Routine fire.
 // Phase 3A adds: media_group_id capture (album clustering) + Routine fire-trigger (deduped).
 //
