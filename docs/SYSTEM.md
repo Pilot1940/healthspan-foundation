@@ -1269,8 +1269,8 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 
 | ✓ | Test | Send | Expect | Proves |
 |---|------|------|--------|--------|
-| `[ ]` | **B1** | `took my supplement` (vague) | 📋 a SPECIFIC question ("which supplement?"), NOT a silent log | confidence gate + generic guard + descriptive feedback |
-| `[ ]` | **B2** | LONG-PRESS B1's question → Reply → `magnesium bisglycinate` | 📥 "Got it — updating that…" then ✅ logged | reply-to-clarify round-trip (#5) — the unproven one |
+| ✅ **PASS** | **B1** | `took my supplement` (vague) | 📋 a SPECIFIC question — *verified 2026-06-09: "Add electrolytes" → "For electrolytes, which brand or product name should I log?"* | confidence gate + generic guard + descriptive feedback |
+| ✅ **PASS** | **B2** | LONG-PRESS B1's question → Reply → the name | 📥 "Got it — updating that…" then re-extract | *verified 2026-06-09 (KEYSTONE): reply re-queued, reprocessed, asked an intelligent follow-up (name → dose → brand), then capped at 2 rounds and handed to PC. Reply-to-clarify round-trip (#5) works end-to-end.* |
 | `[ ]` | **B3** | after B2, check no duplicate | only ONE Magnesium Bisglycinate entry | clarify supersedes, no dupe |
 
 > **NOTE:** B2 MUST be an actual Telegram reply (long-press the bot's message → Reply), not a typed follow-up — that's the correlation mechanism.
