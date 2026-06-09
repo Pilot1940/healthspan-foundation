@@ -59,7 +59,14 @@ def _healthspan_conf() -> dict:
 
 
 def _dsn() -> str:
-    """Return the connection string. SECRET — internal use only."""
+    """Return the connection string. SECRET — internal use only.
+
+    Prefers the ``DATABASE_URL`` environment variable (set in CI / GitHub Actions) so
+    refresh_recent and other psycopg2 paths work where the local Dropbox db-config.json
+    doesn't exist. Falls back to the db-config file for local dev."""
+    env_dsn = os.environ.get("DATABASE_URL")
+    if env_dsn:
+        return env_dsn
     dsn = _healthspan_conf().get("DATABASE_URL")
     if not dsn:
         raise KeyError(f"'databases.{_DB_KEY}' has no DATABASE_URL")
