@@ -48,11 +48,11 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   audit, test health + live data checks).** Schema↔migrations CLEAN (045–057 all verified
   present, no orphan tables, 61 base/7 views); unit suite GREEN (259/0/9 skips); all RPC
   call-sites match live signatures; model ids current. Three real issues found:
-  (1) **mig 058 written, PENDING APPLY** — mig 022 missed maintainer-only RLS on
-  `stg_supplement_intake_review`/`stg_food_rule_review`/`stg_test_result_review`; 058 also
-  seeds `brief.dedup_sec=600` (was code-fallback only, rule-#1 violation) and versions the
-  out-of-band `rls_auto_enable` event-trigger function. Apply via
-  `python3 scripts/hs_ops.py apply migrations/058_stg_review_rls_parity.sql`.
+  (1) **mig 058 APPLIED 2026-06-10** — mig 022 missed maintainer-only RLS on
+  `stg_supplement_intake_review`/`stg_food_rule_review`/`stg_test_result_review`; 058
+  rebuilt them (maintainer SELECT + owner INSERT, verified live), seeded
+  `brief.dedup_sec=600` (was code-fallback only, rule-#1 violation) and versioned the
+  out-of-band `rls_auto_enable` event-trigger function.
   (2) **whoop-webhook `recovery.updated` ALWAYS 404s** (110 failed runs/week; the v2
   recovery webhook id is a UUID but the handler GETs `/v2/cycle/{id}` which takes an
   integer) — `recovery_landed` pushes have NEVER fired; data still lands via
@@ -262,11 +262,10 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,
   resolved via `family_memberships`). Maintainer-only RLS SELECT on `query_audit`,
   `wearable_sync_log`/`_errors`, `stg_*_review`. Dea sees outcomes, never the machinery.
-  ⚠️ The 2026-06-10 deep scan found mig 022 MISSED three staging tables
-  (`stg_supplement_intake_review`, `stg_food_rule_review`, `stg_test_result_review` still
-  had the mig-004 ALL/has_profile_access policy — Dea could SELECT/UPDATE her own staged
-  supplement rows). **Mig 058 (written, PENDING APPLY) fixes them** — run
-  `python3 scripts/hs_ops.py apply migrations/058_stg_review_rls_parity.sql`.
+  (The 2026-06-10 deep scan found mig 022 had MISSED three staging tables —
+  `stg_supplement_intake_review`, `stg_food_rule_review`, `stg_test_result_review` still
+  had the mig-004 ALL/has_profile_access policy. **Fixed by mig 058, applied 2026-06-10**,
+  verified live.)
   **Nanki** (PC's wife, 45F adult) is a supported profile to onboard when ready — full adult
   framing (like PC), non-maintainer; onboard exactly like Dea but `relationship` ≠ `child` so
   `is_minor=false`. Dev = dormant slot.
