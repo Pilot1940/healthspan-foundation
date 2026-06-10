@@ -47,6 +47,11 @@ def _db(responses: list[tuple[int, Any]]) -> DbRest:
         # adding the dedup didn't shift every downstream mock response.
         if "push_log" in str(request.url):
             return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
+        # Same treatment for the clarify auto-match + orphan-sweep staged-row lookups
+        # (media_inbox?status=eq.staged GETs) — always empty here; both layers have their
+        # own dedicated unit tests with a MagicMock db.
+        if request.method == "GET" and "status=eq.staged" in str(request.url):
+            return httpx.Response(200, content=b"[]", headers={"content-type": "application/json"})
         status, body = responses[idx % len(responses)]
         idx += 1
         # Build response with explicit content bytes so .json() works reliably
@@ -1891,3 +1896,220 @@ def test_meal_verdict_clean_when_no_flags():
     verdict, flags = compute_meal_verdict([])
     assert verdict == "clean"
     assert flags == []
+
+
+# ── clarify auto-match + orphan sweep (BACKLOG #15) ───────────────────────────
+
+_CLARIFY_TARGET = {
+    "id": "tgt-1",
+    "profile_id": "21f69003-46f8-4e1c-a928-b1f694ce4aff",
+    "chat_id": 99,
+    "caption": "add 1 mystery shake",
+    "storage_path": "telegram/p/orig.jpg",
+    "stage_reason": "not sure what this is — reply with what you ate",
+    "clarify_count": 0,
+    "clarify_message_id": 555,
+    "staged_review_ids": ["rev-1"],
+    "status": "staged",
+    "processed_at": "2026-06-07T10:00:00+00:00",
+}
+
+
+def _clarify_db(pending_targets: list[dict]) -> MagicMock:
+    db = MagicMock()
+    db.select.return_value = pending_targets
+    db.update.return_value = []
+    return db
+
+
+def test_absorb_clarify_match_rewrites_cluster_and_retires():
+    """Confident judged answer → cluster rewritten as the clarification, staged
+    target + its review rows retired, clarify_count bumped on the new rows."""
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([dict(_CLARIFY_TARGET)])
+    cluster = [_item("m1", kind="unknown", caption="it was a banana bread shake")]
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"is_answer": True, "confidence": 0.92}) as judge:
+        assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is True
+    judge.assert_called_once()
+    assert "[clarification: it was a banana bread shake]" in cluster[0]["caption"]
+    assert cluster[0]["caption"].startswith("add 1 mystery shake")
+    assert cluster[0]["storage_path"] == "telegram/p/orig.jpg"
+    bodies = [c.args[2] if len(c.args) > 2 else c.kwargs.get("body", c.args[-1])
+              for c in db.update.call_args_list]
+    tables = [c.args[0] for c in db.update.call_args_list]
+    assert "stg_food_log_review" in tables  # review rows retired
+    stg_body = bodies[tables.index("stg_food_log_review")]
+    assert stg_body["status"] == "merged"
+    # target retired done + clarify_message_id cleared
+    retire = [b for t, b in zip(tables, bodies) if t == "media_inbox" and b.get("status") == "done"]
+    assert retire and retire[0]["clarify_message_id"] is None
+    # clarify_count bumped on the absorbed rows
+    bumps = [b for t, b in zip(tables, bodies) if t == "media_inbox" and "clarify_count" in b]
+    assert bumps and bumps[0]["clarify_count"] == 1
+
+
+def test_absorb_clarify_not_an_answer_leaves_cluster():
+    """Judge says not-an-answer → independent processing, nothing retired."""
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([dict(_CLARIFY_TARGET)])
+    cluster = [_item("m1", kind="unknown", caption="ate a cookie too")]
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"is_answer": False, "confidence": 0.9}):
+        assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is False
+    assert cluster[0]["caption"] == "ate a cookie too"
+    db.update.assert_not_called()
+
+
+def test_absorb_clarify_low_confidence_leaves_cluster():
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([dict(_CLARIFY_TARGET)])
+    cluster = [_item("m1", kind="unknown", caption="banana bread")]
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"is_answer": True, "confidence": 0.4}):
+        assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is False
+    db.update.assert_not_called()
+
+
+def test_absorb_clarify_no_pending_skips_judge():
+    """No staged row in the window → no LLM call at all."""
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([])
+    cluster = [_item("m1", kind="unknown", caption="banana bread")]
+    with patch("monitor.inbox_drain._judge_json") as judge:
+        assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is False
+    judge.assert_not_called()
+
+
+def test_absorb_clarify_photo_cluster_skipped():
+    """Photo messages never absorb — Layer 1 is text-only (Layer 2 covers photos)."""
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([dict(_CLARIFY_TARGET)])
+    row = _item("m1", kind="unknown", caption="x")
+    row["storage_path"] = "telegram/p/new.jpg"
+    with patch("monitor.inbox_drain._judge_json") as judge:
+        assert absorb_pending_clarify(db, "key", "model", [row], 900, 0.7) is False
+    judge.assert_not_called()
+    db.select.assert_not_called()
+
+
+def test_absorb_clarify_reply_path_not_reabsorbed():
+    """A webhook reply re-queue (caption already carries [clarification:…]) is left alone."""
+    from monitor.inbox_drain import absorb_pending_clarify
+    db = _clarify_db([dict(_CLARIFY_TARGET)])
+    cluster = [_item("m1", kind="unknown",
+                     caption="orig\n[clarification: from the reply path]")]
+    assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is False
+    db.select.assert_not_called()
+
+
+def test_absorb_clarify_round_cap_respected():
+    from monitor.inbox_drain import absorb_pending_clarify
+    capped = dict(_CLARIFY_TARGET, clarify_count=2)
+    db = _clarify_db([capped])
+    cluster = [_item("m1", kind="unknown", caption="banana bread")]
+    with patch("monitor.inbox_drain._judge_json") as judge:
+        assert absorb_pending_clarify(db, "key", "model", cluster, 900, 0.7) is False
+    judge.assert_not_called()
+
+
+def _sweep_db(staged: list[dict], foods: list[dict], sups: list[dict]) -> MagicMock:
+    db = MagicMock()
+
+    def _select(table, **kw):
+        if table == "media_inbox":
+            return staged
+        if table == "food_logs":
+            return foods
+        if table == "supplement_intake_logs":
+            return sups
+        if table == "supplements":
+            return [{"id": "supp-def-1", "display_name": "Magnesium Bisglycinate"}]
+        return []
+
+    db.select.side_effect = _select
+    db.update.return_value = []
+    return db
+
+
+_SWEEP_CFG = {"clarify.orphan_supersede_window_sec": 1800, "clarify.match_min_conf": 0.7}
+
+
+def test_sweep_orphan_retires_on_match():
+    """Staged orphan + matching prod log within the window → retired with result_ref."""
+    from monitor.inbox_drain import sweep_staged_orphans
+    staged = [dict(_CLARIFY_TARGET)]
+    foods = [{"id": "food-1", "description": "Lactose free strawberry shake 340ml",
+              "logged_at": "2026-06-07T10:05:00+00:00"}]
+    db = _sweep_db(staged, foods, [])
+    summary: dict = {}
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"match_id": "food-1", "confidence": 0.9}):
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, summary) == 1
+    assert summary["orphans_retired"] == 1
+    tables = [c.args[0] for c in db.update.call_args_list]
+    bodies = [c.args[2] if len(c.args) > 2 else c.kwargs.get("body", c.args[-1])
+              for c in db.update.call_args_list]
+    assert "stg_food_log_review" in tables
+    done = [b for t, b in zip(tables, bodies) if t == "media_inbox" and b.get("status") == "done"]
+    assert done and done[0]["result_ref"] == "food-1"
+
+
+def test_sweep_orphan_no_candidates_skips_llm():
+    """Nothing logged after staging → no LLM call, orphan stays."""
+    from monitor.inbox_drain import sweep_staged_orphans
+    db = _sweep_db([dict(_CLARIFY_TARGET)], [], [])
+    with patch("monitor.inbox_drain._judge_json") as judge:
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 0
+    judge.assert_not_called()
+    db.update.assert_not_called()
+
+
+def test_sweep_orphan_outside_window_excluded():
+    """A prod log AFTER the supersede window is not even offered to the judge."""
+    from monitor.inbox_drain import sweep_staged_orphans
+    late = [{"id": "food-1", "description": "shake",
+             "logged_at": "2026-06-07T12:00:00+00:00"}]  # 2h later > 1800s window
+    db = _sweep_db([dict(_CLARIFY_TARGET)], late, [])
+    with patch("monitor.inbox_drain._judge_json") as judge:
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 0
+    judge.assert_not_called()
+
+
+def test_sweep_orphan_low_confidence_leaves():
+    from monitor.inbox_drain import sweep_staged_orphans
+    foods = [{"id": "food-1", "description": "shake",
+              "logged_at": "2026-06-07T10:05:00+00:00"}]
+    db = _sweep_db([dict(_CLARIFY_TARGET)], foods, [])
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"match_id": "food-1", "confidence": 0.3}):
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 0
+    db.update.assert_not_called()
+
+
+def test_sweep_orphan_hallucinated_match_id_ignored():
+    """A judge match_id not in the candidate set is discarded."""
+    from monitor.inbox_drain import sweep_staged_orphans
+    foods = [{"id": "food-1", "description": "shake",
+              "logged_at": "2026-06-07T10:05:00+00:00"}]
+    db = _sweep_db([dict(_CLARIFY_TARGET)], foods, [])
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"match_id": "food-999", "confidence": 0.95}):
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 0
+    db.update.assert_not_called()
+
+
+def test_sweep_orphan_supplement_candidate_matches():
+    """Supplement orphans match against supplement_intake_logs (display_name resolved)."""
+    from monitor.inbox_drain import sweep_staged_orphans
+    staged = [dict(_CLARIFY_TARGET, caption="took a supplemen",
+                   stage_reason="not sure which supplement — reply with the name",
+                   staged_review_ids=None)]
+    sups = [{"id": "sil-1", "supplement_id": "supp-def-1",
+             "taken_at": "2026-06-07T10:01:00+00:00"}]
+    db = _sweep_db(staged, [], sups)
+    with patch("monitor.inbox_drain._judge_json",
+               return_value={"match_id": "sil-1", "confidence": 0.88}):
+        assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 1
+    tables = [c.args[0] for c in db.update.call_args_list]
+    assert "stg_food_log_review" not in tables  # no review ids on this orphan

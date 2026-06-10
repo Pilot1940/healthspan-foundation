@@ -895,6 +895,196 @@ def describe_stage(api_key: str, model: str, raw_text: str, kind: str,
         return fallback
 
 
+# ── clarify auto-match + orphan sweep (BACKLOG #15) ──────────────────────────
+# Users (especially a 14-year-old) answer a clarify question with a FRESH message,
+# not a Telegram reply — the answer logs independently and the staged item strands.
+# Layer 1 (absorb_pending_clarify): a fresh TEXT message arriving while a clarify is
+# pending for the same chat is LLM-judged as a candidate answer; on a confident match
+# the message is processed AS the clarification (original caption + image) and the
+# stranded item retires — exactly what a reply would have done. On any doubt, prefer
+# independent processing: a stranded staged item is recoverable (Layer 2); a wrong
+# merge corrupts data.
+# Layer 2 (sweep_staged_orphans): end-of-run safety net — a staged item whose profile
+# logged a matching prod row shortly after staging retires as superseded.
+
+def _judge_json(api_key: str, model: str, system: str, prompt: str,
+                max_tokens: int = 200) -> dict | None:
+    """One small JSON-only LLM call. Returns the parsed dict, or None on ANY failure
+    (network, HTTP, parse) — callers fail open to today's behaviour."""
+    try:
+        resp = httpx.post(
+            _ANTHROPIC_URL,
+            headers={"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION,
+                     "content-type": "application/json"},
+            json={"model": model, "max_tokens": max_tokens, "system": system,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        parsed = _extract_json(resp.json()["content"][0]["text"])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception as exc:
+        log.warning("_judge_json failed (failing open): %s", exc)
+        return None
+
+
+def find_pending_clarify(db: DbRest, chat_id, window_sec: int) -> dict | None:
+    """Most recent staged media_inbox row for this chat that has an outstanding
+    clarify question (clarify_message_id set) asked within the match window."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=window_sec)).isoformat()
+    rows = db.select("media_inbox", filters={
+        "chat_id": f"eq.{chat_id}",
+        "status": "eq.staged",
+        "clarify_message_id": "not.is.null",
+        "processed_at": f"gt.{cutoff}",
+    }, order="processed_at.desc", limit=1)
+    return rows[0] if rows else None
+
+
+def _retire_staged_reviews(db: DbRest, review_ids: list, profile_id) -> None:
+    """Mark a staged item's stg_food_log_review rows merged (mirrors the webhook reply
+    path; runs as the drainer, allowed by the mig-059 maintainer UPDATE policy)."""
+    ids = [str(i) for i in (review_ids or []) if i]
+    if not ids:
+        return
+    db.update("stg_food_log_review",
+              {"id": f"in.({','.join(ids)})", "profile_id": f"eq.{profile_id}"},
+              {"status": "merged", "reviewed_at": datetime.now(timezone.utc).isoformat()})
+
+
+def absorb_pending_clarify(db: DbRest, api_key: str, model: str, cluster: list[dict],
+                           window_sec: int, min_conf: float) -> bool:
+    """Layer 1: if this text-only cluster looks like the answer to a pending clarify
+    question for the same chat, rewrite it IN PLACE as the clarification (original
+    caption + [clarification: …] + original image) and retire the stranded staged
+    item. Returns True when absorbed. Conservative: photo clusters, captions already
+    carrying [clarification:…] (the reply path), capped rounds, profile mismatches,
+    and anything below min_conf all fall through to independent processing."""
+    if any(r.get("storage_path") for r in cluster):
+        return False
+    new_text = merge_caption(cluster)
+    if not new_text or "[clarification:" in new_text:
+        return False
+    target = find_pending_clarify(db, cluster[0]["chat_id"], window_sec)
+    if not target:
+        return False
+    if (target.get("clarify_count") or 0) >= 2:
+        return False
+    if str(target.get("profile_id")) != str(cluster[0]["profile_id"]):
+        return False
+
+    verdict = _judge_json(
+        api_key, model,
+        "You judge whether a chat message answers a pending clarification question for a "
+        "health logger. Respond with valid JSON only: "
+        '{"is_answer": true|false, "confidence": 0.0_to_1.0}. '
+        "is_answer is true ONLY if the new message supplies the missing detail about the "
+        "SAME item the question asked about. A message that logs something NEW or unrelated "
+        "(another food, a different supplement, a question) is NOT an answer — when in "
+        "doubt, false.",
+        f'Original message that could not be saved: "{target.get("caption") or "(photo, no caption)"}"\n'
+        f'We asked the user: "{target.get("stage_reason") or "what is this?"}"\n'
+        f'New message from the same chat: "{new_text}"\n'
+        "Does the new message answer the question?",
+    )
+    conf = float(verdict.get("confidence", 0.0)) if verdict and verdict.get("is_answer") else 0.0
+    if conf < min_conf:
+        return False
+
+    # Rewrite the cluster as the clarification (mirrors the webhook reply re-queue).
+    cluster[0]["caption"] = f"{target.get('caption') or ''}\n[clarification: {new_text}]".strip()
+    cluster[0]["storage_path"] = target.get("storage_path")  # re-analyse the original image if any
+    for r in cluster[1:]:
+        r["caption"] = ""  # absorbed into cluster[0]
+    db.update("media_inbox", {"id": f"in.({','.join(_ids(cluster))})"},
+              {"clarify_count": (target.get("clarify_count") or 0) + 1})
+
+    _retire_staged_reviews(db, target.get("staged_review_ids"), target["profile_id"])
+    db.update("media_inbox", {"id": f"eq.{target['id']}"},
+              {"status": "done", "clarify_message_id": None,
+               "stage_reason": "superseded by clarification (auto-matched fresh message)",
+               "processed_at": datetime.now(timezone.utc).isoformat()})
+    log.info("clarify auto-match: cluster %s absorbed staged %s (conf %.2f)",
+             _ids(cluster), target["id"], conf)
+    return True
+
+
+def sweep_staged_orphans(db: DbRest, api_key: str, model: str, cfg: dict,
+                         summary: dict) -> int:
+    """Layer 2: retire staged media_inbox rows whose content was independently logged
+    shortly after staging (the fresh-message-instead-of-reply pattern). For each
+    staged row, gather prod rows logged within clarify.orphan_supersede_window_sec of
+    the clarify being asked, LLM-judge whether one IS the staged item, and on a
+    confident match retire the orphan (result_ref → the prod row). Returns count."""
+    window = int(float(cfg.get("clarify.orphan_supersede_window_sec", 1800)))
+    min_conf = float(cfg.get("clarify.match_min_conf", 0.7))
+    retired = 0
+    staged = db.select("media_inbox", filters={"status": "eq.staged"}, order="created_at")
+    for s in staged or []:
+        pid = s.get("profile_id")
+        t0 = s.get("processed_at") or s.get("created_at")
+        if not pid or not t0:
+            continue
+        try:
+            t1 = (datetime.fromisoformat(str(t0).replace("Z", "+00:00"))
+                  + timedelta(seconds=window)).isoformat()
+        except ValueError:
+            continue
+
+        cands: list[dict] = []
+        foods = db.select("food_logs", select="id,description,logged_at",
+                          filters={"profile_id": f"eq.{pid}", "logged_at": f"gte.{t0}"},
+                          order="logged_at", limit=10) or []
+        cands += [{"id": str(f["id"]), "desc": f.get("description") or ""}
+                  for f in foods if str(f.get("logged_at") or "") <= t1]
+        sups = [x for x in (db.select("supplement_intake_logs",
+                                      select="id,supplement_id,taken_at",
+                                      filters={"profile_id": f"eq.{pid}",
+                                               "taken_at": f"gte.{t0}"},
+                                      order="taken_at", limit=10) or [])
+                if str(x.get("taken_at") or "") <= t1]
+        if sups:
+            sup_ids = ",".join(str(x["supplement_id"]) for x in sups if x.get("supplement_id"))
+            names = {str(r["id"]): r.get("display_name") or "supplement"
+                     for r in (db.select("supplements", select="id,display_name",
+                                         filters={"id": f"in.({sup_ids})"}) or [])} if sup_ids else {}
+            cands += [{"id": str(x["id"]), "desc": names.get(str(x.get("supplement_id")), "supplement")}
+                      for x in sups]
+        if not cands:
+            continue
+
+        listing = "\n".join(f'- id "{c["id"]}": {c["desc"]}' for c in cands)
+        verdict = _judge_json(
+            api_key, model,
+            "You judge whether a stranded staged health-log item was already logged by a "
+            "later entry. Respond with valid JSON only: "
+            '{"match_id": "<id or null>", "confidence": 0.0_to_1.0}. '
+            "match_id is the id of the logged entry that records the SAME item the staged "
+            "message described — same food/supplement, compatible quantity. Different items "
+            "→ null. When in doubt, null.",
+            f'Staged (unsaved) message: "{s.get("caption") or "(photo, no caption)"}"\n'
+            f'We asked: "{s.get("stage_reason") or "what is this?"}"\n'
+            f"Entries logged shortly after:\n{listing}\n"
+            "Which entry, if any, already records the staged item?",
+        )
+        match_id = str(verdict.get("match_id") or "") if verdict else ""
+        conf = float(verdict.get("confidence", 0.0)) if verdict else 0.0
+        if not match_id or match_id.lower() == "none" or conf < min_conf:
+            continue
+        if match_id not in {c["id"] for c in cands}:
+            continue
+
+        _retire_staged_reviews(db, s.get("staged_review_ids"), pid)
+        mark_rows(db, [str(s["id"])], "done", result_ref=match_id,
+                  stage_reason="superseded: independently logged (orphan sweep)")
+        db.update("media_inbox", {"id": f"eq.{s['id']}"}, {"clarify_message_id": None})
+        log.info("orphan sweep: staged %s superseded by %s (conf %.2f)", s["id"], match_id, conf)
+        retired += 1
+    if retired:
+        summary["orphans_retired"] = summary.get("orphans_retired", 0) + retired
+    return retired
+
+
 # ── running totals (PostgREST — no psycopg2 in cloud) ────────────────────────
 
 def _load_profile_contexts(identities: list[dict]) -> dict[str, dict]:
@@ -1448,6 +1638,8 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
     learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
+    clarify_window = int(float(cfg.get("clarify.match_window_sec", 900)))
+    clarify_min_conf = float(cfg.get("clarify.match_min_conf", 0.7))
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(timezone.utc).date().isoformat()
 
@@ -1501,6 +1693,16 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                     {"status": "pending"},
                 )
             continue
+
+        # Layer 1 (BACKLOG #15): a fresh text message that answers a pending clarify
+        # question is rewritten as the clarification before processing. Best-effort —
+        # any failure falls through to independent processing (today's behaviour).
+        try:
+            if absorb_pending_clarify(db, api_key, model, cluster,
+                                      clarify_window, clarify_min_conf):
+                summary["clarify_matched"] = summary.get("clarify_matched", 0) + 1
+        except Exception as exc:
+            log.warning("clarify auto-match errored (processing independently): %s", exc)
 
         try:
             _process_cluster(
@@ -1579,6 +1781,13 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                     log.warning("compose_brief failed for %s: %s", pid, exc)
         except ImportError:
             pass  # brief module not yet available — silently skip
+
+    # Layer 2 (BACKLOG #15): retire staged orphans whose content was independently
+    # logged (fresh-message-instead-of-reply pattern). Best-effort — never fails the run.
+    try:
+        sweep_staged_orphans(db, api_key, model, cfg, summary)
+    except Exception as exc:
+        log.warning("orphan sweep errored (skipping): %s", exc)
 
     return summary
 
