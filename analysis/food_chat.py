@@ -63,7 +63,8 @@ def daily_total(conn, profile_id: str, *, log_date=None, calorie_target=None) ->
            FROM food_logs
            WHERE profile_id=%s
              AND log_date = COALESCE(%s, CURRENT_DATE)
-             AND (is_day_summary IS NULL OR is_day_summary = false)""",
+             AND (is_day_summary IS NULL OR is_day_summary = false)
+             AND voided_at IS NULL""",
         (profile_id, log_date),
     )
     cal, protein, meals = cur.fetchone()

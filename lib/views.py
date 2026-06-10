@@ -147,6 +147,7 @@ VIEWS: dict[str, dict] = {
             FROM biomarkers b
             JOIN metric_definitions m ON m.id = b.metric_definition_id
             WHERE b.profile_id = %(profile_id)s AND m.name = %(marker)s
+              AND b.voided_at IS NULL
             ORDER BY b.measured_at
         """,
     },
@@ -166,6 +167,7 @@ VIEWS: dict[str, dict] = {
                 FROM biomarkers b
                 JOIN metric_definitions m ON m.id = b.metric_definition_id
                 WHERE b.profile_id = %(profile_id)s
+                  AND b.voided_at IS NULL
                 ORDER BY b.metric_definition_id, b.measured_at DESC
             )
             SELECT COALESCE(display_name, marker) AS marker,
@@ -195,6 +197,7 @@ VIEWS: dict[str, dict] = {
             FROM biomarkers b JOIN metric_definitions m ON m.id = b.metric_definition_id
             WHERE b.profile_id = %(profile_id)s
               AND m.name IN ('vo2max_lab','vo2max_relative','vo2max_estimated')
+              AND b.voided_at IS NULL
             ORDER BY method, series, measured_at
         """,
         "summary_sql": """

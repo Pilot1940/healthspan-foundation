@@ -57,6 +57,7 @@ def _fetch_food_full(db, profile_id: str, day_start: str, day_end: str) -> dict:
                 "profile_id": f"eq.{profile_id}",
                 "and": f"(logged_at.gte.{day_start},logged_at.lt.{day_end})",
                 "is_day_summary": "not.is.true",
+                "voided_at": "is.null",
             },
         )
         return {
@@ -107,6 +108,7 @@ def _fetch_supplement_status(db, profile_id: str, today: str, day_start: str, da
             filters={
                 "profile_id": f"eq.{profile_id}",
                 "and": f"(taken_at.gte.{day_start},taken_at.lt.{day_end})",
+                "voided_at": "is.null",
             },
         )
         taken_ids = {str(r["supplement_id"]) for r in intakes}
@@ -187,6 +189,7 @@ def _fetch_today_viome_flags(db, profile_id: str, day_start: str, day_end: str) 
                 "and": f"(logged_at.gte.{day_start},logged_at.lt.{day_end})",
                 "verdict": "not.is.null",
                 "is_day_summary": "not.is.true",
+                "voided_at": "is.null",
             },
         )
         return [r for r in rows if r.get("verdict") and r.get("verdict") != "clean"]

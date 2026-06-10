@@ -18,6 +18,7 @@ def _adherence(conn, profile_id, *, days: int):
         """SELECT supplement_id, count(DISTINCT taken_at::date) AS d
            FROM supplement_intake_logs
            WHERE profile_id=%s AND taken_at >= CURRENT_DATE - (%s||' days')::interval
+             AND voided_at IS NULL
            GROUP BY supplement_id""",
         (profile_id, days),
     )

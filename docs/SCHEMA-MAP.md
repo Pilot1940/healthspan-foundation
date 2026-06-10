@@ -1,8 +1,7 @@
-# HealthSpan — Schema Map (semantic reference)
-
-> **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-10 06:19 UTC.
-> generated_at: 2026-06-10T06:19:43Z
+Wrote /Users/p.chitalkar/Library/CloudStorage/Dropbox/Development/HealthSpan/CODE/healthspan-foundation/docs/SCHEMA-MAP.md (60/61 tables documented, 1 unmapped)
+n `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
+> Generated 2026-06-10 10:10 UTC.
+> generated_at: 2026-06-10T10:10:34Z
 > coverage: 60 of 61 public base tables documented.
 
 ## `profiles`
@@ -255,6 +254,8 @@ _All lab + DEXA scalar values (canonical home; body_metrics_history is dormant).
 | `profile_id` | uuid | FK profiles.id — live per-person key. |
 | `healthspan_test_id` | uuid | FK healthspan_tests.id (investigation grouping) if any. |
 | `qualifier` | text | Below/above-detection operator: '<' value is an upper bound (e.g. <10), '>' a lower bound. NULL = exact. PRESERVE in display. |
+| `voided_at` | timestamp with time zone | Soft-delete marker (mig 060). Non-NULL = excluded from every read/aggregation (WHERE voided_at IS NULL). Set via maintainer_void_biomarker(); cleared automatically when the same (profile,metric,measured_at) is re-ingested. |
+| `void_reason` | text | Why the row was voided (mig 060) — audit trail. |
 
 ## `metric_definitions`
 _Catalog of measurable markers (149 rows). SELECT-only for the skill role; INSERT is owner-only (non-owner flags unknowns)._
@@ -308,6 +309,8 @@ _Meal entries (macros, verdict, Viome flags). is_day_summary rows hold a day tot
 | `source_photo_path` | text | Path of the source food photo. |
 | `source_log_path` | text | Path of the source log file. Part of the file-sourced upsert key (with log_date, description). |
 | `profile_id` | uuid | FK profiles.id — live per-person key. |
+| `voided_at` | timestamp with time zone | Soft-delete marker (mig 060). Non-NULL = excluded from every read/aggregation (WHERE voided_at IS NULL). Set via maintainer_void_food(). |
+| `void_reason` | text | Why the row was voided (mig 060) — audit trail. |
 
 ## `supplement_regimens`
 _A person's supplement protocol (dose/timing/duration, cyclical aware). status: active|discontinued|planned. No general status enum beyond CHECK._
@@ -349,6 +352,8 @@ _Actual supplement intake events. ON CONFLICT key (profile_id, supplement_id, ta
 | `source` | text | CHECK: manual \| journal \| skill \| csv. Default skill. |
 | `notes` | text | Free text. |
 | `created_at` | timestamp with time zone | Row insert time. |
+| `voided_at` | timestamp with time zone | Soft-delete marker (mig 060). Non-NULL = this intake was logged in error and must be excluded from every read/aggregation (WHERE voided_at IS NULL). Set via maintainer_void_supplement(); cleared automatically when the same (profile,supplement,day,source) is re-logged. |
+| `void_reason` | text | Why the row was voided (mig 060) — audit trail; shows a mistake was corrected rather than erased. |
 
 ## `health_context_notes`
 _Skill session memory. TRAP: notes are NARRATIVE + references to numbers — NEVER store the numbers themselves (always pull live from the DB). One 'current' note per profile + short 'log' notes._

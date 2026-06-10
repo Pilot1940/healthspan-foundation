@@ -1033,14 +1033,16 @@ def sweep_staged_orphans(db: DbRest, api_key: str, model: str, cfg: dict,
 
         cands: list[dict] = []
         foods = db.select("food_logs", select="id,description,logged_at",
-                          filters={"profile_id": f"eq.{pid}", "logged_at": f"gte.{t0}"},
+                          filters={"profile_id": f"eq.{pid}", "logged_at": f"gte.{t0}",
+                                   "voided_at": "is.null"},
                           order="logged_at", limit=10) or []
         cands += [{"id": str(f["id"]), "desc": f.get("description") or ""}
                   for f in foods if str(f.get("logged_at") or "") <= t1]
         sups = [x for x in (db.select("supplement_intake_logs",
                                       select="id,supplement_id,taken_at",
                                       filters={"profile_id": f"eq.{pid}",
-                                               "taken_at": f"gte.{t0}"},
+                                               "taken_at": f"gte.{t0}",
+                                               "voided_at": "is.null"},
                                       order="taken_at", limit=10) or [])
                 if str(x.get("taken_at") or "") <= t1]
         if sups:
@@ -1119,6 +1121,7 @@ def fetch_today_food_totals(db: DbRest, profile_id: str, today: str) -> dict:
                 "profile_id": f"eq.{profile_id}",
                 "log_date": f"eq.{today}",
                 "is_day_summary": "not.is.true",
+                "voided_at": "is.null",
             },
         )
         kcal = round(sum(float(r.get("calories") or 0) for r in rows))
@@ -1148,7 +1151,8 @@ def fetch_today_supplement_counts(db: DbRest, profile_id: str, today: str) -> di
         intakes = db.select(
             "supplement_intake_logs",
             select="supplement_id",
-            filters={"profile_id": f"eq.{profile_id}", "taken_on": f"eq.{today}"},
+            filters={"profile_id": f"eq.{profile_id}", "taken_on": f"eq.{today}",
+                     "voided_at": "is.null"},
         )
         taken = sum(1 for r in intakes if r.get("supplement_id") in regimen_ids)
         return {"taken": taken, "total": total}
@@ -1674,7 +1678,10 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     summary["clustered"] = len(all_clusters)
 
     for cluster in all_clusters:
-        # Atomic claim — all rows or none
+        # Per-item claim with compensation — claim_inbox_item each row; if any row
+        # is already taken by another drain, release what we claimed and skip the
+        # cluster. (NOT a single atomic claim — the claim_inbox_cluster RPC from
+        # mig 046 was never wired in and was dropped in mig 061.)
         claimed: list[str] = []
         skipped = False
         for row in cluster:

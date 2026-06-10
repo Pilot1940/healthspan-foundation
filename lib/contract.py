@@ -492,7 +492,8 @@ def _implausible_errors(cur, v: float, nm: str, plo, phi,
     if profile_id is not None and metric_id is not None:
         cur.execute(
             "SELECT max(value), min(value) FROM biomarkers "
-            "WHERE profile_id = %s AND metric_definition_id = %s AND value IS NOT NULL",
+            "WHERE profile_id = %s AND metric_definition_id = %s AND value IS NOT NULL "
+            "AND voided_at IS NULL",
             (profile_id, metric_id),
         )
         hist = cur.fetchone()

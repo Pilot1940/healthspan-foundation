@@ -103,6 +103,7 @@ def _latest_metric_value(conn, profile_id: str, metric_id: str):
     cur.execute(
         """SELECT value FROM biomarkers
            WHERE profile_id=%s AND metric_definition_id=%s AND value IS NOT NULL
+             AND voided_at IS NULL
            ORDER BY measured_at DESC LIMIT 1""",
         (profile_id, metric_id),
     )
