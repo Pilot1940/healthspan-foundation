@@ -2,8 +2,9 @@
 
 Update the constants HERE when Anthropic retires a model — retired IDs return HTTP 404 and
 silently break whatever path calls them. Call sites should read `system_config` first (e.g.
-`drain.vision_model`, `brief.model`, `ingest.food_model`) and fall back to these constants, so
-a model swap is a one-line change in the DB or here.
+`drain.vision_model`, `brief.model`) and fall back to these constants, so a model swap is a
+one-line change in the DB or here. Exception: `ingest/food.py` is overridden via the
+`HS_FOOD_MODEL` env var, not a config key.
 
 Last review 2026-06-09: `claude-3-5-haiku-20241022` RETIRED 2026-02-19 → `claude-haiku-4-5`.
 (`ingest/food.py` had the retired id hardcoded — it would have 404'd on every call.)

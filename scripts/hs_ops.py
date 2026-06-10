@@ -102,39 +102,84 @@ def cmd_apply(args):
     r = subprocess.run([f"{PG17}/psql", "-v", "ON_ERROR_STOP=1", "-f", mig], env=e)
     sys.exit(r.returncode)
 
-# whoop_journal is a VIEW since 007 (security_invoker, RLS via whoop_journal_entries)
-SUBJECT = ['sprints','whoop_cycles','whoop_sleeps','whoop_workouts','whoop_journal_entries',
- 'biomarkers','food_logs','daily_logs','daily_log_metrics','weight_logs',
- 'body_metrics_history','healthspan_tests','user_goals','food_rules',
- 'biomarker_targets','documents','trend_alerts','wearable_sync_log',
- 'stg_biomarker_review','stg_food_rule_review','stg_test_result_review',
- 'travel_log','supplement_regimens','supplement_intake_logs','hr_zone_config',
- 'workout_intervals','workout_hr_samples',
- # 029 — Telegram ingestion
- 'telegram_link_codes','telegram_identities','telegram_processed_updates',
- 'media_inbox','push_log']
+# Tables documented as maintainer-only machinery (migrations 022/058): every SELECT
+# policy on these must gate SOLELY on is_maintainer() — never has_profile_access
+# (that was exactly the mig-022 miss on three stg_* tables, fixed by 058).
+MAINTAINER_ONLY = ['query_audit', 'wearable_sync_log', 'wearable_sync_errors',
+                   'push_log', 'telegram_processed_updates',
+                   'stg_biomarker_review', 'stg_food_log_review', 'stg_food_rule_review',
+                   'stg_supplement_intake_review', 'stg_test_result_review']
 
 def cmd_verify(_):
     c = connect(); cur = c.cursor()
-    print("== RLS: surviving authenticated/anon qual=true policies (must be none) ==")
-    cur.execute("""SELECT tablename, policyname, roles FROM pg_policies
-       WHERE schemaname='public' AND tablename=ANY(%s) AND qual='true'""", (SUBJECT,))
-    leaks = [r for r in cur.fetchall() if 'service_role' not in (r[2] or '')]
-    print("  LEAKS:", leaks or "NONE OK")
-    print("== RLS coverage (profile_access OR maintainer-only) ==")
-    # A table is covered if any policy scopes by has_profile_access (per-profile) OR by
-    # is_maintainer (the maintenance tables — migration 022, maintainer-only SELECT).
+    # SUBJECT tables are derived at runtime (the old hardcoded list had gone stale at
+    # 32 of 61 tables): every base table carrying a profile_id column holds per-person
+    # health data and must be RLS-covered. Catalog/shared tables (no profile_id) are
+    # reported but not failed — read-all policies are legitimate there.
+    cur.execute("""SELECT c.relname, c.relrowsecurity FROM pg_class c
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                   WHERE n.nspname='public' AND c.relkind='r' ORDER BY 1""")
+    rls = dict(cur.fetchall())
+    cur.execute("""SELECT table_name FROM information_schema.columns
+                   WHERE table_schema='public' AND column_name='profile_id'""")
+    subject = sorted(set(t for (t,) in cur.fetchall()) & set(rls))
+    print(f"== {len(rls)} base tables; {len(subject)} profile-scoped (runtime-derived) ==")
+    no_rls = sorted(t for t, enabled in rls.items() if not enabled)
+    print("  RLS disabled (must be none):", no_rls or "NONE OK")
+
+    print("== RLS leaks for non-service roles (must be none) ==")
+    # Leak = open WRITE anywhere (with_check=true — the mig-061 class) OR open READ on a
+    # profile-scoped table. Read-all SELECT on a catalog table (supplements,
+    # metric_definitions, system_config…) is by design and only counted.
+    cur.execute("""SELECT tablename, policyname, cmd, roles, qual, with_check FROM pg_policies
+       WHERE schemaname='public' AND (qual='true' OR with_check='true')""")
+    leaks, catalog_reads = [], 0
+    for tn, pol, cmd, roles, qual, wc in cur.fetchall():
+        if 'service_role' in (roles or ''):
+            continue
+        if wc == 'true' or (qual == 'true' and tn in subject):
+            leaks.append((tn, pol, cmd, roles))
+        else:
+            catalog_reads += 1
+    print("  LEAKS:", leaks or f"NONE OK ({catalog_reads} catalog read-all policies, by design)")
+
+    print("== RLS coverage on profile-scoped tables ==")
+    # Covered = a policy scoping by has_profile_access / is_maintainer / auth.uid()
+    # (family_memberships + ingestion_tokens scope by uid directly — has_profile_access
+    # would be circular there), OR zero policies (RLS on + no policy = deny-all = locked).
     cur.execute("SELECT tablename, qual, with_check FROM pg_policies WHERE schemaname='public'")
-    covered, maint = set(), set()
+    has_policy, covered, maint = set(), set(), set()
     for tn, qual, wc in cur.fetchall():
+        has_policy.add(tn)
         blob = f"{qual or ''} {wc or ''}"
-        if "has_profile_access" in blob or "is_maintainer" in blob:
+        if ("has_profile_access" in blob or "is_maintainer" in blob
+                or "auth.uid()" in blob):
             covered.add(tn)
         if "is_maintainer" in blob:
             maint.add(tn)
-    miss = [t for t in SUBJECT if t not in covered]
-    print("  missing:", miss or f"NONE OK ({len(covered & set(SUBJECT))}/{len(SUBJECT)})")
-    print("  maintainer-only tables:", sorted(maint) or "none")
+    miss = [t for t in subject if t not in covered and t in has_policy]
+    locked = [t for t in subject if t not in has_policy]
+    print("  missing:", miss or f"NONE OK ({len(covered & set(subject))}/{len(subject)} scoped"
+                                f"{', ' + str(len(locked)) + ' deny-all' if locked else ''})")
+    if locked:
+        print("  deny-all (no policies — service_role writers only):", locked)
+
+    print("== maintainer-only tables: SELECT must gate on is_maintainer alone ==")
+    # cmd IN (SELECT, ALL): an ALL policy grants SELECT too — the mig-022 miss was
+    # exactly an over-broad ALL/has_profile_access policy on three stg_* tables.
+    cur.execute("""SELECT tablename, policyname, qual FROM pg_policies
+       WHERE schemaname='public' AND tablename=ANY(%s) AND cmd IN ('SELECT','ALL')""",
+                (MAINTAINER_ONLY,))
+    bad, seen = [], set()
+    for tn, pol, qual in cur.fetchall():
+        seen.add(tn)
+        q = qual or ''
+        if 'is_maintainer' not in q or 'has_profile_access' in q:
+            bad.append((tn, pol, qual))
+    no_sel = [t for t in MAINTAINER_ONLY if t in rls and t not in seen]
+    print("  mis-gated (must be none):", bad or "NONE OK")
+    if no_sel:
+        print("  no SELECT policy at all (deny-all — fine):", no_sel)
     print("== live RLS read test under SET ROLE authenticated ==")
     cur.execute("SELECT id FROM profiles WHERE relationship='self' LIMIT 1")
     pc = cur.fetchone()
