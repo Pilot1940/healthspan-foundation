@@ -117,6 +117,23 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
     return f"Basic {encoded}"
 
 
+def _post_refresh(refresh_token: str, client_id: str, client_secret: str) -> dict:
+    """POST a refresh_token grant to WHOOP; returns the parsed token response.
+    Raises urllib.error.HTTPError on a non-2xx (400 = rotated-out token)."""
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode()
+    req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    req.add_header("User-Agent", _UA)
+    req.add_header("Accept", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
 def _get_token_from_db(conn, profile_id: str, env: dict) -> str | None:
     """Read access token from whoop_tokens; refresh if near-expiry. Returns token or None."""
     import psycopg2.extras
@@ -140,18 +157,28 @@ def _get_token_from_db(conn, profile_id: str, env: dict) -> str | None:
     print("  Refreshing token from whoop_tokens …")
     client_id = env.get("WHOOP_CLIENT_ID") or os.environ.get("WHOOP_CLIENT_ID", "")
     client_secret = env.get("WHOOP_CLIENT_SECRET") or os.environ.get("WHOOP_CLIENT_SECRET", "")
-    body = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": client_id,
-        "client_secret": client_secret,
-    }).encode()
-    req = urllib.request.Request(_TOKEN_URL, data=body, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-    req.add_header("User-Agent", _UA)
-    req.add_header("Accept", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read())
+    try:
+        data = _post_refresh(refresh_token, client_id, client_secret)
+    except urllib.error.HTTPError as e:
+        # BACKLOG #20: WHOOP rotates the refresh token on EVERY use; this CI-side
+        # refresh and the Edge webhook's getValidAccessToken can race on the same
+        # whoop_tokens row. The loser holds the rotated-out token → 400
+        # invalid_request. Recovery: re-read the row — if the winner already
+        # stored a fresh pair, use its access token (or retry ONCE with the
+        # rotated-in refresh token). Anything else re-raises.
+        if e.code != 400:
+            raise
+        cur.execute("SELECT * FROM whoop_tokens WHERE profile_id = %s", (profile_id,))
+        row = cur.fetchone()
+        now = datetime.now(_tz.utc)
+        if row and row["expires_at"] and (row["expires_at"] - now).total_seconds() > skew_sec:
+            print("  Refresh raced — using the winner's stored access token.")
+            return row["access_token"]
+        if not (row and row["refresh_token"] and row["refresh_token"] != refresh_token):
+            raise
+        print("  Refresh raced — retrying once with the rotated refresh token.")
+        refresh_token = row["refresh_token"]
+        data = _post_refresh(refresh_token, client_id, client_secret)
     new_access = data["access_token"]
     new_refresh = data.get("refresh_token", refresh_token)
     new_expires = datetime.now(_tz.utc) + timedelta(seconds=data.get("expires_in", 3600))

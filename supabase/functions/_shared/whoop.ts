@@ -78,9 +78,27 @@ export async function getValidAccessToken(db: SupabaseClient, profileId: string)
     return data.access_token;
   }
   if (!data.refresh_token) throw new Error(`refresh token dead for profile ${profileId} — re-auth needed`);
-  const fresh = await refreshTokens(data.refresh_token);
-  await storeTokens(db, profileId, fresh, data.whoop_user_id);
-  return fresh.access_token;
+  try {
+    const fresh = await refreshTokens(data.refresh_token);
+    await storeTokens(db, profileId, fresh, data.whoop_user_id);
+    return fresh.access_token;
+  } catch (e) {
+    // BACKLOG #20: WHOOP rotates the refresh token on EVERY use; this webhook and the
+    // CI-side refresh_recent can race on the same whoop_tokens row. The loser holds the
+    // rotated-out token → "WHOOP token 400: invalid_request". Recovery: re-read the row —
+    // if the winner already stored a fresh pair, use its access token (or retry ONCE
+    // with the rotated-in refresh token). Anything else rethrows the original error.
+    const { data: d2 } = await db.from("whoop_tokens").select("*").eq("profile_id", profileId).single();
+    if (d2?.access_token && d2.expires_at && new Date(d2.expires_at).getTime() - Date.now() > skewMs) {
+      return d2.access_token;
+    }
+    if (d2?.refresh_token && d2.refresh_token !== data.refresh_token) {
+      const fresh2 = await refreshTokens(d2.refresh_token);
+      await storeTokens(db, profileId, fresh2, d2.whoop_user_id);
+      return fresh2.access_token;
+    }
+    throw e;
+  }
 }
 
 export async function whoopGet(accessToken: string, path: string): Promise<any> {
