@@ -72,15 +72,17 @@ sleep, supplements adherence, biomarker + weight trends) as a rendered image or 
 
 ---
 
-## #5 — Telegram clarification loop before LLM processes — **SHIPPED 2026-06-08 (pending live verify)**
+## #5 — Telegram clarification loop before LLM processes — **SHIPPED 2026-06-08, LIVE-VERIFIED 2026-06-09**
 
-**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — reply-to-clarify built (migration 049 +
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED + live-verified 2026-06-09 (drain@176c53b:
+ambiguous shake photo staged + clarify asked, C3 PASS; reply re-extracted to ONE entry honouring
+user-stated macros). Reply-to-clarify built (migration 049 +
 `telegram-webhook` v6 + `inbox_drain` describe_stage). When an item stages, the bot sends an
 LLM-written "what's unclear — reply to fix it" message and stores its Telegram message id; a user
 REPLY re-queues the item (fresh INSERT so the AFTER-INSERT trigger fires) with the clarification +
 original image appended, and the LLM re-extracts. `clarify_count` caps at 2 rounds → hands to PC.
 Minor-aware (works for Dea with warm wording). **Acceptance test = one live reply round-trip in
-Telegram** (a staged item + a reply that logs it) — pending PC's confirmation. Design questions
+Telegram** — PASSED 2026-06-09 (see CLAUDE.md live-test results). Design questions
 below are answered by the implementation; kept for reference.
 
 **Idea:** When an inbound ingestion is ambiguous or incomplete, Telegram itself should **ask the
@@ -112,12 +114,11 @@ take the magnesium?") → user reply lands as a follow-up message → correlated
 
 ---
 
-## #6 — Text-only messages can't log data (always route to brief) — **PARTIALLY SHIPPED**
+## #6 — Text-only messages can't log data (always route to brief) — **SHIPPED (superseded by LLM-intent routing, 2026-06-08)**
 
-**Severity:** HIGH (usage-dropper) · **Owner:** PC (design) → CC (build) · **Status:** PARTIALLY
-SHIPPED 2026-06-08 — explicit `log:`/`add:`/`/log`/`/add` trigger now logs via text (PC chose the
-additive option). Bare-text-defaults-to-log (full inversion) intentionally **deferred** — that's a
-production-routing change needing the clarification loop (#5) + confirmation UX designed first.
+**Severity:** HIGH (usage-dropper) · **Owner:** PC (design) → CC (build) · **Status:** SHIPPED —
+the original gap (bare text couldn't log) is closed by the LLM-intent routing below; the interim
+regex trigger was removed the same day.
 
 **Superseded by LLM-intent routing (2026-06-08).** The regex approach (`parseLogCommand`/verb
 detection) was REMOVED — it gated text (a wrong guess permanently diverted to the brief, never
@@ -270,7 +271,8 @@ clarify-routing change (descriptive feedback, generic guard, this) — they all 
 
 ---
 
-## #12 — No self-correct path: skill can log a bad row but can't undo it — **OPEN, MED**
+## #18 — No self-correct path: skill can log a bad row but can't undo it — **OPEN, MED**
+*(renumbered 2026-06-10 — was a duplicate "#12")*
 
 **Severity:** MED · **Owner:** CC · **Status:** OPEN. Surfaced 2026-06-08: a mis-dated NAC duplicate
 (`6276da9f`, source `skill`, dated June 7, superseded by the correct June 8 `66decb05`) could not be
@@ -339,9 +341,9 @@ single ALL policy `has_profile_access(profile_id)`, enabled.
 
 ---
 
-## #14 — Minor daily brief via per-profile consent — **SHIPPED 2026-06-09 (pending commit/push)**
+## #14 — Minor daily brief via per-profile consent — **SHIPPED 2026-06-09 (commit `13d51ef`, pushed — LIVE via CI)**
 
-**Severity:** — · **Owner:** PC · **Status:** SHIPPED to working tree + live DB; CI runs `monitor/` directly so it goes live on push.
+**Severity:** — · **Owner:** PC · **Status:** SHIPPED — commit `13d51ef` is on `origin/main` (verified 2026-06-10), so it is live via CI.
 
 **What:** Minors were excluded from the daily brief at both triggers (post-log nudge in `run_once`,
 scheduled `send-brief --all`), so Dea got only "Tracked: …" confirmations — no food totals / WHOOP /
@@ -371,9 +373,12 @@ Should those be one path or two? PC's call; not a code task until decided.
 
 ---
 
-## #16 — The "15 environmental" unit-test failures are actually STALE-CONTRACT — **OPEN, MED**
+## #16 — The "15 environmental" unit-test failures are actually STALE-CONTRACT — **SHIPPED 2026-06-09 (commit `930b734`)**
 
-**Severity:** MED · **Owner:** CC · **Status:** OPEN — surfaced by the 2026-06-09 deep scan; CLAUDE.md note corrected.
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — fixed in commit `930b734`
+("test: bring 15 stale-contract drain/brief tests green"), test-files-only, exactly per the
+taxonomy below (no xfail/skip, prod 0.3 threshold used). Verified 2026-06-10: full unit suite
+259 passed / 0 failed / 9 env-gated skips.
 
 `tests/unit/test_inbox_drain.py` + `test_brief.py` have ~15 failures long labeled "environmental
 (real-API 401 + prompt drift)". The scan **disproved that**: none are API/network failures — all are
@@ -405,3 +410,73 @@ it), so zero functional impact — but intra-panel inconsistency is avoidable. O
 row to `blood_test`; optionally add a `system_config`-driven allowlist (rule #1) if `source` ever drives
 logic. Tied to the broader provenance gap: this row also bypassed `stg_biomarker_review` (rule #2) as a
 direct maintainer write, leaving no `staging_id`/`document_id` audit trail.
+
+---
+
+## #19 — whoop-webhook: every `recovery.updated` event 404s (wrong id type) — **OPEN, MED-HIGH**
+
+**Severity:** MED-HIGH · **Owner:** CC · **Status:** OPEN — found by the 2026-06-10 deep scan.
+
+`supabase/functions/whoop-webhook/index.ts:407-410` routes `recovery.*` (and the
+never-emitted `cycle.*`) events to `GET /v2/cycle/${id}` — but the WHOOP v2 recovery
+webhook payload `id` is a **UUID**, while `/v2/cycle/` takes the **integer** cycle id, so
+the fetch 404s and the handler 500s → WHOOP retries (each event appears 5–12× in
+`wearable_sync_errors`). Live evidence: **110 `webhook:recovery.updated` failed sync-log
+rows in the week to 2026-06-10, zero successes; `recovery_landed` pushes (incl. the
+critical-recovery alert and HRV-crash check) have NEVER fired** — `push_log` holds only
+`brief` and `workout_logged` rows. Data impact is contained: recovery still lands via
+`refresh_recent` (brief pre-sync) and the sleep-event prior-cycle refresh.
+
+**Fix direction:** mirror the working pull path (`ingest/whoop_sync.py` joins
+`/v2/recovery` records on their integer `cycle_id`): on `recovery.updated`, fetch
+`/v2/recovery?limit=…` (or the recovery-for-sleep lookup), take `cycle_id` → GET
+`/v2/cycle/{cycle_id}` + map. Also verify the `/v2/recovery/cycle/${id}` path used at
+lines 99/409 against the WHOOP docs (the documented v2 shape is
+`/v2/cycle/{cycleId}/recovery`) — it is try/swallowed, so a wrong shape would silently
+drop recovery scores on that path too. Then redeploy whoop-webhook (§7.4).
+
+---
+
+## #20 — WHOOP token refresh race: webhook vs CI `refresh_recent` (~1–2 token-400s/day) — **OPEN, LOW**
+
+**Severity:** LOW (self-heals) · **Owner:** CC · **Status:** OPEN — found by the 2026-06-10 deep scan.
+
+`wearable_sync_errors` shows `WHOOP token 400: invalid_request` ~1–2×/day across both PC
+and Dea. WHOOP rotates the refresh token on every use; the webhook
+(`_shared/whoop.ts getValidAccessToken`) and the Python `refresh_recent` (CI, every brief)
+both refresh against the same `whoop_tokens` row, so a near-simultaneous refresh leaves
+one side holding the stale rotated-out token → 400. Self-heals on the next event (tokens
+verified fresh: both profiles refreshed 2026-06-10). Fix options: advisory lock /
+compare-and-swap on `whoop_tokens.refresh_token`, or have the loser re-read the row and
+retry once before erroring.
+
+---
+
+## #21 — Security/config hygiene batch (2026-06-10 scan, low severity) — **OPEN, LOW**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN — consolidated from the scan's verified low-priority findings.
+
+1. **Open INSERT policies** (`with_check=true`, role public) on `media_inbox`, `push_log`,
+   `telegram_processed_updates`, `wearable_sync_errors`. The intended writers use
+   service_role (bypass RLS), so the policies serve no current writer; a leaked anon key
+   could insert spam rows (a `media_inbox` insert triggers a paid drain run). Verify anon
+   table grants, then tighten to `authenticated` + `has_profile_access` or drop.
+2. **Legacy mig-002 ingestion surface**: `ingest_health_artifact` (EXECUTE granted to
+   `anon`, token-gated, staging-only) + `mint_ingestion_token` — superseded by the
+   Telegram path. Decide keep vs revoke/drop.
+3. **Dead/orphan `system_config` keys**: `ingest.whoop_screenshot.direct_write` (gate
+   never read by code), `supplements.journal_intake_map`, `supplements.intake_source_priority`
+   (fossils of the dropped source-priority design, mig 028). Drop or `is_active=false`.
+4. **`claim_inbox_cluster` RPC (mig 046) is never called** — the drain claims per-item via
+   `claim_inbox_item` under a misleading "all rows or none" comment
+   (`monitor/inbox_drain.py:~1485`). Either switch the drain to the RPC or drop it and fix
+   the comment. (Mig 046's internal comments said "Migration 043" — fixed 2026-06-10.)
+5. **`hs_ops.py verify` blind spots**: SUBJECT table list is stale (32 of 61 tables);
+   its coverage heuristic can't distinguish maintainer-only SELECT from profile-wide ALL
+   (it would NOT have caught the mig-022 miss fixed by 058). Derive the table list from
+   information_schema at runtime + assert documented maintainer-only tables are gated
+   solely by `is_maintainer()`.
+6. **`lib/models.py` docstring** names a nonexistent `ingest.food_model` config key (the
+   real override is the `HS_FOOD_MODEL` env var); `tests/unit/test_telegram_webhook.py`'s
+   9 live-DB tests self-skip in CI, so the deployed webhook v7 supersede path has no
+   credential-less coverage.

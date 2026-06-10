@@ -329,9 +329,9 @@ code{
 <ul><li><strong>verify_jwt:</strong> <code>false</code>. Verifies inbound requests by constant-time compare of the</li></ul>
 <p><code>X-Telegram-Bot-Api-Secret-Token</code> header against <code>TELEGRAM_WEBHOOK_SECRET</code>.</p>
 <ul><li><strong>Purpose:</strong> Inbound Telegram updates. Authenticates the sender (link-code onboarding via</li></ul>
-<p><code>telegram_link_codes</code> / <code>telegram_identities</code>, must be <code>status=active</code>), deduplicates by <code>update_id</code> against <code>telegram_processed_updates</code>, classifies media by caption keyword (<code>guessKind</code>), downloads the highest-res photo, uploads to the private <code>health-media</code> bucket at <code>telegram/&lt;profile_id&gt;/&lt;update_id&gt;.jpg</code>, and INSERTs a <code>pending</code> row into <code>media_inbox</code>. Text-only messages skip <code>media_inbox</code> and fire a <code>send-brief</code> GitHub dispatch instead. <code>is_minor</code> changes ack/push wording.</p>
+<p><code>telegram_link_codes</code> / <code>telegram_identities</code>, must be <code>status=active</code>), deduplicates by <code>update_id</code> against <code>telegram_processed_updates</code>, classifies media by caption keyword (<code>guessKind</code>), downloads the highest-res photo, uploads to the private <code>health-media</code> bucket at <code>telegram/&lt;profile_id&gt;/&lt;update_id&gt;.jpg</code>, and INSERTs a <code>pending</code> row into <code>media_inbox</code>. Text-only messages ALSO enqueue to <code>media_inbox</code> (<code>kind=&#x27;unknown&#x27;</code>, <code>storage_path=null</code>) — no regex routing; the drain&#x27;s LLM classifies each as a log or a brief request and composes briefs inline (LLM-routed text, 2026-06-08). <code>is_minor</code> changes ack/push wording.</p>
 <ul><li><strong>Additional secrets:</strong> <code>TELEGRAM_BOT_TOKEN</code> (download files + send replies),</li></ul>
-<p><code>TELEGRAM_WEBHOOK_SECRET</code> (verify inbound signature), <code>GH_DISPATCH_TOKEN</code> (fire <code>send-brief</code> dispatch on text), and optionally <code>ROUTINE_TRIGGER_URL</code> + <code>ROUTINE_BEARER</code> (fire the legacy Routine drain — debounced 300s fallback).</p>
+<p><code>TELEGRAM_WEBHOOK_SECRET</code> (verify inbound signature), and optionally <code>ROUTINE_TRIGGER_URL</code> + <code>ROUTINE_BEARER</code> (fire the legacy Routine drain — debounced 300s fallback). (<code>GH_DISPATCH_TOKEN</code> is no longer used here — the old text → <code>send-brief</code> dispatch path was removed 2026-06-08; only <code>trigger-drain</code> dispatches.)</p>
 <ul><li><strong>Note:</strong> Writes <code>telegram_processed_updates</code> <strong>after</strong> <code>media_inbox</code> (strict idempotency</li></ul>
 <p>ordering — a crash between leaves no idempotency record, so Telegram retries the full path). The pg_net trigger fires independently and in parallel with <code>maybeFireRoutine</code>.</p>
 <h4><code>trigger-drain</code></h4>
@@ -347,8 +347,8 @@ code{
 <p><code>recovery.updated</code>, <code>cycle.updated</code>, <code>*.deleted</code>). Maps WHOOP <code>user_id</code> → <code>profile_id</code> via <code>whoop_tokens</code>, opens a <code>wearable_sync_log</code> row, fetches the full record from the WHOOP API (lazy-refresh token via <code>_shared/whoop.ts</code>), and upserts into <code>whoop_workouts</code> / <code>whoop_sleeps</code> / <code>whoop_cycles</code>. On <code>sleep.*</code> events re-fetches the most recent closed cycle to refresh final <code>day_strain</code>. Phase 2 push logic (debounce, quiet hours, criticality thresholds from <code>system_config</code>) sends Telegram pushes + logs <code>push_log</code>. Runs a dead-man heartbeat across all active profiles on every event.</p>
 <ul><li><strong>Additional secrets:</strong> <code>WHOOP_CLIENT_SECRET</code> (HMAC + refresh), <code>WHOOP_CLIENT_ID</code></li></ul>
 <p>(refresh via shared lib), <code>TELEGRAM_BOT_TOKEN</code> (push notifications).</p>
-<ul><li><strong>⚠️ Needs redeploy:</strong> <code>supabase functions deploy whoop-webhook --no-verify-jwt</code> —</li></ul>
-<p>stale-cycle strain refresh + Phase 2 push additions are not yet live.</p>
+<ul><li><strong>Deployed:</strong> v13, 2026-06-08 (<code>*.deleted</code> handling, stale-cycle strain refresh, Phase 2 push logic — all live).</li></ul>
+<ul><li><strong>⚠️ Known bug (2026-06-10 scan):</strong> <code>recovery.updated</code> events route to <code>GET /v2/cycle/${id}</code>, but the v2 recovery webhook <code>id</code> is a UUID while <code>/v2/cycle/</code> takes an integer cycle id — <strong>every</strong> recovery webhook 404s (110 failed <code>webhook:recovery.updated</code> sync-log rows in the week to 2026-06-10; <code>recovery_landed</code> pushes have never fired). Recovery data still lands via <code>refresh_recent</code> / nightly sync. Fix direction: mirror <code>ingest/whoop_sync.py</code> — fetch <code>/v2/recovery</code> and join on the record&#x27;s integer <code>cycle_id</code>. See BACKLOG #19.</li></ul>
 <h4><code>whoop-oauth</code></h4>
 <ul><li><strong>verify_jwt:</strong> <code>false</code>. No inbound auth — opened by a human in a browser. The <code>state</code></li></ul>
 <p>parameter carries the profile UUID to prevent CSRF.</p>
@@ -373,7 +373,7 @@ code{
 </tr>
 <tr>
 <td><strong>Dispatch targets</strong></td>
-<td><code>inbox-drain</code> (from <code>trigger-drain</code>), <code>send-brief</code> (from <code>telegram-webhook</code>) — both <code>POST /repos/Pilot1940/healthspan-foundation/dispatches</code></td>
+<td><code>inbox-drain</code> (from <code>trigger-drain</code>) — <code>POST /repos/Pilot1940/healthspan-foundation/dispatches</code>. (<code>send-brief</code> dispatch from <code>telegram-webhook</code> was removed 2026-06-08; <code>send-brief.yml</code> now runs via <code>workflow_dispatch</code> only.)</td>
 </tr>
 </tbody></table></div>
 <p><strong>Secrets required in GitHub Actions:</strong></p>
@@ -396,7 +396,7 @@ code{
 </tr>
 <tr>
 <td><code>DATABASE_URL</code></td>
-<td>inbox-drain, ci (integration; tests self-skip when absent)</td>
+<td>inbox-drain, send-brief, ci (integration; tests self-skip when absent)</td>
 </tr>
 <tr>
 <td><code>HS_AUTH_EMAIL</code></td>
@@ -414,12 +414,20 @@ code{
 <td><code>TELEGRAM_BOT_TOKEN</code></td>
 <td>inbox-drain, send-brief</td>
 </tr>
+<tr>
+<td><code>WHOOP_CLIENT_ID</code></td>
+<td>inbox-drain, send-brief — <code>refresh_recent</code> WHOOP token refresh in CI</td>
+</tr>
+<tr>
+<td><code>WHOOP_CLIENT_SECRET</code></td>
+<td>inbox-drain, send-brief — <code>refresh_recent</code> WHOOP token refresh in CI</td>
+</tr>
 </tbody></table></div>
 <p><strong>Workflows:</strong></p>
 <ul><li><strong><code>inbox-drain.yml</code></strong> — Trigger: <code>repository_dispatch: inbox-drain</code> (from</li></ul>
-<p><code>trigger-drain</code>), OR daily cron <strong>03:30 UTC / 09:00 IST</strong> (backstop), OR manual <code>workflow_dispatch</code>. On dispatch: <code>python3 -m monitor.inbox_drain --once --settle-sec 5</code> (short settle batches album bursts); otherwise <code>--once</code> (no settle). <strong>Timeout: 15 min.</strong> Reads <code>pending</code> <code>media_inbox</code> rows, fetches media from <code>health-media</code>, calls Claude to extract, writes to staging (or production via the <code>maintainer_ingest_*</code> RPC if complete), sends a Telegram confirmation.</p>
-<ul><li><strong><code>send-brief.yml</code></strong> — Trigger: <code>repository_dispatch: send-brief</code> (from</li></ul>
-<p><code>telegram-webhook</code> on a text message), OR manual <code>workflow_dispatch</code> with optional <code>profile_id</code>. On dispatch: <code>python3 -m monitor.brief --profile-id &lt;payload.profile_id&gt;</code>; <code>workflow_dispatch</code> without a profile_id runs <code>--all</code>. <strong>Timeout: 10 min.</strong></p>
+<p><code>trigger-drain</code>), OR daily cron <strong>03:30 UTC / 09:00 IST</strong> (backstop), OR manual <code>workflow_dispatch</code>. On dispatch: <code>python3 -m monitor.inbox_drain --once --settle-sec 5</code> (short settle batches album bursts); otherwise <code>--once</code> (no settle). <strong>Timeout: 15 min.</strong> Reads <code>pending</code> <code>media_inbox</code> rows, fetches media from <code>health-media</code>, calls Claude to extract, writes to staging (or production via the <code>maintainer_ingest_*</code> RPC if complete), sends a Telegram confirmation. A <code>concurrency</code> group (<code>cancel-in-progress: false</code>) serialises drains — concurrent dispatches queue, never drop (commit <code>bc672c9</code>).</p>
+<ul><li><strong><code>send-brief.yml</code></strong> — Trigger: manual <code>workflow_dispatch</code> with optional <code>profile_id</code></li></ul>
+<p>(the <code>repository_dispatch: send-brief</code> hook remains in the file but nothing fires it — the telegram-webhook text dispatch was removed 2026-06-08; brief requests via Telegram are composed inline by the drain). <code>workflow_dispatch</code> with a profile_id runs <code>python3 -m monitor.brief --profile-id &lt;uuid&gt;</code>; without one runs <code>--all</code>. <strong>Timeout: 10 min.</strong></p>
 <ul><li><strong><code>ci.yml</code></strong> — Trigger: every <code>push</code> and <code>pull_request</code>. <code>pytest tests/unit/</code> always</li></ul>
 <p>runs; <code>pytest tests/integration/</code> runs only with live-DB secrets (self-skips via <code>pytest.mark.skipif</code> when <code>DATABASE_URL</code> is absent). Integration env: <code>DATABASE_URL</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_ANON_KEY</code>, <code>HS_AUTH_EMAIL</code>, <code>HS_AUTH_PASSWORD</code>.</p>
 <h3>2.4 Supabase Secrets</h3>
@@ -453,7 +461,7 @@ code{
 <tr>
 <td><code>GH_DISPATCH_TOKEN</code></td>
 <td>active</td>
-<td>telegram-webhook (send-brief), trigger-drain (inbox-drain)</td>
+<td>trigger-drain (inbox-drain dispatch). No longer used by telegram-webhook — the text → send-brief dispatch path was removed 2026-06-08.</td>
 </tr>
 <tr>
 <td><code>TRIGGER_DRAIN_SECRET</code></td>
@@ -671,66 +679,44 @@ code{
 </tbody></table></div>
 <h4>Minor-safety framing</h4>
 <p>The <code>is_minor</code> flag on <code>telegram_identities</code> changes both the ack text (step 9) and any push/confirmation wording (<code>compose_confirmation</code>, <code>composePush</code>): growth/performance language only, never deficit/restriction words. This is enforced at the <code>telegram-webhook</code> ack and again in the Python drain.</p>
-<h3>3.2 Text Message → Daily Brief (or Log) Pipeline</h3>
-<p>A <strong>text-only</strong> Telegram message has <strong>two routes</strong>. If it starts with an explicit
-log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/add</code>, case-insensitive —
-<code>parseLogCommand</code>), the stripped body is enqueued as a <strong>text-only <code>media_inbox</code> row</strong>
-(<code>storage_path = null</code>, <code>kind = 'unknown'</code>) and flows through the <em>same</em> drain as photos
-(the unknown-classifier reads food/supplement/biomarker from the caption text — no image needed); the user gets
-&quot;📥 Got it — logging…&quot; then a &quot;✅ … logged&quot; confirmation from the drain. <strong>All other text</strong>
-(e.g. &quot;how am I doing today?&quot;, &quot;brief&quot;, &quot;summary&quot;) defaults to the daily brief, skipping
-<code>media_inbox</code> entirely. (Bare-text-defaults-to-log was deliberately not done — see
-<code>BACKLOG.md</code> #6.)</p>
+<h3>3.2 Text Message → Log (or Daily Brief) Pipeline</h3>
+<p><strong>LLM-routed text (2026-06-08): the regex gate is GONE.</strong> ALL text-only Telegram messages
+enqueue to <code>media_inbox</code> (<code>kind=&#x27;unknown&#x27;</code>, <code>storage_path=null</code>) and flow through the
+<em>same</em> drain as photos. The drain&#x27;s unknown-classifier LLM decides per message: a <strong>LOG</strong>
+(food / supplement / biomarker — multi-item, e.g. &quot;i took D3, K2, B12, magnesium citrate, omega-3&quot;
+auto-logs all five, doses defaulted from the active regimen) or a <strong>brief request</strong>
+(<code>{kind:&quot;brief&quot;}</code> — e.g. &quot;how am I doing today?&quot;), which the drain composes inline at
+end-of-run via <code>compose_brief()</code>. There is no <code>parseLogCommand</code> and no <code>send-brief</code>
+dispatch from the webhook any more; <code>guessKind</code> survives only as a photo-caption hint.</p>
 <div class="pipeline">
 <div class="pipe-step">USER (Telegram text)</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">telegram-webhook (identity + update_id dedup)</div>
+<div class="pipe-step">telegram-webhook (identity + update_id dedup) → media_inbox (kind=unknown, storage_path=null)</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">ROUTE A: &quot;log:/add: …&quot; → media_inbox (kind=unknown, storage_path=null) → drain → &quot;✅ … logged&quot;</div>
-</div>
-<div class="pipeline">
-<div class="pipe-step">telegram-webhook</div>
+<div class="pipe-step">pg_net trigger → trigger-drain → repository_dispatch: inbox-drain</div>
 <div class="pipe-arrow">&rarr;</div>
-<div class="pipe-step">ROUTE B: anything else → send-brief.yml → monitor/brief.py → Telegram daily brief</div>
+<div class="pipe-step">monitor/inbox_drain.py (unknown-classifier LLM, Sonnet): log items → maintainer_ingest_* RPCs → &quot;✅ … logged&quot; | {kind:&quot;brief&quot;} → compose_brief() inline → Telegram reply</div>
 </div>
 <details class="pipe-detail" open><summary>Step detail</summary><div class="pipe-anno">
 <div class="anno-node"><div class="anno-label">USER (Telegram text)</div>
 </div>
 <div class="anno-node"><div class="anno-label">telegram-webhook (identity + update_id dedup as above)</div>
 <ul>
-<li>parseLogCommand inspects the message for a leading log trigger</li>
-<li>Route A (log trigger present) vs Route B (everything else)</li>
+<li>INSERT media_inbox { kind:&#x27;unknown&#x27;, storage_path:null, caption:text }</li>
+<li>No regex routing — every text message takes this path</li>
 </ul>
 </div>
-<div class="anno-node"><div class="anno-label">ROUTE A — explicit log trigger (log: / add: / /log / /add …)</div>
+<div class="anno-node"><div class="anno-label">pg_net trigger → trigger-drain → repository_dispatch: inbox-drain</div>
+</div>
+<div class="anno-node"><div class="anno-label">monitor/inbox_drain.py — unknown-classifier LLM (Sonnet)</div>
 <ul>
-<li>INSERT media_inbox { kind:&#x27;unknown&#x27;, storage_path:null, caption:body }</li>
-<li>→ pg_net trigger → trigger-drain → inbox-drain (same drain as photos)</li>
-<li>unknown-classifier extracts food/supplement/biomarker from the caption text (no image)</li>
-<li>ack &quot;📥 Got it — logging…&quot; → drain confirmation &quot;✅ … logged&quot;</li>
+<li>LOG items (multi-item; supplement doses default from the active regimen) → maintainer_ingest_* RPCs → &quot;✅ … logged&quot;</li>
+<li>{kind:&quot;brief&quot;} → compose_brief() inline at end-of-run → Telegram reply (the daily brief)</li>
 </ul>
-</div>
-<div class="anno-node"><div class="anno-label">ROUTE B — anything else (daily brief)</div>
-<ul>
-<li>Fires GitHub repository_dispatch: send-brief</li>
-<li>POST api.github.com/.../dispatches</li>
-<li>{ event_type:&quot;send-brief&quot;, client_payload:{ profile_id } }</li>
-</ul>
-</div>
-<div class="anno-node"><div class="anno-label">send-brief.yml (ubuntu-latest, 10-min timeout)</div>
-<ul>
-<li>python3 -m monitor.brief --profile-id &lt;payload.profile_id&gt;</li>
-</ul>
-</div>
-<div class="anno-node"><div class="anno-label">monitor/brief.py → compose_brief()</div>
-<ul>
-<li>Fetches all sections, renders text, calls Claude (Haiku), sends Telegram</li>
-</ul>
-</div>
-<div class="anno-node"><div class="anno-label">Telegram reply (the rendered daily brief)</div>
 </div>
 </div></details>
-<p><code>send-brief.yml</code> also supports manual <code>workflow_dispatch</code>: with a <code>profile_id</code> input it briefs that one profile; without one it runs <code>monitor.brief --all</code> for every profile. Note the env-var inconsistency: <code>monitor/brief.py</code> reads <strong><code>ANTHROPIC_API_KEY</code></strong> (the workflow maps <code>HS_ANTHROPIC_API_KEY</code> → <code>ANTHROPIC_API_KEY</code>), whereas <code>monitor/inbox_drain.py</code> reads <strong><code>HS_ANTHROPIC_API_KEY</code></strong> directly.</p>
+<p>An explicit brief request always sends — only AUTO post-log briefs dedup across runs via <code>push_log</code> + <code>brief.dedup_sec</code> (commit <code>d2d5d3d</code>).</p>
+<p><code>send-brief.yml</code> remains for cron/manual briefs via <code>workflow_dispatch</code>: with a <code>profile_id</code> input it briefs that one profile; without one it runs <code>monitor.brief --all</code> for every profile. Note the env-var inconsistency: <code>monitor/brief.py</code> reads <strong><code>ANTHROPIC_API_KEY</code></strong> (the workflow maps <code>HS_ANTHROPIC_API_KEY</code> → <code>ANTHROPIC_API_KEY</code>), whereas <code>monitor/inbox_drain.py</code> reads <strong><code>HS_ANTHROPIC_API_KEY</code></strong> directly.</p>
 <h3>Commands &amp; how to interact</h3>
 <p>The bot is primarily <strong>NATURAL LANGUAGE</strong> — there&#x27;s almost nothing to memorise. You just talk to it.</p>
 <div class="table-wrap"><table>
@@ -812,7 +798,7 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <h4>Backfill</h4>
 <p><code>python3 -m ingest.whoop_sync --backfill</code> pulls full history from <strong>2020-01-01</strong>. The initial PC backfill (migration 045) loaded 519 workouts, 580 cycles, 625 sleeps. WHOOP never emits <code>cycle.updated</code> on close, so a just-closed cycle&#x27;s final <code>day_strain</code> is only captured by <code>refresh_recent</code>, a <code>--since</code> run, or a <code>sleep.*</code>-triggered re-fetch — not by waiting for a webhook.</p>
 <h3>3.4 Daily Brief Content (<code>monitor/brief.py</code>)</h3>
-<p><code>compose_brief()</code> fetches every section best-effort (any fetcher returning empty on error), renders minor-safe text, calls Claude (Sonnet — default <code>models.SONNET</code> = <code>claude-sonnet-4-6</code>, overridable via <code>system_config</code> key <code>brief.model</code>) for the rest-of-day actions, sends over Telegram, and returns the message text.</p>
+<p><code>compose_brief()</code> fetches every section best-effort (any fetcher returning empty on error), renders minor-safe text, calls Claude (Sonnet — default <code>models.SONNET</code> = <code>claude-sonnet-4-6</code> from <code>lib/models.py</code>, overridable via <code>system_config</code> key <code>brief.model</code>) for the rest-of-day actions, sends over Telegram, and returns the message text.</p>
 <p><strong>&quot;Today&quot; is the LOCAL day</strong> (migration 048): <code>_local_day(cfg)</code> reads <code>app.timezone</code> from <code>system_config</code> and bounds the day as a UTC window over <code>logged_at</code>/<code>taken_at</code>, so a Thailand user&#x27;s day no longer rolls over at 07:00 ICT. <strong>Refresh-on-interaction</strong>: <code>compose_brief</code> calls <code>refresh_recent</code> (WHOOP) first — best-effort — so an on-demand brief reflects the latest cycle.</p>
 <div class="table-wrap"><table>
 <thead><tr>
@@ -842,7 +828,7 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 </tr>
 <tr>
 <td><strong>Rest-of-day actions</strong></td>
-<td>2–4 Claude-generated (Haiku) next actions</td>
+<td>2–4 Claude-generated (Sonnet) next actions</td>
 <td>Empty string on Claude failure (best-effort, never aborts the brief)</td>
 </tr>
 </tbody></table></div>
@@ -850,8 +836,8 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <section id="sec-4">
 <h2 class="section-header">4. DATABASE SCHEMA</h2>
 <p>Supabase Postgres with Row Level Security on every table. The applied DB state is the source of truth — there is no <code>schema_migrations</code> table; the migration filename sequence (<code>001</code>…<code>NNN</code>) is the canonical ordering record.</p>
-<h3>4.1 Active Tables (36 active / 31 dormant)</h3>
-<p style="color:#6b7280;font-size:0.9em;">Live DB as of 2026-06-09: <strong>61 base tables + 7 views</strong>. ~36 base tables are written by v3; the rest carry RLS but hold no live rows (kept for forward use). Point-in-time — re-count via <code>select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'</code>.</p>
+<h3>4.1 Tables (45 active / 16 dormant of 61 base + 7 views, 2026-06-10)</h3>
+<p style="color:#6b7280;font-size:0.9em;">Live DB as of 2026-06-10: <strong>61 base tables + 7 views</strong> — <strong>45 active / 16 dormant</strong> (dormant = zero live rows per <code>pg_stat_user_tables</code> estimates: <code>audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs</code>). Figures are point-in-time — re-count via <code>select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'</code>.</p>
 <p>Grouped by domain. The six most-important tables carry full key-column lists; the rest carry a one-line purpose. Tables marked <code>(empty)</code> or <code>(dormant)</code> exist with RLS but hold no live rows per the SCHEMA-MAP — they are kept for forward use, not yet written by v3.</p>
 <h4>Profiles &amp; Auth</h4>
 <div class="table-wrap"><table>
@@ -882,6 +868,14 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td>whoop_tokens</td>
 <td>WHOOP OAuth credentials: <code>profile_id, access_token, refresh_token, expires_at, scope, whoop_user_id</code>. service_role only — RLS default-deny for all other roles. Never surfaced in skill output.</td>
+</tr>
+<tr>
+<td>families</td>
+<td>Family container (1 row — Chitalkar): <code>id, name, created_by</code>. Root of <code>family_memberships</code>.</td>
+</tr>
+<tr>
+<td>users_extended</td>
+<td>Legacy v1 per-auth-user profile record (<code>display_name, date_of_birth, sex, blood_type, timezone, unit_system, …</code>). Superseded by <code>profiles</code>; 1 row retained.</td>
 </tr>
 </tbody></table></div>
 <h4>Food &amp; Nutrition</h4>
@@ -929,6 +923,14 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <td>supplement_regimens</td>
 <td>Per-profile protocol: <code>supplement_id, dose_amount/unit, timing (text[]), frequency, cycle_days_on/off, start_date, end_date, status (active|discontinued|planned), purpose, program_id</code>. Cyclical on/off aware; date-window exposure drives correlation, not status.</td>
 </tr>
+<tr>
+<td>supplement_aliases</td>
+<td>Name-matching aliases: <code>alias → supplement_id</code> (25 rows). Used when resolving free-text supplement names.</td>
+</tr>
+<tr>
+<td>supplement_components</td>
+<td>Compound products: <code>product_id → component_id, amount, unit</code> (e.g. a multi maps to its actives).</td>
+</tr>
 </tbody></table></div>
 <h4>Biomarkers</h4>
 <div class="table-wrap"><table>
@@ -943,6 +945,18 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td>metric_definitions</td>
 <td>Marker catalog: <code>name, display_name, category, data_type, unit, loinc_id, min_value, max_value, plausible_min, plausible_max, decimal_places, is_active</code>. <code>min/max_value</code> = clinical reference range; <code>plausible_min/max</code> = wider physiological gate used by <code>lib/contract</code> to route OCR/unit errors to staging.</td>
+</tr>
+<tr>
+<td>healthspan_tests</td>
+<td>Lab test events: <code>profile_id, test_definition_id, tested_at, lab_name, provider, investigation_type, status</code>. Biomarker rows link back via <code>healthspan_test_id</code>.</td>
+</tr>
+<tr>
+<td>test_definitions</td>
+<td>Panel catalog: <code>name, display_name, category, biomarker_count</code> (e.g. full blood panel definitions).</td>
+</tr>
+<tr>
+<td>loinc_reference</td>
+<td>LOINC code catalog (55 rows): <code>loinc_code, component, long_name, unit, …</code>. Lookup support for <code>metric_definitions.loinc_id</code>.</td>
 </tr>
 </tbody></table></div>
 <h4>WHOOP Wearables</h4>
@@ -970,6 +984,26 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td>whoop_journal_entries</td>
 <td>Long-format behaviour log: <code>profile_id, cycle_start, behavior_id, answered_yes, quantity, unit, notes, source_file</code>. UNIQUE (profile_id, cycle_start, behavior_id). Join to cycles on <code>cycle_start::date</code>.</td>
+</tr>
+<tr>
+<td>journal_behaviors</td>
+<td>WHOOP journal behaviour catalog (27 rows): <code>slug, question_text, display_name, category, is_quantitative, default_unit</code>.</td>
+</tr>
+<tr>
+<td>journal_behavior_aliases</td>
+<td>Free-text → <code>behavior_id</code> aliases (28 rows) for journal ingestion.</td>
+</tr>
+<tr>
+<td>hr_zone_config</td>
+<td>Per-profile HR zone boundaries: <code>profile_id, effective_date, max_hr_bpm, z0–z5 bounds</code>. Used for workout zone analysis.</td>
+</tr>
+<tr>
+<td>workout_hr_samples</td>
+<td>Raw HR time-series per workout: <code>workout_id, t_offset_sec, hr_bpm</code>.</td>
+</tr>
+<tr>
+<td>workout_intervals</td>
+<td>Per-interval workout detail: <code>workout_id, interval_index, kind, duration, peak/avg/min HR, recovery drop</code>.</td>
 </tr>
 </tbody></table></div>
 <h4>Staging / Review</h4>
@@ -1043,6 +1077,10 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <tr>
 <td>trend_alerts</td>
 <td><code>profile_id, metric_definition_id, alert_type, severity, title, message, data (jsonb), is_read</code>. <code>(empty)</code> — alerting not yet wired.</td>
+</tr>
+<tr>
+<td>push_log</td>
+<td>Push/brief ledger: <code>profile_id, push_type (brief|recovery_landed|workout_logged|…), subject_id, sent_at, status (sent|suppressed), dedup_value</code>. Written by whoop-webhook Phase-2 pushes AND the drain&#x27;s cross-run brief dedup (<code>brief.dedup_sec</code>).</td>
 </tr>
 </tbody></table></div>
 <h4>System</h4>
@@ -1130,10 +1168,40 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <td>DEFINER</td>
 <td>True if the calling auth identity has a <code>family_memberships</code> row for the target profile. The backbone of every profile-scoped RLS policy.</td>
 </tr>
+<tr>
+<td><code>learn_supplement(p_profile_id, p_name)</code></td>
+<td>DEFINER</td>
+<td>Mig 052. Adds a user-named supplement to the catalog (dedups by normalised name; stamps <code>source=&#x27;learned&#x27;</code>, <code>verified=false</code>). Adults only — called by the drain&#x27;s learn-on-clarify path.</td>
+</tr>
+<tr>
+<td><code>hs_close_sync_log(...)</code></td>
+<td>DEFINER</td>
+<td>Mig 030. Closes a <code>wearable_sync_log</code> row (status + counters) from the drain without a maintainer session.</td>
+</tr>
+<tr>
+<td><code>ingest_health_artifact(...)</code></td>
+<td>DEFINER</td>
+<td>Mig 002 <strong>legacy</strong> token-gated ingestion entry (EXECUTE granted to <code>anon</code>, gated by sha256 <code>ingestion_tokens</code>; writes to staging only). Superseded by the Telegram path — candidate for revoke/drop.</td>
+</tr>
+<tr>
+<td><code>mint_ingestion_token(...)</code></td>
+<td>DEFINER</td>
+<td>Mig 002 legacy — mints <code>ingestion_tokens</code> rows (used by <code>hs_ops.py mint-token</code>).</td>
+</tr>
+<tr>
+<td><code>whoop_journal_insert_through()</code> <strong>(trigger)</strong></td>
+<td>DEFINER</td>
+<td>Mig 007. INSTEAD OF INSERT write-through on the <code>whoop_journal</code> pivot view → <code>whoop_journal_entries</code>.</td>
+</tr>
+<tr>
+<td><code>rls_auto_enable()</code> <strong>(event trigger)</strong></td>
+<td>DEFINER</td>
+<td>Event trigger <code>ensure_rls</code> (ddl_command_end): auto-enables RLS on any new <code>public</code> table. Created out-of-band; versioned into the repo by mig 058 (2026-06-10).</td>
+</tr>
 </tbody></table></div>
 <h3>4.3 RLS Model</h3>
-<ul><li><strong>RLS is enabled on every public table.</strong> New tables without an RLS policy in the same migration do not pass review (Rule 3).</li><li><strong>Two PostgREST roles:</strong></li><li><code>authenticated</code> — every skill/drain session. All reads and writes are scoped to the caller&#x27;s accessible profiles via <code>has_profile_access()</code> / <code>is_maintainer()</code> policies. Cannot see other families&#x27; data.</li><li><code>service_role</code> — bypasses RLS entirely. Used <strong>only</strong> by Edge functions and sync jobs (e.g. <code>whoop_tokens</code> access, webhook inserts). Never used by the skill.</li><li><strong><code>healthspan_app</code></strong> — a Postgres LOGIN role for the direct-psycopg2 path (PC local). Member of <code>authenticated</code> with <code>NOINHERIT</code>, so it must <code>SET ROLE authenticated</code> and set JWT claims explicitly; a bare connection sees nothing. Inherits mig 010&#x27;s grants and all RLS via that path. DELETE/TRUNCATE revoked directly.</li><li><strong>Maintainer-only tables</strong> (SELECT gated to <code>is_maintainer()</code>): <code>query_audit</code>, <code>wearable_sync_log</code>, <code>wearable_sync_errors</code>, <code>stg_food_log_review</code>, <code>stg_supplement_intake_review</code>, <code>stg_biomarker_review</code>. Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no <code>RETURNING</code> (which would invoke the SELECT policy).</li><li><strong>Drain service account:</strong> <code>healthspan.drainer@chitalkar.com</code> (env <code>HS_AUTH_EMAIL</code>). Holds <code>owner</code> <code>family_memberships</code> to PC, Dea, and Dev profiles so the three <code>maintainer_ingest_*</code> RPCs pass <code>has_profile_access()</code>. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.</li><li><strong>Grant hardening</strong> (mig 010/014): DELETE and TRUNCATE revoked from <code>authenticated</code> and <code>healthspan_app</code> on all public tables; <code>ALL</code> revoked from <code>anon</code>; shared catalogs are SELECT-only for <code>authenticated</code>.</li></ul>
-<h3>4.4 Migration History (001–057)</h3>
+<ul><li><strong>RLS is enabled on every public table.</strong> New tables without an RLS policy in the same migration do not pass review (Rule 3).</li><li><strong>Two PostgREST roles:</strong></li><li><code>authenticated</code> — every skill/drain session. All reads and writes are scoped to the caller&#x27;s accessible profiles via <code>has_profile_access()</code> / <code>is_maintainer()</code> policies. Cannot see other families&#x27; data.</li><li><code>service_role</code> — bypasses RLS entirely. Used <strong>only</strong> by Edge functions and sync jobs (e.g. <code>whoop_tokens</code> access, webhook inserts). Never used by the skill.</li><li><strong><code>healthspan_app</code></strong> — a Postgres LOGIN role for the direct-psycopg2 path (PC local). Member of <code>authenticated</code> with <code>NOINHERIT</code>, so it must <code>SET ROLE authenticated</code> and set JWT claims explicitly; a bare connection sees nothing. Inherits mig 010&#x27;s grants and all RLS via that path. DELETE/TRUNCATE revoked directly.</li><li><strong>Maintainer-only tables</strong> (SELECT gated to <code>is_maintainer()</code>): <code>query_audit</code>, <code>wearable_sync_log</code>, <code>wearable_sync_errors</code>, <code>stg_food_log_review</code>, <code>stg_supplement_intake_review</code>, <code>stg_biomarker_review</code> (+ <code>stg_food_rule_review</code>, <code>stg_test_result_review</code>). Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no <code>RETURNING</code> (which would invoke the SELECT policy). ⚠️ <strong>Mig 022 missed three of these</strong> — <code>stg_supplement_intake_review</code>, <code>stg_food_rule_review</code>, <code>stg_test_result_review</code> kept their mig-004 <code>ALL/has_profile_access</code> policy (a non-maintainer could SELECT/UPDATE her own staged rows). <strong>Mig 058 (written 2026-06-10) rebuilds them to the mig-022 pattern — pending apply.</strong></li><li><strong>Drain service account:</strong> <code>healthspan.drainer@chitalkar.com</code> (env <code>HS_AUTH_EMAIL</code>). Holds <code>owner</code> <code>family_memberships</code> to PC, Dea, and Dev profiles so the three <code>maintainer_ingest_*</code> RPCs pass <code>has_profile_access()</code>. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.</li><li><strong>Grant hardening</strong> (mig 010/014): DELETE and TRUNCATE revoked from <code>authenticated</code> and <code>healthspan_app</code> on all public tables; <code>ALL</code> revoked from <code>anon</code>; shared catalogs are SELECT-only for <code>authenticated</code>.</li></ul>
+<h3>4.4 Migration History (001–058)</h3>
 <div class="table-wrap"><table>
 <thead><tr>
 <th>#</th>
@@ -1421,13 +1489,14 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <td><code>media_inbox.clarify_message_id</code> + <code>clarify_count</code> for the reply-to-clarify loop: a staged item&#x27;s review message id is stored, a user reply re-queues it (fresh INSERT → AFTER-INSERT trigger fires) with the clarification + original image; <code>clarify_count</code> caps rounds at 2.</td>
 </tr>
 <tr><td>050</td><td>food_kcal_min_zero</td><td>Food kcal plausibility floor lowered 25→0 (zero-calorie items: black coffee, water).</td></tr>
-<tr><td>051</td><td>supplements_learned_stamps</td><td><code>supplements.source</code>/<code>verified</code>/<code>created_at</code> stamps for the learn-on-clarify path.</td></tr>
+<tr><td>051</td><td>supplements_learned_stamps</td><td><code>supplements.source</code>/<code>verified</code> stamps for the learn-on-clarify path (+ partial index sorting on the pre-existing <code>created_at</code>, from mig 004).</td></tr>
 <tr><td>052</td><td>learn_supplement_rpc</td><td><code>learn_supplement</code> RPC — auto-adds a user-named supplement not in the catalog (dedup by normalized name; <code>source=&#x27;learned&#x27;</code>, <code>verified=false</code>). Adults only.</td></tr>
 <tr><td>053</td><td>storage_drainer_read</td><td>Storage RLS <code>SELECT</code> policy granting the drain service account read on the private <code>health-media</code> bucket (the real reason photos never reached the vision model).</td></tr>
 <tr><td>054</td><td>media_inbox_logged_food_ids</td><td><code>media_inbox.logged_food_ids</code> — reply-to-correct supersedes an auto-LOGGED food item (webhook deletes those <code>food_logs</code>, re-queues; no double-count).</td></tr>
 <tr><td>055</td><td>media_inbox_staged_review_ids</td><td><code>media_inbox.staged_review_ids</code> — clarify-supersede retires the staged <code>stg_food_log_review</code> row (no phantom review-queue entry).</td></tr>
 <tr><td>056</td><td>brief_minor_optin</td><td>Seeds <code>system_config</code> <code>brief.minor_optin_profile_ids</code> (JSON array) — per-profile maintainer-consent allowlist for sending the daily brief to a MINOR (Dea opted in; Dev/future minors off by default). Data-only (no new table).</td></tr>
 <tr><td>057</td><td>reticulocyte_count_definition</td><td>Adds the <code>reticulocyte_count</code> metric_definition (unit %, ref 0.5–2.5, plausible 0–15) so the last Jun 2026 Metropolis marker could ingest. Data-only; applied via the postgres role.</td></tr>
+<tr><td>058</td><td>stg_review_rls_parity</td><td><strong>⚠️ Written 2026-06-10, PENDING APPLY.</strong> Fixes the three <code>stg_*_review</code> tables mig 022 missed (supplement_intake / food_rule / test_result → maintainer-only SELECT + owner INSERT); seeds <code>brief.dedup_sec=600</code> (rule-#1 parity); versions the out-of-band <code>rls_auto_enable</code> event-trigger function.</td></tr>
 </tbody></table></div>
 </section>
 <section id="sec-5">
@@ -1442,8 +1511,9 @@ log trigger (<code>log:</code> / <code>add:</code> / <code>/log</code> / <code>/
 <p><strong>views.py</strong> — centralised catalog of all named reporting queries; every emitter (reports, dashboard, exports) must go through it so SQL is never duplicated. <code>list_views()</code> returns catalog metadata; <code>run_view(conn, name, profile_id, **params)</code> runs an RLS-scoped named view and returns <code>{name, columns, rows, chart_hint, description, summary?}</code>, logging each run to <code>query_audit</code> inside a savepoint (a read-only connection or RLS failure never breaks the read path). Named views include <code>v_recovery_30d</code>, <code>v_sleep_debt_30d</code>, <code>v_workout_zone_summary</code>, <code>v_supplement_onoff</code>, <code>v_india_vs_travel</code>, <code>v_biomarker_timeline</code>, <code>abnormal_labs</code>, <code>vo2_status</code>, <code>hr_drop_compare</code>, <code>sprints_status</code>. NULL recovery (no sleep that cycle) is filtered, never averaged as 0. Use it for any catalog read.</p>
 <p><strong>sql_guard.py</strong> — two-layer safety on the read path for ad-hoc queries: a structural validator + EXPLAIN pre-flight, and a cite-guard that traces drafted numbers back to returned rows. <code>validate_readonly_sql</code> rejects multi-statement/write/DDL, wraps in a guarded LIMIT, and runs <code>EXPLAIN</code> (not ANALYZE, so the query never executes); <code>relevant_traps</code> surfaces TRAP-marked schema comments before compose time; <code>quality_check</code> flags hazards (<code>join_without_key</code>, <code>comma_join</code>, <code>aggregate_over_nullable</code>, <code>no_profile_scope</code>, <code>empty_result</code>, …); <code>log_query</code> audits non-blocking; <code>run_adhoc_audited(conn, profile_id, sql, intent, limit)</code> is the standard entry point for any non-catalog query — validate, run, quality-check, and log in one call.</p>
 <p><strong>safe_ops.py</strong> — guards for manual corrections on already-logged data; prevents accidental bulk sweeps by date predicate. <code>today_utc()</code> is always UTC (matches the drain clock); <code>safe_bulk_update(conn, table, ids, update_data, dry_run=True)</code> and <code>reassign_day_by_ids(conn, table, ids, new_taken_at, dry_run=True)</code> both update by explicit id list only (raise on empty ids, default to dry-run), preserve the original timestamp in <code>notes</code>, and rely on Postgres to recompute the GENERATED <code>supplement_intake_logs.taken_on</code>. Reach for it when manually moving or fixing logged rows; never accepts a date predicate.</p>
+<p><strong>models.py</strong> — the single source of truth for Anthropic model ids (commit <code>bc672c9</code>): <code>SONNET = &quot;claude-sonnet-4-6&quot;</code> (the default everywhere per the one-model policy, commit <code>d4e2590</code>) and <code>HAIKU = &quot;claude-haiku-4-5&quot;</code> (kept available for per-path <code>system_config</code> overrides like <code>brief.model</code>, unused by default). <code>create_message(client, **kwargs)</code> wraps <code>client.messages.create</code> and turns a retired/invalid model id into a clear error instead of a silent 404. Every runtime Claude call routes through it; no other module may hardcode a <code>claude-*</code> id.</p>
 <h4>ingest/</h4>
-<p><strong>food.py</strong> — interactive food logging with LLM macro estimation and Viome guidance cross-reference; implements the contract for <code>food_logs</code>. <code>classify_food(items, guidance_hits)</code> calls Claude Haiku for a verdict (green/amber/red), confidence, and macros; <code>ingest_food_row(payload, conn, profile_id, method)</code> resolves per-item guidance hits → classifies → confidence-gates → validates → plain <code>INSERT</code> (manual entries have <code>source_log_path=NULL</code> and sit outside the partial unique index, so no upsert); <code>run_interactive</code> is the CLI loop. Food confidence is floored at 0.6 even with no guidance match (a plain meal is still valid).</p>
+<p><strong>food.py</strong> — interactive food logging with LLM macro estimation and Viome guidance cross-reference; implements the contract for <code>food_logs</code>. <code>classify_food(items, guidance_hits)</code> calls Claude (Sonnet via <code>models.SONNET</code>; <code>HS_FOOD_MODEL</code> env override) for a verdict (green/amber/red), confidence, and macros; <code>ingest_food_row(payload, conn, profile_id, method)</code> resolves per-item guidance hits → classifies → confidence-gates → validates → plain <code>INSERT</code> (manual entries have <code>source_log_path=NULL</code> and sit outside the partial unique index, so no upsert); <code>run_interactive</code> is the CLI loop. Food confidence is floored at 0.6 even with no guidance match (a plain meal is still valid).</p>
 <p><strong>biomarker.py</strong> — biomarker ingestion against the <code>metric_definitions</code> catalog; a thin wrapper over <code>contract.ingest_record</code> that adds a LOINC fallback. <code>ingest_biomarker_row(payload, conn, profile_id, method, attended)</code> resolves by metric name, falls back through <code>loinc_reference.loinc_code → metric_definitions.loinc_id</code> to recover the name, then delegates to the full contract pipeline; conflict key is <code>(profile_id, metric_definition_id, measured_at)</code>. Automated callers must pass <code>attended=False</code> to arm the unverified-value fail-safe (default is <code>True</code>).</p>
 <p><strong>supplement.py</strong> — supplement intake logging with alias resolution and regimen auto-attachment. <code>ingest_supplement_row</code> resolves via <code>supplement_aliases</code> (score 1.0) or <code>supplements.name</code> (0.9), auto-looks-up the active regimen, gates and validates, then upserts on <code>(profile_id, supplement_id, taken_on, source)</code>; helpers <code>find_active_regimen</code>, <code>list_active_regimens</code>, <code>close_regimen</code>, and <code>run_interactive</code> (CLI menu). Valid sources <code>{manual, journal, skill, csv, photo}</code> are checked early; <code>taken_on</code> is GENERATED — an ON CONFLICT target but excluded from INSERT.</p>
 <p><strong>whoop_sync.py</strong> — pulls WHOOP API data (workouts, cycles/recovery, sleeps, body measurements) and upserts into <code>whoop_*</code> tables; uses stdlib <code>urllib</code> only (no httpx/requests). <code>sync_profile(conn, profile_id, since_iso, to_iso, env)</code> runs all four per-table syncs (each under a <code>wearable_sync_log</code> run with SAVEPOINT isolation); <code>refresh_recent(conn, hours, profiles, env)</code> is the mini-sync the morning brief calls (and exists specifically because WHOOP emits no cycle.updated webhook, so final <code>day_strain</code> must be re-pulled); <code>_map_cycle/_map_sleep/_map_workout</code> carry the migration-045 fields; <code>_resolve_access_token</code> prefers DB <code>whoop_tokens</code> then falls back to the <code>.env</code> refresh token. CLI <code>--backfill</code> pulls from 2020-01-01. All conflict keys use <code>(profile_id, whoop_id)</code>; zone fields are written only when <code>total&gt;0</code> so screenshot-sourced zones aren&#x27;t overwritten with zeroes.</p>
@@ -1497,15 +1567,14 @@ VALUES (
 <pre><code class="language-sql">INSERT INTO public.family_memberships (auth_user_id, profile_id, role)
 VALUES (&#x27;&lt;auth_user_id from step 1&gt;&#x27;, &#x27;&lt;new_profile_id&gt;&#x27;, &#x27;member&#x27;)
 ON CONFLICT DO NOTHING;</code></pre>
-<p>Then grant the drain service account (<code>healthspan.drainer@chitalkar.com</code>, <code>auth_user_id</code> <code>0b0e4093-6758-46f7-a6e2-311ef6828a86</code>) access to the new profile so the three <code>maintainer_ingest_*</code> RPCs pass the <code>has_profile_access()</code> guard when draining this user&#x27;s photos:</p>
+<p>Then grant the drain service account (<code>healthspan.drainer@chitalkar.com</code>) access to the new profile so the three <code>maintainer_ingest_*</code> RPCs pass the <code>has_profile_access()</code> guard when draining this user&#x27;s photos. <strong>Resolve the drainer&#x27;s UID by email — never hardcode it</strong> (the UUID previously printed here, <code>0b0e4093…</code>, was PC&#x27;s auth identity, not the drainer&#x27;s; following it would have granted the new profile to PC and the drainer would fail <code>has_profile_access()</code>, so the new user&#x27;s photos would never drain):</p>
 <pre><code class="language-sql">INSERT INTO public.family_memberships (auth_user_id, profile_id, role)
-VALUES (
-  &#x27;0b0e4093-6758-46f7-a6e2-311ef6828a86&#x27;,  -- drain account&#x27;s auth_user_id
-  &#x27;&lt;new_profile_id&gt;&#x27;,
-  &#x27;owner&#x27;
-)
+SELECT u.id, &#x27;&lt;new_profile_id&gt;&#x27;, &#x27;owner&#x27;
+FROM auth.users u
+WHERE u.email = &#x27;healthspan.drainer@chitalkar.com&#x27;   -- live UID: 6d69f36f-3ced-4164-a996-2110104e3594
 ON CONFLICT DO NOTHING;
--- Grants the DRAIN account access to the NEW profile (auth_user_id = drain, profile_id = new user).</code></pre>
+-- Grants the DRAIN account access to the NEW profile (auth_user_id = drain, profile_id = new user).
+-- Same email-lookup pattern as migrations 035/053.</code></pre>
 <h3>Step 4 — Create config JSON</h3>
 <pre><code class="language-bash">cp config/healthspan.config.example.json config/nanki.config.json</code></pre>
 <p>Fill in:</p>
@@ -1809,17 +1878,14 @@ snapshot; this item extends that into a Telegram-deliverable surface (rendered i
 signed-URL HTML page) so a user can pull a visual readout without leaving the chat.
 <strong>Priority: Medium.</strong></p>
 
-<h3>Brief routing: text message &rarr; summary not delivered <span class="badge badge-pending">IN PROGRESS</span> <span class="badge badge-danger-pill">HIGH</span></h3>
-<p><strong>Why:</strong> <code>telegram-webhook</code> historically fired
-<code>ROUTINE_TRIGGER_URL</code> on text messages, but <code>monitor/brief.py</code> needs
-<code>ANTHROPIC_API_KEY</code> plus auth creds that are not available at that endpoint — the
-brief never arrived after the &ldquo;Sending your summary&hellip;&rdquo; ack.
-<strong>Fix:</strong> use the same GitHub Actions dispatch pattern as
-<code>inbox-drain</code> — create the <code>send-brief.yml</code> workflow, dispatch from
-<code>telegram-webhook</code> directly with <code>client_payload: { profile_id }</code>, and
-reuse <code>GH_DISPATCH_TOKEN</code>. (The <code>send-brief.yml</code> path is now in place;
-verify end-to-end delivery and retire the legacy Routine fallback.)
-<strong>Priority: High.</strong></p>
+<h3>Brief routing: text message &rarr; summary not delivered <span class="badge badge-success">RESOLVED 2026-06-08</span></h3>
+<p><strong>Resolved by LLM-routed text (2026-06-08):</strong> the dispatch-send-brief-from-
+<code>telegram-webhook</code> plan described here was superseded entirely. ALL text-only
+messages now enqueue to <code>media_inbox</code> (<code>kind='unknown'</code>) and the
+drain&rsquo;s LLM routes log-vs-brief, composing briefs <em>inline</em> via
+<code>compose_brief()</code> (see &sect;3.2). <code>send-brief.yml</code> survives for
+cron/manual <code>workflow_dispatch</code> runs only; nothing dispatches it from the
+webhook.</p>
 
 <h3>Rotate credentials <span class="badge badge-danger-pill">HIGH</span></h3>
 <p><strong>Why:</strong> <code>HS_AUTH_PASSWORD</code> and <code>HS_ANTHROPIC_API_KEY</code>
@@ -2080,7 +2146,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <p>The <code>&lt;commit7&gt;</code> is the short SHA injected at build time from <code>GITHUB_SHA</code>, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:</p>
 <ul>
   <li><strong>Application code</strong> — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.</li>
-  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 057</strong>. The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
+  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 057</strong> (mig 058 written 2026-06-10, pending apply). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
 </ul>
 
 <h3>Recent deploys</h3>
@@ -2088,6 +2154,9 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td>—</td><td>2026-06-10</td><td><span style="color:#6b7280;font-weight:600;">docs/schema</span></td><td>Deep-scan pass: mig 058 written (stg_*_review RLS parity + <code>brief.dedup_sec</code> seed + version <code>rls_auto_enable</code>; <strong>pending apply</strong>); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook <code>recovery.updated</code> 404 bug documented (BACKLOG #19).</td></tr>
+<tr><td><code>e1af853</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Extraction prompt anchored to current date so partial dates keep the right year.</td></tr>
+<tr><td><code>930b734</code></td><td>2026-06-09</td><td><span style="color:#4f46e5;font-weight:600;">test</span></td><td>15 stale-contract drain/brief tests brought green (BACKLOG #16 closed) — test-files-only.</td></tr>
 <tr><td><code>05669dc</code></td><td>2026-06-09</td><td><span style="color:#6b7280;font-weight:600;">schema</span></td><td><code>reticulocyte_count</code> metric_definition (mig 057) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal).</td></tr>
 <tr><td><code>d2d5d3d</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Explicit brief request (&quot;how am I doing?&quot;) bypasses the post-log dedup — only auto post-log briefs are deduped, so a request after a food-log isn&#x27;t silently swallowed.</td></tr>
 <tr><td><code>13d51ef</code></td><td>2026-06-09</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td>Minors get the daily brief via a per-profile consent allowlist (mig 056, <code>brief.minor_optin_profile_ids</code>; Dea opted in) — both post-log + explicit triggers; WHOOP now flows for her. Cleaned a phantom review-queue row.</td></tr>

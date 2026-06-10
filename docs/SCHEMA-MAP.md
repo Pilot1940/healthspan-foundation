@@ -1,8 +1,8 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-08 14:16 UTC.
-> generated_at: 2026-06-08T14:16:29Z
+> Generated 2026-06-10 06:19 UTC.
+> generated_at: 2026-06-10T06:19:43Z
 > coverage: 60 of 61 public base tables documented.
 
 ## `profiles`
@@ -680,6 +680,10 @@ _Durable inbound queue: one row per Telegram photo/text from an active identity.
 | `result_ref` | uuid | UUID of the downstream row written by the Routine (food_logs.id, biomarkers.id, etc.). NULL until status = done. |
 | `media_group_id` | text | Telegram media_group_id shared by photos in the same album burst. NULL for single photos or text messages. Rows sharing this value are drained as one cluster (one extraction, one log entry). |
 | `stage_reason` | text | Human-readable reason this item was staged or failed (e.g. "incomplete: missing calories or macros", "implausible calories: 12500 kcal (must be 25–12000)", "vision returned no parseable extraction", "unknown kind: workout"). Set by the drain at mark_rows time. |
+| `clarify_message_id` | bigint | Telegram message_id of the bot's descriptive review message; a user reply to it is correlated back to this row for re-processing. |
+| `clarify_count` | smallint | How many clarification rounds this item has been through (cap prevents loops). |
+| `logged_food_ids` | uuid[] | food_logs ids this row wrote (inserted food only). Lets telegram-webhook supersede (delete + re-queue) the original entry when the user REPLIES to the "Logged" message to correct it — prevents double-counting. NULL for staged/text/supplement/brief rows. |
+| `staged_review_ids` | uuid[] | stg_food_log_review ids this row STAGED (food only). Lets telegram-webhook retire (status->merged) the review row when the user REPLIES to clarify — otherwise the superseded staged extraction lingers as a phantom in the maintainer review queue. |
 
 ## `program_phases`
 _Ordered phases within a training_program (base / build / peak / taper...). UNIQUE(program_id, ordinal)._
@@ -887,6 +891,8 @@ _Catalog of supplement/medication products AND their components (compounds refer
 | `is_active` | boolean | Whether the entry is in use. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update. |
+| `source` | text | How the row was created: NULL/seed = curated, 'learned' = auto-added via clarify loop. |
+| `verified` | boolean | Maintainer has reviewed/OKed this row. Auto-learned rows start false until PC verifies. |
 
 ## `system_config`
 _Thresholds & runtime config — the SINGLE source for thresholds (CLAUDE.md rule #1: never hardcode). lib.contract.get_config reads value (jsonb) by key. UNIQUE(key). e.g. the ingestion confidence cutoff lives here._

@@ -42,8 +42,28 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
-## Current State (2026-06-09)
+## Current State (2026-06-10)
 
+- **Full deep scan 2026-06-10 (16-agent workflow: schema vs migrations vs docs vs code, RLS
+  audit, test health + live data checks).** Schema↔migrations CLEAN (045–057 all verified
+  present, no orphan tables, 61 base/7 views); unit suite GREEN (259/0/9 skips); all RPC
+  call-sites match live signatures; model ids current. Three real issues found:
+  (1) **mig 058 written, PENDING APPLY** — mig 022 missed maintainer-only RLS on
+  `stg_supplement_intake_review`/`stg_food_rule_review`/`stg_test_result_review`; 058 also
+  seeds `brief.dedup_sec=600` (was code-fallback only, rule-#1 violation) and versions the
+  out-of-band `rls_auto_enable` event-trigger function. Apply via
+  `python3 scripts/hs_ops.py apply migrations/058_stg_review_rls_parity.sql`.
+  (2) **whoop-webhook `recovery.updated` ALWAYS 404s** (110 failed runs/week; the v2
+  recovery webhook id is a UUID but the handler GETs `/v2/cycle/{id}` which takes an
+  integer) — `recovery_landed` pushes have NEVER fired; data still lands via
+  `refresh_recent`. BACKLOG #19. Also ~1–2/day WHOOP token-400s = refresh-rotation race
+  between webhook and CI `refresh_recent` (self-heals; BACKLOG #20).
+  (3) Docs were materially stale — fixed: SYSTEM.md §2.2/§2.3/§3.2 (removed-path
+  text→send-brief dispatch), §3.4/§5.1 Haiku→Sonnet, §4.1 recount 45/16 of 61 (+13
+  missing active tables incl. `push_log`), §4.2 (+6 undocumented DEFINER fns), §6
+  onboarding drainer-UID (was PC's UID — would have broken Nanki onboarding), CLAUDE.md
+  stale counts, BACKLOG #5/#6/#14/#16 closed. Review queue NOT cleared (6 pending items
+  need PC's knowledge of what was eaten/taken; 2 staged media_inbox await user replies).
 - **mig 057 + end-to-end deep scan (2026-06-09).** `reticulocyte_count` metric_definition added
   (mig 057, commit `05669dc`) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal).
   A scoped 5-dimension scan (biomarker integrity, brief pipeline, schema/RLS, docs drift, test health)
@@ -131,18 +151,19 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   `{"kind":"brief"}`, the drain now STAGES for clarification (the C3 path) instead of silently
   composing a brief — `if kind == "brief" and image_blocks: …`. With mig 053 the image now reaches
   the model, so this is the residual-ambiguity backstop. Tests: `test_run_once_photo_never_briefs`,
-  `test_run_once_textonly_brief_still_briefs`. (⚠️ The ~15 `test_inbox_drain`/`test_brief` failures were
-  long mislabeled "environmental — real-API 401"; the 2026-06-09 deep scan **disproved that** — they are
-  deterministic STALE-CONTRACT tests against intentionally-evolved code, NOT API/network failures. Fix
-  green, don't xfail — see BACKLOG #16.)
+  `test_run_once_textonly_brief_still_briefs`. (The ~15 `test_inbox_drain`/`test_brief` failures were
+  long mislabeled "environmental — real-API 401"; the 2026-06-09 deep scan disproved that — they were
+  deterministic STALE-CONTRACT tests. **FIXED in commit `930b734`** (test-files-only); suite verified
+  green 2026-06-10: 259 passed / 0 failed / 9 env-gated skips. BACKLOG #16 closed.)
 - **Migrations 050–053 applied** — 050 food kcal floor 25→0; 051 supplements learned stamps;
   052 `learn_supplement` RPC; **053 storage drainer-read RLS** (above).
 
 - **Migrations 024–028 all applied** (024 drop-backup, 025 query_audit reshape, 026 drop 8
   dead SaaS tables, 027 supplement source vocab +photo, 028 drop 4 more fossils —
   user_telegram_links/locations/log_type_config/source_priority_config; KEPT audit_log +
-  canonical_aliases). **54 public tables** now. No `schema_migrations` table: applied DB
-  state is the source of truth; apply via `python scripts/hs_ops.py apply <file>`.
+  canonical_aliases). **54 public tables** at that point (61 now, after migs 029–057). No
+  `schema_migrations` table: applied DB state is the source of truth; apply via
+  `python scripts/hs_ops.py apply <file>`.
 - **Migrations 029–042 all written and applied** — Telegram ingestion Phase 1–3B + drain
   identity + completeness gate + stage_reason + supplement/biomarker alignment + taken_on fix +
   write-contract audit. 035 re-keyed drain identity to `healthspan.drainer@chitalkar.com`.
@@ -235,11 +256,17 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   ((taken_at AT TIME ZONE 'UTC')::date)` — confirmed on live DB. Migration 039 removed
   it from the `maintainer_ingest_supplement` INSERT (was causing error 428C9); it is
   still used as the ON CONFLICT target, auto-populated by Postgres from `taken_at`.
-- **67 tables** (36 active / 31 empty), 7 views. Full inventory +
-  dormant-table classification: `docs/HEALTH-CHECK-2026-06-03.md`.
+- **61 base tables** (45 active / 16 empty, 2026-06-10 snapshot), 7 views. Historical
+  inventory: `docs/HEALTH-CHECK-2026-06-03.md` (pre-mig-036 — counts superseded; current
+  inventory in SYSTEM.md §4.1 + SCHEMA-MAP).
 - **Maintainer model** (022/023): PC is the sole maintainer (`profiles.is_maintainer`,
   resolved via `family_memberships`). Maintainer-only RLS SELECT on `query_audit`,
   `wearable_sync_log`/`_errors`, `stg_*_review`. Dea sees outcomes, never the machinery.
+  ⚠️ The 2026-06-10 deep scan found mig 022 MISSED three staging tables
+  (`stg_supplement_intake_review`, `stg_food_rule_review`, `stg_test_result_review` still
+  had the mig-004 ALL/has_profile_access policy — Dea could SELECT/UPDATE her own staged
+  supplement rows). **Mig 058 (written, PENDING APPLY) fixes them** — run
+  `python3 scripts/hs_ops.py apply migrations/058_stg_review_rls_parity.sql`.
   **Nanki** (PC's wife, 45F adult) is a supported profile to onboard when ready — full adult
   framing (like PC), non-maintainer; onboard exactly like Dea but `relationship` ≠ `child` so
   `is_minor=false`. Dev = dormant slot.
