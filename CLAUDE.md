@@ -62,8 +62,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   text→send-brief dispatch), §3.4/§5.1 Haiku→Sonnet, §4.1 recount 45/16 of 61 (+13
   missing active tables incl. `push_log`), §4.2 (+6 undocumented DEFINER fns), §6
   onboarding drainer-UID (was PC's UID — would have broken Nanki onboarding), CLAUDE.md
-  stale counts, BACKLOG #5/#6/#14/#16 closed. Review queue NOT cleared (6 pending items
-  need PC's knowledge of what was eaten/taken; 2 staged media_inbox await user replies).
+  stale counts, BACKLOG #5/#6/#14/#16 closed. **Review queue cleared 2026-06-10 (with PC)**:
+  all 6 pending stg rows + 2 staged media_inbox were ORPHANS of successful follow-up logs —
+  PC re-sent each item as a fresh message instead of replying (Hooray shake → logged 12:17
+  as "Lactose Free Protein Shake 340ml"; Thai tea 1/4 → logged 12:21 as "PROTEN 1/5 bottle";
+  "took a supplemen" → Magnesium Bisglycinate logged 55s later; electrolytes clarify chain →
+  MSKE 1 package logged 00:28). Retired: 4 merged (content in prod, media_inbox result_ref →
+  superseding food_logs ids), 2 rejected (superseded clarify intermediates). Same
+  fresh-message-instead-of-reply pattern as BACKLOG #15 — now 5 occurrences, design question
+  getting warmer.
 - **mig 057 + end-to-end deep scan (2026-06-09).** `reticulocyte_count` metric_definition added
   (mig 057, commit `05669dc`) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal).
   A scoped 5-dimension scan (biomarker integrity, brief pipeline, schema/RLS, docs drift, test health)
