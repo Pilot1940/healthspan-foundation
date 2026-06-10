@@ -1,0 +1,38 @@
+name: Media Retention Prune
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # 22:00 UTC = 05:00 ICT daily, before the day's traffic
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (list candidates, delete nothing)'
+        required: false
+        default: 'false'
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+
+      # stdlib-only module — no pip install needed
+
+      - name: Prune expired health-media objects
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python3 -m monitor.media_retention --dry-run
+          else
+            python3 -m monitor.media_retention
+          fi
