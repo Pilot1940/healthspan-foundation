@@ -352,9 +352,29 @@ father+maintainer. Added `system_config` key `brief.minor_optin_profile_ids` (JS
 an explicit per-profile allowlist; Dea opted in, Dev / future minors stay off by default. Both gates now
 admit a minor iff listed. Brief content already minor-safe. WHOOP refresh verified live for Dea.
 
-## #15 — Ambiguous-photo clarify: non-reply correction orphans the staged item — **DESIGN Q, LOW**
+## #15 — Ambiguous-photo clarify: non-reply correction orphans the staged item — **SHIPPED 2026-06-10 (two-layer auto-match, mig 059)**
 
-**Severity:** LOW · **Where it bites:** PC's maintainer review queue (stale row after the item is already resolved).
+**Severity:** LOW · **Status:** SHIPPED — PC decided 2026-06-10 ("I can be disciplined but we have a
+14-year-old as a user"): absorb the fresh-message habit instead of fighting it. Two drain-side layers
+(`monitor/inbox_drain.py`):
+- **Layer 1 — `absorb_pending_clarify`:** a fresh TEXT message arriving within
+  `clarify.match_window_sec` (900s) of a pending clarify for the same chat is LLM-judged
+  ("does this answer the question?"); at ≥ `clarify.match_min_conf` (0.7) it is processed AS the
+  clarification (original caption + `[clarification: …]` + original image) and the stranded staged
+  item retires — exactly what a Telegram reply would have done. On any doubt → independent
+  processing (a stranded orphan is recoverable; a wrong merge corrupts data). Reply path, photo
+  messages, capped rounds (2), and profile mismatches all fall through unchanged.
+- **Layer 2 — `sweep_staged_orphans`:** end-of-run safety net; a staged item whose profile logged a
+  matching food/supplement prod row within `clarify.orphan_supersede_window_sec` (1800s) is
+  LLM-matched and retired as superseded (`result_ref` → the prod row; review rows → `merged`).
+  Catches the photo-follow-up pattern Layer 1 doesn't (all 5 historical orphans were this shape).
+**Mig 059** seeds the three `clarify.*` keys + adds maintainer UPDATE policies on the five
+`stg_*_review` tables (the drain passes `is_maintainer()` via its membership to PC's profile — same
+mechanism as its `maintainer_ingest_*` calls — so it can retire review rows; Dea still cannot).
+13 unit tests. The two-paths-for-a-minor design question below is MOOT for queue hygiene (orphans
+self-heal); kept for reference.
+
+**Where it bites (historical):** PC's maintainer review queue (stale row after the item is already resolved).
 
 The 2026-06-09 incident: Dea's photo couldn't be identified → staged (review row `906847f9` + clarify
 prompt msg 324). Her first correction "No that's banana bread" arrived as a **fresh message, NOT a

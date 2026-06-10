@@ -531,6 +531,17 @@ monitor/inbox_drain.py (unknown-classifier LLM, Sonnet)
 An explicit brief request always sends — only AUTO post-log briefs dedup across runs via
 `push_log` + `brief.dedup_sec` (commit `d2d5d3d`).
 
+**Clarify auto-match (BACKLOG #15, 2026-06-10).** Users — especially a 14-year-old — answer
+the bot's "reply to fix it" question with a *fresh message*, not a Telegram reply. Two
+drain-side layers absorb that habit: **Layer 1** (`absorb_pending_clarify`) — a fresh text
+message arriving within `clarify.match_window_sec` (900s) of a pending clarify for the same
+chat is LLM-judged as a candidate answer; at ≥ `clarify.match_min_conf` (0.7) it is
+processed AS the clarification (original caption + image) and the stranded staged item
+retires. On any doubt it processes independently. **Layer 2** (`sweep_staged_orphans`,
+end-of-run) — a staged item whose profile logged a matching prod row within
+`clarify.orphan_supersede_window_sec` (1800s) retires as superseded (`result_ref` → the
+prod row). The Telegram-reply path is unchanged and remains the highest-confidence signal.
+
 `send-brief.yml` remains for cron/manual briefs via `workflow_dispatch`: with a
 `profile_id` input it briefs that one profile; without one it runs `monitor.brief --all`
 for every profile.
@@ -797,11 +808,11 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
   - `authenticated` — every skill/drain session. All reads and writes are scoped to the caller's accessible profiles via `has_profile_access()` / `is_maintainer()` policies. Cannot see other families' data.
   - `service_role` — bypasses RLS entirely. Used **only** by Edge functions and sync jobs (e.g. `whoop_tokens` access, webhook inserts). Never used by the skill.
 - **`healthspan_app`** — a Postgres LOGIN role for the direct-psycopg2 path (PC local). Member of `authenticated` with `NOINHERIT`, so it must `SET ROLE authenticated` and set JWT claims explicitly; a bare connection sees nothing. Inherits mig 010's grants and all RLS via that path. DELETE/TRUNCATE revoked directly.
-- **Maintainer-only tables** (SELECT gated to `is_maintainer()`): `query_audit`, `wearable_sync_log`, `wearable_sync_errors`, `stg_food_log_review`, `stg_supplement_intake_review`, `stg_biomarker_review` (+ `stg_food_rule_review`, `stg_test_result_review`). Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no `RETURNING` (which would invoke the SELECT policy). (Mig 022 originally missed three of these — `stg_supplement_intake_review`, `stg_food_rule_review`, `stg_test_result_review` kept their mig-004 `ALL/has_profile_access` policy, so a non-maintainer could SELECT/UPDATE her own staged rows. **Fixed by mig 058, applied 2026-06-10** — all eight now follow the maintainer-SELECT + owner-INSERT pattern, verified live.)
+- **Maintainer-only tables** (SELECT gated to `is_maintainer()`): `query_audit`, `wearable_sync_log`, `wearable_sync_errors`, `stg_food_log_review`, `stg_supplement_intake_review`, `stg_biomarker_review` (+ `stg_food_rule_review`, `stg_test_result_review`). Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no `RETURNING` (which would invoke the SELECT policy). (Mig 022 originally missed three of these — `stg_supplement_intake_review`, `stg_food_rule_review`, `stg_test_result_review` kept their mig-004 `ALL/has_profile_access` policy, so a non-maintainer could SELECT/UPDATE her own staged rows. **Fixed by mig 058, applied 2026-06-10** — all eight now follow the maintainer-SELECT + owner-INSERT pattern, verified live. **Mig 059** added maintainer-gated UPDATE policies on the five `stg_*_review` tables so the drain — which passes `is_maintainer()` via its membership to PC's maintainer profile, the same mechanism that authorises its `maintainer_ingest_*` calls — can retire review rows for the clarify auto-match; non-maintainers still cannot UPDATE.)
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–058)
+### 4.4 Migration History (001–059)
 
 | # | File | Summary |
 |---|---|---|
@@ -870,6 +881,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 056 | brief_minor_optin | Seeds `system_config` `brief.minor_optin_profile_ids` (JSON array) — per-profile maintainer-consent allowlist for sending the daily brief to a MINOR (Dea opted in; Dev/future minors off by default). Data-only (no new table). |
 | 057 | reticulocyte_count_definition | Adds the `reticulocyte_count` metric_definition (unit %, ref 0.5–2.5, plausible 0–15) so the last Jun 2026 Metropolis marker could ingest. Data-only; applied via the postgres role (authenticated cannot INSERT into `metric_definitions`). |
 | 058 | stg_review_rls_parity | **Applied 2026-06-10.** Fixes the three `stg_*_review` tables mig 022 missed (supplement_intake / food_rule / test_result → maintainer-only SELECT + owner INSERT); seeds `brief.dedup_sec=600` (rule-#1 parity); versions the out-of-band `rls_auto_enable` event-trigger function. Verified live: all 6 policies, config row, `ensure_rls` trigger. |
+| 059 | clarify_automatch | **Applied 2026-06-10.** BACKLOG #15: seeds `clarify.match_window_sec` (900) / `clarify.match_min_conf` (0.7) / `clarify.orphan_supersede_window_sec` (1800); adds maintainer UPDATE policies on the five `stg_*_review` tables so the drain can retire review rows on clarify auto-match / orphan sweep. |
 
 ---
 
@@ -1421,7 +1433,7 @@ There is no separate release number — **the deployed git commit IS the version
 The `<commit7>` is the short SHA injected at build time from `GITHUB_SHA`, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:
 
 - **Application code** — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.
-- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 058** (2026-06-10). Full DB-side history: §4 + `CLAUDE.md`.
+- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 059** (2026-06-10). Full DB-side history: §4 + `CLAUDE.md`.
 
 ### Recent deploys
 
@@ -1429,7 +1441,8 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
-| — | 2026-06-10 | docs/schema | Deep-scan pass: mig 058 **applied** (stg_*_review RLS parity + `brief.dedup_sec` seed + version `rls_auto_enable`); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook `recovery.updated` 404 bug documented (BACKLOG #19). |
+| — | 2026-06-10 | feat | **Clarify auto-match (BACKLOG #15, mig 059):** fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push. |
+| — | 2026-06-10 | docs/schema | Deep-scan pass: mig 058 **applied** (stg_*_review RLS parity + `brief.dedup_sec` seed + version `rls_auto_enable`); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook `recovery.updated` 404 bug documented (BACKLOG #19). Review queue cleared (8 orphans). |
 | `e1af853` | 2026-06-09 | fix | Extraction prompt anchored to current date so partial dates keep the right year. |
 | `930b734` | 2026-06-09 | test | 15 stale-contract drain/brief tests brought green (BACKLOG #16 closed) — test-files-only. |
 | `05669dc` | 2026-06-09 | schema | `reticulocyte_count` metric_definition (mig 057) — last marker of the Jun 2026 Metropolis panel; reading 2.0% (normal). |

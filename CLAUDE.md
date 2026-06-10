@@ -44,6 +44,20 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-10)
 
+- **Clarify auto-match shipped (BACKLOG #15 closed, mig 059, 2026-06-10).** PC's call: Dea (14)
+  will never use Telegram replies, so the system absorbs the fresh-message habit. Layer 1
+  (`absorb_pending_clarify` in `monitor/inbox_drain.py`): a fresh TEXT message within
+  `clarify.match_window_sec` (900s) of a pending clarify for the same chat is LLM-judged; at
+  ≥`clarify.match_min_conf` (0.7) it's processed AS the clarification (orig caption + image) and
+  the stranded item retires — identical semantics to the webhook reply path. On any doubt →
+  independent processing (orphan is recoverable; wrong merge corrupts). Layer 2
+  (`sweep_staged_orphans`, end-of-run): staged item whose profile logged a matching prod row
+  within `clarify.orphan_supersede_window_sec` (1800s) retires as superseded (result_ref → prod
+  row) — covers the photo-follow-up shape all 5 historical orphans had. Mig 059 also added
+  maintainer UPDATE policies on the 5 stg_*_review tables (drain passes `is_maintainer()` via its
+  membership to PC's maintainer profile — pre-existing mechanism). 13 unit tests; suite 272/0/9.
+  Reply path unchanged. ⚠️ Note: the drain identity satisfying `is_maintainer()` is a pre-existing
+  quirk now load-bearing in two places (maintainer_ingest_* guards + stg UPDATE policies).
 - **Full deep scan 2026-06-10 (16-agent workflow: schema vs migrations vs docs vs code, RLS
   audit, test health + live data checks).** Schema↔migrations CLEAN (045–057 all verified
   present, no orphan tables, 61 base/7 views); unit suite GREEN (259/0/9 skips); all RPC
