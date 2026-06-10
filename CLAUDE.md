@@ -18,6 +18,7 @@ Common maintenance tasks → SYSTEM.md §7:
 - **Apply a migration** → §7.1 (`python3 scripts/hs_ops.py apply migrations/NNN_*.sql`).
 - **Deploy an edge function** → §7.4 (run from repo root; watch for the "No change found" CLI skip).
 - **WHOOP sync / score states** → §7.3. **Rotate secrets** → §7.6. **Regenerate SCHEMA-MAP** → §7.5.
+- **Void a mis-logged row** (never DELETE) → §7.8 — `maintainer_void_supplement/_food/_biomarker(id, reason)`.
 
 This file (CLAUDE.md) + the auto-memory under `memory/` carry the *latest* deltas; SYSTEM.md carries
 the *full* picture. If they disagree, the live DB and this file win — then update SYSTEM.md.
@@ -44,6 +45,36 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-10)
 
+- **Backlog batch SHIPPED — #18 #20 #7 #21 (migs 060–062, 2026-06-10).**
+  (1) **#18 void soft-delete (mig 060):** `voided_at`/`void_reason` on supplement/food/biomarker
+  logs; `maintainer_void_supplement/_food/_biomarker(id, reason)` SECURITY DEFINER RPCs (§7.8);
+  supplement+biomarker ingest RPCs **un-void on ON CONFLICT re-log** (else a re-logged item stays
+  invisible); every read path filters `voided_at IS NULL` (brief food/supps/Viome, drain totals +
+  orphan-sweep candidates, analysis/supplement_summary + food_chat, lib/views biomarker views,
+  plan/goals, contract plausibility heuristic, daily_health_summary view; SKILL.md ad-hoc rule +
+  SCHEMA-MAP regenerated); **REVOKE DELETE ON ALL TABLES FROM healthspan_app** — the 2026-06-08
+  manual grant had landed on ALL 60+ tables (worse than recorded). Live-verified in a rolled-back
+  txn: void → already_voided → un-void-on-relog → unauthorized-for-non-maintainer.
+  (2) **#20 WHOOP token race FIXED:** on a refresh 400 the loser re-reads `whoop_tokens`, uses the
+  winner's fresh access token or retries ONCE with the rotated-in refresh token — BOTH sides
+  (Python `_get_token_from_db` + Deno `_shared/whoop.ts`); **whoop-webhook v17 + whoop-oauth v13
+  deployed 2026-06-10**. Expect the ~1–2/day `WHOOP token 400` sync-error rows to stop.
+  (3) **#7 media retention SHIPPED:** `monitor/media_retention.py` (stdlib, service_role) +
+  `media-retention.yml` (22:00 UTC daily + dispatch w/ dry-run); window = `media.retention_days`
+  (mig 062, 45). done/failed rows past the window: Storage object deleted, `storage_path` nulled,
+  row kept. Live dry-run OK; first real prunes ~2026-07-22.
+  (4) **#21 hygiene (mig 061):** `media_inbox`/`push_log` INSERT scoped to
+  `has_profile_access OR is_maintainer` (drain inserts push_log as maintainer-drainer); open
+  INSERT policies dropped on `telegram_processed_updates`/`wearable_sync_errors`; legacy mig-002
+  fns (`ingest_health_artifact`/`mint_ingestion_token`) EXECUTE revoked from anon+authenticated;
+  dead keys deleted (`ingest.whoop_screenshot.direct_write`, `supplements.journal_intake_map`,
+  `supplements.intake_source_priority`); unused `claim_inbox_cluster` DROPPED — the drain claims
+  per-item (`claim_inbox_item` CAS + release-on-partial-loss; SYSTEM.md §3 corrected);
+  `hs_ops verify` rewritten: runtime-derived profile-scoped table list (42/61), leak check incl.
+  `with_check=true`, maintainer-only assertion covering SELECT **and ALL** policies. Live verify
+  all NONE OK. Unit suite **282 passed / 0 failed / 9 skips**. BACKLOG: #13 rewritten as the
+  Telegram on-demand query/command design (PC to scope v1 — includes "today's meals + macros",
+  verbose review, /learn, undo-last); #22 opened (telegram-webhook credential-less test gap).
 - **whoop-webhook v3: recovery webhooks FIXED (BACKLOG #19, 2026-06-10).** v2 `recovery.updated`
   payload id is the SLEEP UUID (docs-confirmed), not a cycle id — the handler 404'd on every
   recovery event since launch (110 fails/week; `recovery_landed` pushes never fired). Now resolves

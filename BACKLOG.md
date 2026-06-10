@@ -156,9 +156,16 @@ fall back to the brief for genuine summary requests ("brief", "how am I doing", 
 
 ---
 
-## #7 — health-media bucket retention / cleanup (30–60 days) — **OPEN**
+## #7 — health-media bucket retention / cleanup (30–60 days) — **SHIPPED 2026-06-10**
 
-**Severity:** LOW · **Owner:** CC · **Status:** OPEN.
+**Severity:** LOW · **Owner:** CC · **Status:** SHIPPED — exactly per the design below:
+`monitor/media_retention.py` (stdlib-only, service_role; per-object best-effort, exits non-zero on
+hard failure) + `.github/workflows/media-retention.yml` (22:00 UTC = 05:00 ICT daily +
+`workflow_dispatch` with dry-run input). Window = `media.retention_days` in `system_config`
+(mig 062, seeded 45). Only `status IN (done,failed)` rows older than the window are touched;
+Storage object deleted, `media_inbox.storage_path` nulled, row kept for audit; already-gone
+objects (Storage 400/not_found) are nulled too. 6 unit tests; live dry-run verified (0 prunable
+today — oldest media is 2026-06-07; first real prunes ~2026-07-22). Original design below.
 
 **Idea:** Photos pile up in the private `health-media` Storage bucket forever. Once a `media_inbox`
 row is `done` (or `staged` and resolved) and the data is written to `food_logs`/biomarkers/etc.,
@@ -213,15 +220,38 @@ reference macros by it, or only apply the reference when no explicit partial por
 
 ---
 
-## #13 — `/learn` is advertised but not implemented (phantom command) — **OPEN, low**
+## #13 — Telegram on-demand queries & commands (expanded from the `/learn` phantom) — **OPEN, design — PC to scope v1**
 
-**Severity:** LOW · **Owner:** CC · **Status:** OPEN (surfaced 2026-06-09).
+**Severity:** MED (was LOW) · **Owner:** PC (design) → CC (build) · **Status:** OPEN — expanded
+2026-06-10 per PC: don't just patch `/learn`; design the whole on-demand surface.
 
-After logging a repeat food the bot says *"Logged 'X' N× before — use /learn to add it to your
-food library."* But there is **no `/learn` handler anywhere** — typing it does nothing (it just
-routes as a normal message). The `promote_food_to_reference` RPC exists; wire `/learn` (in
-telegram-webhook) to promote the most-recent food to `food_reference`, OR remove the offer text.
-General rule: any command the bot suggests must be handled.
+**Idea:** the bot currently *pushes* (brief, confirmations) but can't *answer*. Add an on-demand
+query surface in Telegram — ask in natural language, get a cited answer:
+- **"show me today's meals and macros"** → per-meal breakdown (description, kcal/P/C/F each) +
+  totals vs targets — the VERBOSE version of the brief's Food section, on demand.
+- **"what supplements have I taken today / what's left"** → regimen checklist by timing slot.
+- **"how was my sleep this week" / "recovery trend"** → 7/30-day WHOOP mini-report.
+- **Verbose review on demand** — a "full review" command returning the deep version of the daily
+  brief (per-meal + per-supplement + WHOOP detail + Viome flags), where the auto-brief stays terse.
+- **"undo last" / "void that"** — correction surface on top of the mig-060
+  `maintainer_void_*` RPCs (the RPC layer SHIPPED 2026-06-10; only the chat surface is missing).
+- `/learn` — the original phantom: after a repeat food the bot offers */learn* but no handler
+  exists. Fold it into this command surface (wire to `promote_food_to_reference`), and keep the
+  general rule: **any command the bot advertises must be handled.**
+
+**Design questions for PC:**
+1. Grammar: slash commands (`/today`, `/review`, `/learn`, `/undo`) vs pure natural language? The
+   drain's LLM router (`unknown` prompt) could simply gain a `{kind:"query", question:…}` branch —
+   no new infra; slash commands would short-circuit in telegram-webhook (faster, no LLM cost).
+2. v1 scope: which 2–3 queries first? (today's meals+macros and the verbose review look highest-value.)
+3. Answer path: reuse the brief's fetchers (`_fetch_food_full` etc., already voided-aware) vs
+   `lib/views.py` catalog — either way numbers must be query-cited (render-guard rule), never composed.
+4. Minor framing: Dea gets growth-framing answers, no deficit language (same rules as the brief);
+   "undo/void" stays maintainer-only (PC).
+5. Latency/cost: drain round-trip is ~30–60s (GH Actions). Acceptable for queries, or do the
+   cheap lookups belong in telegram-webhook itself (Edge, instant, but Deno + no psycopg2)?
+6. Overlap with #4 (Telegram-linked dashboards): text answers here, rendered charts there — same
+   trigger surface should serve both eventually.
 
 ---
 
@@ -271,10 +301,31 @@ clarify-routing change (descriptive feedback, generic guard, this) — they all 
 
 ---
 
-## #18 — No self-correct path: skill can log a bad row but can't undo it — **OPEN, MED**
+## #18 — No self-correct path: skill can log a bad row but can't undo it — **SHIPPED 2026-06-10 (mig 060)**
 *(renumbered 2026-06-10 — was a duplicate "#12")*
 
-**Severity:** MED · **Owner:** CC · **Status:** OPEN. Surfaced 2026-06-08: a mis-dated NAC duplicate
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — mig 060 applied + live-verified 2026-06-10,
+exactly per the plan below:
+- `voided_at`/`void_reason` on **all three** log tables (supplements + food + biomarkers — symmetry done
+  in one pass since the read filters had to be touched anyway).
+- `maintainer_void_supplement/_food/_biomarker(p_id, p_reason)` SECURITY DEFINER RPCs (maintainer +
+  profile-access gated, reason ≥5 chars, idempotent). Live-tested in a rolled-back txn: void →
+  already_voided → unauthorized-for-random-user all behave.
+- **Un-void on re-log**: the supplement/biomarker ingest RPCs' ON CONFLICT DO UPDATE now clears
+  voided_at — without this, re-logging the same (profile,supplement,day,source) would land on the
+  voided row and stay invisible. Verified live (same txn).
+- **Read filters everywhere**: brief (food/supps/Viome), drain running totals + orphan-sweep
+  candidates, `analysis/supplement_summary` adherence, `analysis/food_chat`, `lib/views.py`
+  (biomarker timeline / abnormal_labs / vo2_status), `plan/goals`, `lib/contract` plausibility
+  heuristic, `daily_health_summary` view. SKILL.md ad-hoc rule added; SCHEMA-MAP regenerated
+  (column COMMENTs carry the filter instruction).
+- **`REVOKE DELETE ON ALL TABLES FROM healthspan_app`** — the 2026-06-08 grant had landed on ALL
+  60+ tables (incl. profiles, system_config, whoop_tokens), worse than recorded below. Revoked;
+  verified zero DELETE grants remain.
+Chat/skill **surface** ("undo last" in Telegram) deliberately not built here — folded into the
+#13 on-demand command design. Original finding below for reference.
+
+Surfaced 2026-06-08: a mis-dated NAC duplicate
 (`6276da9f`, source `skill`, dated June 7, superseded by the correct June 8 `66decb05`) could not be
 removed by the skill — its role is barred from DELETE (by design) and there is no soft-delete column.
 The row was UPDATE-flagged in `notes` as `VOID — …` as an interim, but it **still counts as an
@@ -467,9 +518,15 @@ drop recovery scores on that path too. Then redeploy whoop-webhook (§7.4).
 
 ---
 
-## #20 — WHOOP token refresh race: webhook vs CI `refresh_recent` (~1–2 token-400s/day) — **OPEN, LOW**
+## #20 — WHOOP token refresh race: webhook vs CI `refresh_recent` (~1–2 token-400s/day) — **SHIPPED 2026-06-10**
 
-**Severity:** LOW (self-heals) · **Owner:** CC · **Status:** OPEN — found by the 2026-06-10 deep scan.
+**Severity:** LOW (self-heals) · **Owner:** CC · **Status:** SHIPPED — loser-recovers fix on BOTH
+sides, 2026-06-10. On a refresh 400 the loser re-reads `whoop_tokens`: if the winner already stored
+a fresh access token, use it; else if a rotated-in refresh token is present, retry ONCE with it;
+anything else re-raises (no retry storm). Python `ingest/whoop_sync._get_token_from_db` (+ extracted
+`_post_refresh` helper, 4 unit tests) and Deno `_shared/whoop.ts getValidAccessToken` —
+whoop-webhook v17 + whoop-oauth v13 deployed 2026-06-10. Expect `wearable_sync_errors`
+`WHOOP token 400` rows to stop. Original finding below.
 
 `wearable_sync_errors` shows `WHOOP token 400: invalid_request` ~1–2×/day across both PC
 and Dea. WHOOP rotates the refresh token on every use; the webhook
@@ -482,9 +539,38 @@ retry once before erroring.
 
 ---
 
-## #21 — Security/config hygiene batch (2026-06-10 scan, low severity) — **OPEN, LOW**
+## #21 — Security/config hygiene batch (2026-06-10 scan, low severity) — **SHIPPED 2026-06-10 (mig 061)**
 
-**Severity:** LOW · **Owner:** CC · **Status:** OPEN — consolidated from the scan's verified low-priority findings.
+**Severity:** LOW · **Owner:** CC · **Status:** SHIPPED — all 6 items, mig 061 + code, 2026-06-10:
+1. **INSERT policies**: `media_inbox` + `push_log` scoped to `authenticated` +
+   `has_profile_access OR is_maintainer` (the drain inserts `push_log` as the authenticated
+   drainer → is_maintainer covers it; webhooks are service_role and bypass);
+   `telegram_processed_updates` + `wearable_sync_errors` open policies DROPPED (writers are
+   service_role / postgres-CI only). Note the scan's anon-key framing was wrong in one detail:
+   anon holds NO table grants on these four — the live exposure was any *authenticated* session.
+2. **Legacy mig-002 surface**: kept the functions, REVOKED EXECUTE from anon + authenticated on
+   `ingest_health_artifact` + `mint_ingestion_token` (both had the Postgres default PUBLIC grant;
+   `hs_ops mint-token` runs as postgres and still works).
+3. **Dead config keys** deleted: `ingest.whoop_screenshot.direct_write`,
+   `supplements.journal_intake_map`, `supplements.intake_source_priority`.
+4. **`claim_inbox_cluster` dropped**; the misleading "Atomic claim — all rows or none" drain
+   comment rewritten to describe the real per-item claim + compensation.
+5. **`hs_ops.py verify` rewritten**: SUBJECT list now derived at runtime (every base table with a
+   `profile_id` column — 42 of 61 vs the stale 32); leak check covers `with_check=true` writes
+   anywhere + `qual=true` reads on profile-scoped tables (catalog read-alls counted, not failed);
+   NEW maintainer-only assertion (SELECT **and ALL** policies on the 10 maintainer tables must
+   gate on `is_maintainer` alone — would have caught the mig-022 miss). Live run: all NONE OK.
+6. **`lib/models.py` docstring** fixed (`HS_FOOD_MODEL` env var, not `ingest.food_model`).
+   The `test_telegram_webhook.py` live-DB self-skip gap is recorded below as #22.
+
+---
+
+## #22 — Deployed telegram-webhook has no credential-less test coverage — **OPEN, LOW**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN (split out of #21.6, 2026-06-10).
+`tests/unit/test_telegram_webhook.py`'s 9 tests need a live DB and self-skip in CI, so the deployed
+webhook (v7+ supersede path) has no coverage in a plain `pytest` run. Options: a Deno test harness
+for the Edge function, or mock the Supabase client in the existing tests.
 
 1. **Open INSERT policies** (`with_check=true`, role public) on `media_inbox`, `push_log`,
    `telegram_processed_updates`, `wearable_sync_errors`. The intended writers use

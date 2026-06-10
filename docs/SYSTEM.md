@@ -225,6 +225,13 @@ User-Agent to pass Cloudflare), `storeTokens` (upsert `whoop_tokens`), `whoopGet
   are composed inline by the drain). `workflow_dispatch` with a profile_id runs
   `python3 -m monitor.brief --profile-id <uuid>`; without one runs `--all`.
   **Timeout: 10 min.**
+- **`media-retention.yml`** — Trigger: daily cron **22:00 UTC / 05:00 ICT**, OR manual
+  `workflow_dispatch` (with a `dry_run` input). Runs `python3 -m monitor.media_retention`
+  (stdlib-only, service_role): deletes `health-media` Storage objects whose `media_inbox`
+  row is terminal (`done`/`failed`) and older than `media.retention_days` (system_config,
+  seeded 45 by mig 062), then nulls `storage_path` — the DB row is kept for audit.
+  Pending/processing/staged rows are never touched. Exits non-zero on any hard failure.
+  **Timeout: 10 min.**
 - **`ci.yml`** — Trigger: every `push` and `pull_request`. `pytest tests/unit/` always
   runs; `pytest tests/integration/` runs only with live-DB secrets (self-skips via
   `pytest.mark.skipif` when `DATABASE_URL` is absent). Integration env: `DATABASE_URL`,
@@ -378,7 +385,8 @@ monitor/inbox_drain.py
   │  1. Wait 5s settle window (lets an album burst land fully)
   │  2. fetch_settled() → pending media_inbox rows older than settle window
   │  3. build_clusters() → group rows by media_group_id (album) + singletons
-  │  4. claim_inbox_cluster(uuid[]) RPC → atomic all-or-nothing FOR UPDATE lock
+  │  4. per-item claim (claim_inbox_item CAS, pending→processing) with compensation —
+  │     lose any row of a cluster → release the claimed ones back to pending
   │  5. For each claimed row: signed-URL fetch from health-media →
   │     vision_extract() POSTs image+caption to Claude (HS_ANTHROPIC_API_KEY)
   │  6. food branch → maintainer_ingest_food RPC (p_force_stage routing)
@@ -426,15 +434,16 @@ and inside the drain the **`--settle-sec 5`** window plus `build_clusters()` re-
 the album by `media_group_id` so the cluster is processed together. The daily-cron path
 runs **without** a settle window (album bursts are no longer in flight by then).
 
-#### Atomic claim (`claim_inbox_cluster`)
+#### Cluster claim (per-item CAS + compensation)
 
-Before any extraction, `monitor/inbox_drain.py` claims rows via the
-`claim_inbox_cluster(uuid[])` RPC (migration 046, SECURITY INVOKER). The claim is
-**all-or-nothing per cluster**: it takes a `FOR UPDATE` lock and performs a single
-all-or-nothing UPDATE. If any row in a cluster is already claimed by a concurrent
-drain, **all** rows in that cluster roll back to `pending`. This prevents two
-overlapping workflow runs (e.g. event-path + cron-path firing close together) from
-double-writing the same album.
+Before any extraction, `monitor/inbox_drain.py` claims each row of a cluster via
+`DbRest.claim_inbox_item` — a filtered PATCH (`status=eq.pending` → `processing`)
+so only one drain wins a given row. If **any** row of the cluster was already taken
+by a concurrent drain, the rows this run did claim are released back to `pending`
+and the cluster is skipped — all-or-nothing semantics by compensation, not by lock.
+This prevents two overlapping workflow runs (e.g. event-path + cron-path firing
+close together) from double-writing the same album. (The `claim_inbox_cluster(uuid[])`
+RPC from migration 046 was never actually wired in and was dropped in migration 061.)
 
 #### Single extractor
 
@@ -492,7 +501,7 @@ confidence floor) come from `system_config` / `metric_definitions` — never har
 | **GH Actions queue backed up / 15-min timeout** | Cluster left `pending` (claim rolls back on timeout). | Next dispatch or daily cron re-claims and re-processes. |
 | **Claude Vision malformed / low confidence** | Item is **staged**, not lost — `stg_food_log_review` with a `stage_reason`. | Maintainer reviews via Staging Queue Review (§7.7). |
 | **Claude API HTTP error** | `media_inbox.status = "failed"`. | Re-dispatch the drain; investigate if persistent (key, rate limit, outage). |
-| **Concurrent drains on same album** | `claim_inbox_cluster` lets only one win; loser's rows roll back to `pending`. | The winner processes; no double-write. |
+| **Concurrent drains on same album** | Per-item `claim_inbox_item` CAS lets only one win each row; a partial loser releases its claimed rows back to `pending` and skips the cluster. | The winner processes; no double-write. |
 
 #### Minor-safety framing
 
@@ -656,11 +665,12 @@ Telegram photo
   → GitHub repository_dispatch: inbox-drain
   → GH Actions inbox-drain.yml
   → monitor/inbox_drain.py --once --settle-sec 5
-  → claim_inbox_cluster RPC → Claude extract → maintainer_ingest_food RPC
+  → per-item claim_inbox_item CAS → Claude extract → maintainer_ingest_food RPC
   → food_logs (complete) OR stg_food_log_review (incomplete)
   → Telegram confirmation
 
-Telegram text  → telegram-webhook → repository_dispatch: send-brief → send-brief.yml → monitor/brief.py
+Telegram text  → telegram-webhook → media_inbox (kind=unknown) → same drain path
+                 (LLM routes log-vs-brief; brief requests compose inline at end-of-run)
 ```
 
 A parallel, longer-lived fallback fires from `telegram-webhook` itself (`maybeFireRoutine`,
@@ -785,20 +795,22 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | Function | Security | Purpose |
 |---|---|---|
 | `maintainer_ingest_food` | DEFINER | 16-param. Guard = `is_maintainer() AND has_profile_access(target)`. Routes to `food_logs` or `stg_food_log_review`. Stages when `p_force_stage = true`, when kcal is outside `food_energy_kcal` plausibility bounds, when `description` is NULL, or when `meal_type` is not in the CHECK set. Returns `{id, status, stage_reason}`. |
-| `maintainer_ingest_supplement` | DEFINER | 12-param. Routes to `supplement_intake_logs` or `stg_supplement_intake_review`. Stages on `p_force_stage` or `supplement_id IS NULL`. `taken_on` removed from INSERT (GENERATED, 428C9 fix mig 039); `source` CHECK includes `telegram` (mig 040). Returns `v_stage_reason`. |
-| `maintainer_ingest_biomarker` | DEFINER | 12-param. Routes to `biomarkers` or `stg_biomarker_review`. Stages on `p_force_stage`, `metric_definition_id IS NULL`, `value IS NULL`, or value outside `plausible_min/max`. |
+| `maintainer_ingest_supplement` | DEFINER | 12-param. Routes to `supplement_intake_logs` or `stg_supplement_intake_review`. Stages on `p_force_stage` or `supplement_id IS NULL`. `taken_on` removed from INSERT (GENERATED, 428C9 fix mig 039); `source` CHECK includes `telegram` (mig 040). ON CONFLICT re-log **clears `voided_at`** (mig 060 — a voided intake that is re-logged comes back). Returns `v_stage_reason`. |
+| `maintainer_ingest_biomarker` | DEFINER | 12-param. Routes to `biomarkers` or `stg_biomarker_review`. Stages on `p_force_stage`, `metric_definition_id IS NULL`, `value IS NULL`, or value outside `plausible_min/max`. ON CONFLICT re-ingest **clears `voided_at`** (mig 060). |
+| `maintainer_void_supplement(p_id, p_reason)` | DEFINER | Mig 060 (BACKLOG #18). Soft-deletes a `supplement_intake_logs` row (`voided_at = now()`, `void_reason`); maintainer + profile-access gated, reason ≥5 chars, idempotent (`already_voided`). Voided rows are excluded by every read path (`WHERE voided_at IS NULL`). The scoped replacement for the revoked blanket DELETE grant. |
+| `maintainer_void_food(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `food_logs`. |
+| `maintainer_void_biomarker(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `biomarkers`. |
 | `lookup_food_reference(p_name, p_profile_id)` | DEFINER | Best macro match from `food_reference`; personal rows beat global. |
 | `lookup_viome_verdicts(p_items[], p_profile_id)` | DEFINER | Returns avoid/minimize/superfood verdicts for a list of ingredient names. |
 | `promote_food_to_reference(p_name, p_profile_id, …)` | DEFINER | Upserts a user-confirmed food into their personal `food_reference` library. |
 | `claim_inbox_item(item_id)` | client method (`lib/db_rest.py`) | Single-item claim via filtered PATCH (`status pending → processing`, `prefer_return`); returns `True` if this caller won the race. Not a DB RPC — runs under the drainer's JWT, governed by `media_inbox` RLS. |
-| `claim_inbox_cluster(p_item_ids[])` | INVOKER (mig 046) | Atomic all-or-nothing cluster claim. `FOR UPDATE` (no SKIP LOCKED — waits, never skips); returns `true` only if every row was still pending. Runs as the drainer; existing RLS governs access. |
 | `fn_media_inbox_notify()` **(trigger)** | DEFINER | `AFTER INSERT` on `media_inbox` (`trg_media_inbox_notify`); fires `net.http_post` to the `trigger-drain` Edge function for each new `pending` row. Reverted to anon-key-from-`system_config` header in mig 047 (vault lookup returned NULL in pg_net context). |
 | `is_maintainer(p_uid DEFAULT NULL)` | DEFINER | Resolves the maintainer flag via `family_memberships JOIN profiles` (mig 023) so any of PC's auth identities is recognised. |
 | `has_profile_access(uuid)` | DEFINER | True if the calling auth identity has a `family_memberships` row for the target profile. The backbone of every profile-scoped RLS policy. |
 | `learn_supplement(p_profile_id, p_name)` | DEFINER | Mig 052. Adds a user-named supplement to the catalog (dedups by normalised name; stamps `source='learned'`, `verified=false`). Adults only — called by the drain's learn-on-clarify path. |
 | `hs_close_sync_log(...)` | DEFINER | Mig 030. Closes a `wearable_sync_log` row (status + counters) from the drain without a maintainer session. |
-| `ingest_health_artifact(...)` | DEFINER | Mig 002 **legacy** token-gated ingestion entry (EXECUTE granted to `anon`, gated by sha256 `ingestion_tokens`; writes to staging only). Superseded by the Telegram path — candidate for revoke/drop. |
-| `mint_ingestion_token(...)` | DEFINER | Mig 002 legacy — mints `ingestion_tokens` rows (used by `hs_ops.py mint-token`). |
+| `ingest_health_artifact(...)` | DEFINER | Mig 002 **legacy** token-gated ingestion entry, superseded by the Telegram path. EXECUTE **revoked from anon + authenticated** in mig 061 (was the Postgres default PUBLIC grant); function kept, callable only as postgres/service_role. |
+| `mint_ingestion_token(...)` | DEFINER | Mig 002 legacy — mints `ingestion_tokens` rows. EXECUTE revoked from anon + authenticated (mig 061); `hs_ops.py mint-token` runs as postgres and still works. |
 | `whoop_journal_insert_through()` **(trigger)** | DEFINER | Mig 007. INSTEAD OF INSERT write-through on the `whoop_journal` pivot view → `whoop_journal_entries`. |
 | `rls_auto_enable()` **(event trigger)** | DEFINER | Event trigger `ensure_rls` (ddl_command_end): auto-enables RLS on any new `public` table. Created out-of-band; versioned into the repo by mig 058 (2026-06-10). |
 
@@ -813,7 +825,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–059)
+### 4.4 Migration History (001–062)
 
 | # | File | Summary |
 |---|---|---|
@@ -883,6 +895,9 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 057 | reticulocyte_count_definition | Adds the `reticulocyte_count` metric_definition (unit %, ref 0.5–2.5, plausible 0–15) so the last Jun 2026 Metropolis marker could ingest. Data-only; applied via the postgres role (authenticated cannot INSERT into `metric_definitions`). |
 | 058 | stg_review_rls_parity | **Applied 2026-06-10.** Fixes the three `stg_*_review` tables mig 022 missed (supplement_intake / food_rule / test_result → maintainer-only SELECT + owner INSERT); seeds `brief.dedup_sec=600` (rule-#1 parity); versions the out-of-band `rls_auto_enable` event-trigger function. Verified live: all 6 policies, config row, `ensure_rls` trigger. |
 | 059 | clarify_automatch | **Applied 2026-06-10.** BACKLOG #15: seeds `clarify.match_window_sec` (900) / `clarify.match_min_conf` (0.7) / `clarify.orphan_supersede_window_sec` (1800); adds maintainer UPDATE policies on the five `stg_*_review` tables so the drain can retire review rows on clarify auto-match / orphan sweep. |
+| 060 | void_soft_delete | **Applied 2026-06-10.** BACKLOG #18: `voided_at`/`void_reason` on `supplement_intake_logs`/`food_logs`/`biomarkers`; `maintainer_void_supplement/_food/_biomarker` SECURITY DEFINER RPCs (maintainer-gated, idempotent, reason ≥5 chars); supplement+biomarker ingest RPCs un-void on ON CONFLICT re-log; `daily_health_summary` food subselects exclude voided; **REVOKE DELETE ON ALL TABLES FROM healthspan_app** (the 2026-06-08 grant had landed on all 60+ tables). Live-verified in a rolled-back txn. |
+| 061 | security_hygiene | **Applied 2026-06-10.** BACKLOG #21: `media_inbox`/`push_log` INSERT scoped to `authenticated` + `has_profile_access OR is_maintainer`; open INSERT policies on `telegram_processed_updates`/`wearable_sync_errors` dropped (service_role/postgres writers only); EXECUTE on legacy `ingest_health_artifact`/`mint_ingestion_token` revoked from anon+authenticated; 3 dead config keys deleted; unused `claim_inbox_cluster(uuid[])` dropped. |
+| 062 | media_retention_config | **Applied 2026-06-10.** BACKLOG #7: seeds `media.retention_days` (45) for the health-media Storage prune (`monitor/media_retention.py` + `media-retention.yml` daily cron). |
 
 ---
 
@@ -1337,10 +1352,29 @@ Common `stage_reason` values and their meaning:
 | `kcal_implausible` | Calories outside 25–12,000 range | Re-send with corrected value; check for OCR comma-slip (e.g. `1,020` parsed as `20`) |
 | `supplement_unresolved` | Supplement name not matched in catalog | Add alias to `supplement_aliases` or correct the name |
 | `biomarker_implausible` | Value outside `plausible_min/max` range in `metric_definitions` | Verify the lab value; if correct, update the plausibility bounds in a migration |
-| `confidence_low` | LLM extraction confidence below `system_config.ingest.confidence_threshold` (0.7) | Re-send the photo at higher quality or with a caption |
+| `confidence_low` | LLM extraction confidence below `system_config.ingest.confidence_threshold` (0.3 in prod) | Re-send the photo at higher quality or with a caption |
 | `missing_required` | A required field (e.g. `description`, `meal_type`) is NULL | Re-send with complete information |
 
 To approve a staged item, write the corrected row directly to the production table using the appropriate `maintainer_ingest_*` RPC with `p_force_stage = false` and the corrected values. To dismiss, update the staging row to `status = 'dismissed'`.
+
+### 7.8 Voiding a Mis-logged Row (soft-delete, mig 060)
+
+A row that was logged in error (wrong day, hallucinated match, duplicate) is **voided, never
+DELETEd** — health data is append-only and the audit trail must show the correction. As any
+maintainer session (impersonate PC, or the skill's `supabase_client` connection):
+
+```sql
+SELECT maintainer_void_supplement('<row-uuid>', 'why it was wrong (≥5 chars)');
+SELECT maintainer_void_food('<row-uuid>', '…');
+SELECT maintainer_void_biomarker('<row-uuid>', '…');
+```
+
+Returns `{status: voided | already_voided | not_found}`. Every read path (brief, drain totals,
+analysis, `lib/views.py`, `daily_health_summary`, ad-hoc SKILL queries) filters
+`voided_at IS NULL`. **Un-void = re-log**: re-ingesting the same conflict key
+(supplement: profile+supplement+day+source; biomarker: profile+metric+measured_at) clears the
+void automatically. `healthspan_app` holds no DELETE grants (revoked in mig 060); there is
+nothing to "hard-delete" outside the postgres role.
 
 ---
 
@@ -1434,7 +1468,7 @@ There is no separate release number — **the deployed git commit IS the version
 The `<commit7>` is the short SHA injected at build time from `GITHUB_SHA`, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:
 
 - **Application code** — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.
-- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 059** (2026-06-10). Full DB-side history: §4 + `CLAUDE.md`.
+- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 062** (2026-06-10). Full DB-side history: §4 + `CLAUDE.md`.
 
 ### Recent deploys
 
@@ -1442,6 +1476,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| — | 2026-06-10 | feat/schema | **Backlog batch (migs 060–062):** #18 void soft-delete (`maintainer_void_*` RPCs, read filters everywhere, healthspan_app DELETE revoked) · #20 WHOOP token-race recovery (Python + `_shared/whoop.ts`; whoop-webhook v17 + whoop-oauth v13 deployed) · #7 media retention prune (`media-retention.yml`, 45d) · #21 hygiene (INSERT policies scoped, legacy fns revoked, dead keys deleted, `claim_inbox_cluster` dropped, `hs_ops verify` rewritten runtime-derived). Suite 282/0/9. |
 | — | 2026-06-10 | fix | **whoop-webhook v3 (BACKLOG #19):** `recovery.updated` id is the sleep UUID — resolve via `/v2/recovery` collection → integer `cycle_id`; fixed reversed `/v2/cycle/{id}/recovery` path. Verified live with a signed synthetic event; first-ever `recovery_landed` push sent. |
 | — | 2026-06-10 | feat | **Clarify auto-match (BACKLOG #15, mig 059):** fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push. |
 | — | 2026-06-10 | docs/schema | Deep-scan pass: mig 058 **applied** (stg_*_review RLS parity + `brief.dedup_sec` seed + version `rls_auto_enable`); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook `recovery.updated` 404 bug documented (BACKLOG #19). Review queue cleared (8 orphans). |

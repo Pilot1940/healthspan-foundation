@@ -427,6 +427,8 @@ code{
 <p><code>trigger-drain</code>), OR daily cron <strong>03:30 UTC / 09:00 IST</strong> (backstop), OR manual <code>workflow_dispatch</code>. On dispatch: <code>python3 -m monitor.inbox_drain --once --settle-sec 5</code> (short settle batches album bursts); otherwise <code>--once</code> (no settle). <strong>Timeout: 15 min.</strong> Reads <code>pending</code> <code>media_inbox</code> rows, fetches media from <code>health-media</code>, calls Claude to extract, writes to staging (or production via the <code>maintainer_ingest_*</code> RPC if complete), sends a Telegram confirmation. A <code>concurrency</code> group (<code>cancel-in-progress: false</code>) serialises drains — concurrent dispatches queue, never drop (commit <code>bc672c9</code>).</p>
 <ul><li><strong><code>send-brief.yml</code></strong> — Trigger: manual <code>workflow_dispatch</code> with optional <code>profile_id</code></li></ul>
 <p>(the <code>repository_dispatch: send-brief</code> hook remains in the file but nothing fires it — the telegram-webhook text dispatch was removed 2026-06-08; brief requests via Telegram are composed inline by the drain). <code>workflow_dispatch</code> with a profile_id runs <code>python3 -m monitor.brief --profile-id &lt;uuid&gt;</code>; without one runs <code>--all</code>. <strong>Timeout: 10 min.</strong></p>
+<ul><li><strong><code>media-retention.yml</code></strong> — Trigger: daily cron <strong>22:00 UTC / 05:00 ICT</strong>, OR manual <code>workflow_dispatch</code> (with a <code>dry_run</code> input).</li></ul>
+<p>Runs <code>python3 -m monitor.media_retention</code> (stdlib-only, service_role): deletes <code>health-media</code> Storage objects whose <code>media_inbox</code> row is terminal (<code>done</code>/<code>failed</code>) and older than <code>media.retention_days</code> (system_config, seeded 45 by mig 062), then nulls <code>storage_path</code> — the DB row is kept for audit. Pending/processing/staged rows are never touched. Exits non-zero on any hard failure. <strong>Timeout: 10 min.</strong></p>
 <ul><li><strong><code>ci.yml</code></strong> — Trigger: every <code>push</code> and <code>pull_request</code>. <code>pytest tests/unit/</code> always</li></ul>
 <p>runs; <code>pytest tests/integration/</code> runs only with live-DB secrets (self-skips via <code>pytest.mark.skipif</code> when <code>DATABASE_URL</code> is absent). Integration env: <code>DATABASE_URL</code>, <code>SUPABASE_URL</code>, <code>SUPABASE_ANON_KEY</code>, <code>HS_AUTH_EMAIL</code>, <code>HS_AUTH_PASSWORD</code>.</p>
 <h3>2.4 Supabase Secrets</h3>
@@ -585,7 +587,7 @@ code{
 <li>1. Wait 5s settle window (lets an album burst land fully)</li>
 <li>2. fetch_settled() → pending media_inbox rows older than settle window</li>
 <li>3. build_clusters() → group rows by media_group_id (album) + singletons</li>
-<li>4. claim_inbox_cluster(uuid[]) RPC → atomic all-or-nothing FOR UPDATE lock</li>
+<li>4. per-item claim (claim_inbox_item CAS, pending→processing) with compensation — lose any row of a cluster → release the claimed ones back to pending</li>
 <li>5. For each claimed row: signed-URL fetch from health-media →</li>
 <li>vision_extract() POSTs image+caption to Claude (HS_ANTHROPIC_API_KEY)</li>
 <li>6. food branch → maintainer_ingest_food RPC (p_force_stage routing)</li>
@@ -616,8 +618,8 @@ code{
 <p>the Routine fallback path.</p>
 <h4>Album bursts (<code>media_group_id</code>)</h4>
 <p>When a user sends a multi-photo album, Telegram delivers each photo as a <strong>separate update</strong> sharing one <code>media_group_id</code>. Each produces its own <code>media_inbox</code> row and its own trigger fire — but the 15s <code>trigger-drain</code> CAS collapses them to one GH dispatch, and inside the drain the <strong><code>--settle-sec 5</code></strong> window plus <code>build_clusters()</code> re-assemble the album by <code>media_group_id</code> so the cluster is processed together. The daily-cron path runs <strong>without</strong> a settle window (album bursts are no longer in flight by then).</p>
-<h4>Atomic claim (<code>claim_inbox_cluster</code>)</h4>
-<p>Before any extraction, <code>monitor/inbox_drain.py</code> claims rows via the <code>claim_inbox_cluster(uuid[])</code> RPC (migration 046, SECURITY INVOKER). The claim is <strong>all-or-nothing per cluster</strong>: it takes a <code>FOR UPDATE</code> lock and performs a single all-or-nothing UPDATE. If any row in a cluster is already claimed by a concurrent drain, <strong>all</strong> rows in that cluster roll back to <code>pending</code>. This prevents two overlapping workflow runs (e.g. event-path + cron-path firing close together) from double-writing the same album.</p>
+<h4>Cluster claim (per-item CAS + compensation)</h4>
+<p>Before any extraction, <code>monitor/inbox_drain.py</code> claims each row of a cluster via <code>DbRest.claim_inbox_item</code> — a filtered PATCH (<code>status=eq.pending</code> → <code>processing</code>) so only one drain wins a given row. If <strong>any</strong> row of the cluster was already taken by a concurrent drain, the rows this run did claim are released back to <code>pending</code> and the cluster is skipped — all-or-nothing semantics by compensation, not by lock. This prevents two overlapping workflow runs (e.g. event-path + cron-path firing close together) from double-writing the same album. (The <code>claim_inbox_cluster(uuid[])</code> RPC from migration 046 was never actually wired in and was dropped in migration 061.)</p>
 <h4>Single extractor</h4>
 <p>There is <strong>one</strong> vision/extraction prompt (<code>_VISION_PROMPTS[&quot;unknown&quot;]</code>) used for <strong>every</strong> path — text and photo. <code>vision_extract</code> always uses it and the re-dispatch always unwraps the <code>{kind,data}</code> it returns (the model&#x27;s chosen kind wins over the <code>guessKind</code> hint). The old standalone <code>food</code>/<code>supplement</code>/<code>lab</code>/<code>dexa</code> prompts were deleted — they had either gone <strong>dead</strong> (<code>guessKind</code> never emitted <code>supplement</code>) or <strong>drifted</strong> from each other, so a fix on one path silently didn&#x27;t apply on another. One prompt = one source of truth.</p>
 <p>The prompt encodes <strong>clarify-on-uncertainty</strong>: if it can&#x27;t identify a specific food/supplement (&quot;my supplement&quot;, &quot;a pill&quot;), it sets <code>confidence &lt; 0.3</code> rather than guessing. The <strong>confidence gate</strong> (config <code>ingest.confidence_threshold</code>, default 0.3) then stages those for the reply-to-clarify loop. Calibration: clarify on <strong>identity/portion</strong> ambiguity, <strong>estimate</strong> on quantity (a grilled-beef kcal estimate is the job, not a stage). Missing confidence defaults to confident (1.0) so normal estimates never stage. A <code>servings</code> multiplier scales a matched <code>food_reference</code> (&quot;half a shake&quot; → ×0.5).</p>
@@ -672,7 +674,7 @@ code{
 </tr>
 <tr>
 <td><strong>Concurrent drains on same album</strong></td>
-<td><code>claim_inbox_cluster</code> lets only one win; loser&#x27;s rows roll back to <code>pending</code>.</td>
+<td>Per-item <code>claim_inbox_item</code> CAS lets only one win each row; a partial loser releases its claimed rows back to <code>pending</code> and skips the cluster.</td>
 <td>The winner processes; no double-write.</td>
 </tr>
 </tbody></table></div>
@@ -1144,14 +1146,24 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <td>Upserts a user-confirmed food into their personal <code>food_reference</code> library.</td>
 </tr>
 <tr>
+<td><code>maintainer_void_supplement(p_id, p_reason)</code></td>
+<td>DEFINER</td>
+<td>Mig 060 (BACKLOG #18). Soft-deletes a <code>supplement_intake_logs</code> row (<code>voided_at = now()</code>, <code>void_reason</code>); maintainer + profile-access gated, reason ≥5 chars, idempotent (<code>already_voided</code>). Voided rows are excluded by every read path (<code>WHERE voided_at IS NULL</code>). The scoped replacement for the revoked blanket DELETE grant.</td>
+</tr>
+<tr>
+<td><code>maintainer_void_food(p_id, p_reason)</code></td>
+<td>DEFINER</td>
+<td>Mig 060 — same contract, for <code>food_logs</code>.</td>
+</tr>
+<tr>
+<td><code>maintainer_void_biomarker(p_id, p_reason)</code></td>
+<td>DEFINER</td>
+<td>Mig 060 — same contract, for <code>biomarkers</code>.</td>
+</tr>
+<tr>
 <td><code>claim_inbox_item(item_id)</code></td>
 <td>client method (<code>lib/db_rest.py</code>)</td>
 <td>Single-item claim via filtered PATCH (<code>status pending → processing</code>, <code>prefer_return</code>); returns <code>True</code> if this caller won the race. Not a DB RPC — runs under the drainer&#x27;s JWT, governed by <code>media_inbox</code> RLS.</td>
-</tr>
-<tr>
-<td><code>claim_inbox_cluster(p_item_ids[])</code></td>
-<td>INVOKER (mig 046)</td>
-<td>Atomic all-or-nothing cluster claim. <code>FOR UPDATE</code> (no SKIP LOCKED — waits, never skips); returns <code>true</code> only if every row was still pending. Runs as the drainer; existing RLS governs access.</td>
 </tr>
 <tr>
 <td><code>fn_media_inbox_notify()</code> <strong>(trigger)</strong></td>
@@ -1181,12 +1193,12 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr>
 <td><code>ingest_health_artifact(...)</code></td>
 <td>DEFINER</td>
-<td>Mig 002 <strong>legacy</strong> token-gated ingestion entry (EXECUTE granted to <code>anon</code>, gated by sha256 <code>ingestion_tokens</code>; writes to staging only). Superseded by the Telegram path — candidate for revoke/drop.</td>
+<td>Mig 002 <strong>legacy</strong> token-gated ingestion entry, superseded by the Telegram path. EXECUTE <strong>revoked from anon + authenticated</strong> in mig 061 (was the Postgres default PUBLIC grant); function kept, callable only as postgres/service_role.</td>
 </tr>
 <tr>
 <td><code>mint_ingestion_token(...)</code></td>
 <td>DEFINER</td>
-<td>Mig 002 legacy — mints <code>ingestion_tokens</code> rows (used by <code>hs_ops.py mint-token</code>).</td>
+<td>Mig 002 legacy — mints <code>ingestion_tokens</code> rows. EXECUTE revoked from anon + authenticated (mig 061); <code>hs_ops.py mint-token</code> runs as postgres and still works.</td>
 </tr>
 <tr>
 <td><code>whoop_journal_insert_through()</code> <strong>(trigger)</strong></td>
@@ -1201,7 +1213,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 </tbody></table></div>
 <h3>4.3 RLS Model</h3>
 <ul><li><strong>RLS is enabled on every public table.</strong> New tables without an RLS policy in the same migration do not pass review (Rule 3).</li><li><strong>Two PostgREST roles:</strong></li><li><code>authenticated</code> — every skill/drain session. All reads and writes are scoped to the caller&#x27;s accessible profiles via <code>has_profile_access()</code> / <code>is_maintainer()</code> policies. Cannot see other families&#x27; data.</li><li><code>service_role</code> — bypasses RLS entirely. Used <strong>only</strong> by Edge functions and sync jobs (e.g. <code>whoop_tokens</code> access, webhook inserts). Never used by the skill.</li><li><strong><code>healthspan_app</code></strong> — a Postgres LOGIN role for the direct-psycopg2 path (PC local). Member of <code>authenticated</code> with <code>NOINHERIT</code>, so it must <code>SET ROLE authenticated</code> and set JWT claims explicitly; a bare connection sees nothing. Inherits mig 010&#x27;s grants and all RLS via that path. DELETE/TRUNCATE revoked directly.</li><li><strong>Maintainer-only tables</strong> (SELECT gated to <code>is_maintainer()</code>): <code>query_audit</code>, <code>wearable_sync_log</code>, <code>wearable_sync_errors</code>, <code>stg_food_log_review</code>, <code>stg_supplement_intake_review</code>, <code>stg_biomarker_review</code> (+ <code>stg_food_rule_review</code>, <code>stg_test_result_review</code>). Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no <code>RETURNING</code> (which would invoke the SELECT policy). (Mig 022 originally missed three of these — <code>stg_supplement_intake_review</code>, <code>stg_food_rule_review</code>, <code>stg_test_result_review</code> kept their mig-004 <code>ALL/has_profile_access</code> policy. <strong>Fixed by mig 058, applied 2026-06-10</strong> — all eight now follow the maintainer-SELECT + owner-INSERT pattern, verified live. <strong>Mig 059</strong> added maintainer-gated UPDATE policies on the five <code>stg_*_review</code> tables so the drain — which passes <code>is_maintainer()</code> via its membership to PC&#x27;s maintainer profile, the same mechanism that authorises its <code>maintainer_ingest_*</code> calls — can retire review rows for the clarify auto-match; non-maintainers still cannot UPDATE.)</li><li><strong>Drain service account:</strong> <code>healthspan.drainer@chitalkar.com</code> (env <code>HS_AUTH_EMAIL</code>). Holds <code>owner</code> <code>family_memberships</code> to PC, Dea, and Dev profiles so the three <code>maintainer_ingest_*</code> RPCs pass <code>has_profile_access()</code>. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.</li><li><strong>Grant hardening</strong> (mig 010/014): DELETE and TRUNCATE revoked from <code>authenticated</code> and <code>healthspan_app</code> on all public tables; <code>ALL</code> revoked from <code>anon</code>; shared catalogs are SELECT-only for <code>authenticated</code>.</li></ul>
-<h3>4.4 Migration History (001–059)</h3>
+<h3>4.4 Migration History (001–062)</h3>
 <div class="table-wrap"><table>
 <thead><tr>
 <th>#</th>
@@ -1471,7 +1483,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr>
 <td>046</td>
 <td>claim_inbox_cluster_atomic</td>
-<td><code>claim_inbox_cluster(uuid[])</code> — atomic all-or-nothing cluster claim (<code>FOR UPDATE</code>, no SKIP LOCKED); SECURITY INVOKER.</td>
+<td><code>claim_inbox_cluster(uuid[])</code> — atomic all-or-nothing cluster claim (<code>FOR UPDATE</code>, no SKIP LOCKED); SECURITY INVOKER. <em>Never wired into the drain (it claims per-item via <code>claim_inbox_item</code>); dropped by mig 061.</em></td>
 </tr>
 <tr>
 <td>047</td>
@@ -1498,6 +1510,9 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr><td>057</td><td>reticulocyte_count_definition</td><td>Adds the <code>reticulocyte_count</code> metric_definition (unit %, ref 0.5–2.5, plausible 0–15) so the last Jun 2026 Metropolis marker could ingest. Data-only; applied via the postgres role.</td></tr>
 <tr><td>058</td><td>stg_review_rls_parity</td><td><strong>Applied 2026-06-10.</strong> Fixes the three <code>stg_*_review</code> tables mig 022 missed (supplement_intake / food_rule / test_result → maintainer-only SELECT + owner INSERT); seeds <code>brief.dedup_sec=600</code> (rule-#1 parity); versions the out-of-band <code>rls_auto_enable</code> event-trigger function.</td></tr>
 <tr><td>059</td><td>clarify_automatch</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #15: seeds <code>clarify.match_window_sec</code> (900) / <code>clarify.match_min_conf</code> (0.7) / <code>clarify.orphan_supersede_window_sec</code> (1800); adds maintainer UPDATE policies on the five <code>stg_*_review</code> tables so the drain can retire review rows on clarify auto-match / orphan sweep.</td></tr>
+<tr><td>060</td><td>void_soft_delete</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #18: <code>voided_at</code>/<code>void_reason</code> on <code>supplement_intake_logs</code>/<code>food_logs</code>/<code>biomarkers</code>; <code>maintainer_void_supplement/_food/_biomarker</code> SECURITY DEFINER RPCs (maintainer-gated, idempotent, reason ≥5 chars); supplement+biomarker ingest RPCs un-void on ON CONFLICT re-log; <code>daily_health_summary</code> food subselects exclude voided; <strong>REVOKE DELETE ON ALL TABLES FROM healthspan_app</strong> (the 2026-06-08 grant had landed on all 60+ tables). Live-verified in a rolled-back txn.</td></tr>
+<tr><td>061</td><td>security_hygiene</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #21: <code>media_inbox</code>/<code>push_log</code> INSERT scoped to <code>authenticated</code> + <code>has_profile_access OR is_maintainer</code>; open INSERT policies on <code>telegram_processed_updates</code>/<code>wearable_sync_errors</code> dropped (service_role/postgres writers only); EXECUTE on legacy <code>ingest_health_artifact</code>/<code>mint_ingestion_token</code> revoked from anon+authenticated; 3 dead config keys deleted; unused <code>claim_inbox_cluster(uuid[])</code> dropped.</td></tr>
+<tr><td>062</td><td>media_retention_config</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #7: seeds <code>media.retention_days</code> (45) for the health-media Storage prune (<code>monitor/media_retention.py</code> + <code>media-retention.yml</code> daily cron).</td></tr>
 </tbody></table></div>
 </section>
 <section id="sec-5">
@@ -1845,7 +1860,7 @@ ORDER BY created_at DESC;</code></pre>
 </tr>
 <tr>
 <td><code>confidence_low</code></td>
-<td>LLM extraction confidence below <code>system_config.ingest.confidence_threshold</code> (0.7)</td>
+<td>LLM extraction confidence below <code>system_config.ingest.confidence_threshold</code> (0.3 in prod)</td>
 <td>Re-send the photo at higher quality or with a caption</td>
 </tr>
 <tr>
@@ -1855,6 +1870,13 @@ ORDER BY created_at DESC;</code></pre>
 </tr>
 </tbody></table></div>
 <p>To approve a staged item, write the corrected row directly to the production table using the appropriate <code>maintainer_ingest_*</code> RPC with <code>p_force_stage = false</code> and the corrected values. To dismiss, update the staging row to <code>status = &#x27;dismissed&#x27;</code>.</p>
+
+<h3>7.8 Voiding a Mis-logged Row (soft-delete, mig 060)</h3>
+<p>A row that was logged in error (wrong day, hallucinated match, duplicate) is <strong>voided, never DELETEd</strong> — health data is append-only and the audit trail must show the correction. As any maintainer session (impersonate PC, or the skill&#x27;s <code>supabase_client</code> connection):</p>
+<pre><code>SELECT maintainer_void_supplement('&lt;row-uuid&gt;', 'why it was wrong (≥5 chars)');
+SELECT maintainer_void_food('&lt;row-uuid&gt;', '…');
+SELECT maintainer_void_biomarker('&lt;row-uuid&gt;', '…');</code></pre>
+<p>Returns <code>{status: voided | already_voided | not_found}</code>. Every read path (brief, drain totals, analysis, <code>lib/views.py</code>, <code>daily_health_summary</code>, ad-hoc SKILL queries) filters <code>voided_at IS NULL</code>. <strong>Un-void = re-log</strong>: re-ingesting the same conflict key (supplement: profile+supplement+day+source; biomarker: profile+metric+measured_at) clears the void automatically. <code>healthspan_app</code> holds no DELETE grants (revoked in mig 060); there is nothing to &quot;hard-delete&quot; outside the postgres role.</p>
 </section>
 <section id="sec-8">
 <h2 class="section-header">8. NON-NEGOTIABLE RULES</h2>
@@ -1925,7 +1947,7 @@ sleeps). Listed for traceability. <strong>Priority: High (closed).</strong></p>
 <h3>Duplicate food_logs cleanup convention <span class="badge badge-blue-pill">LOW</span></h3>
 <p><strong>Why:</strong> manual resets of <code>media_inbox</code> items (for testing) can
 produce duplicate <code>food_logs</code>. There is no guard against this in production — but
-it cannot happen in normal flow (atomic CAS claim via <code>claim_inbox_cluster</code>).
+it cannot happen in normal flow (per-item CAS claim via <code>claim_inbox_item</code>).
 Document the manual cleanup query in <code>CLAUDE.md</code>.
 <strong>Priority: Low.</strong></p>
 </section>
@@ -2147,7 +2169,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <p>The <code>&lt;commit7&gt;</code> is the short SHA injected at build time from <code>GITHUB_SHA</code>, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:</p>
 <ul>
   <li><strong>Application code</strong> — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.</li>
-  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 059</strong> (2026-06-10). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
+  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 062</strong> (2026-06-10). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
 </ul>
 
 <h3>Recent deploys</h3>
@@ -2155,6 +2177,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td>—</td><td>2026-06-10</td><td><span style="color:#16a34a;font-weight:600;">feat/schema</span></td><td><strong>Backlog batch (migs 060–062):</strong> #18 void soft-delete (<code>maintainer_void_*</code> RPCs, read filters everywhere, healthspan_app DELETE revoked) · #20 WHOOP token-race recovery (Python + <code>_shared/whoop.ts</code>; whoop-webhook v17 + whoop-oauth v13 deployed) · #7 media retention prune (<code>media-retention.yml</code>, 45d) · #21 hygiene (INSERT policies scoped, legacy fns revoked, dead keys deleted, <code>claim_inbox_cluster</code> dropped, <code>hs_ops verify</code> rewritten runtime-derived). Suite 282/0/9.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>whoop-webhook v3 (BACKLOG #19):</strong> <code>recovery.updated</code> id is the sleep UUID — resolve via <code>/v2/recovery</code> collection → integer <code>cycle_id</code>; fixed reversed <code>/v2/cycle/{id}/recovery</code> path. Verified live with a signed synthetic event; first-ever <code>recovery_landed</code> push sent.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Clarify auto-match (BACKLOG #15, mig 059):</strong> fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#6b7280;font-weight:600;">docs/schema</span></td><td>Deep-scan pass: mig 058 <strong>applied</strong> (stg_*_review RLS parity + <code>brief.dedup_sec</code> seed + version <code>rls_auto_enable</code>); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook <code>recovery.updated</code> 404 bug documented (BACKLOG #19). Review queue cleared (8 orphans).</td></tr>
