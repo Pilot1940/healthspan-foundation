@@ -1,4 +1,4 @@
--- Migration 043: atomic cluster claim RPC for inbox_drain
+-- Migration 046: atomic cluster claim RPC for inbox_drain
 --
 -- Problem: inbox_drain.py claimed multi-row clusters row-by-row in a Python loop.
 -- Between two concurrent drains, Drain A could claim rows [r1,r2] and Drain B
@@ -14,7 +14,7 @@
 -- respecting the existing media_inbox RLS, the same posture as the PATCH-based
 -- claim_inbox_item.  No maintainer guard — the drainer is not a maintainer.
 --
--- Apply: python3 scripts/hs_ops.py apply migrations/043_claim_inbox_cluster_atomic.sql
+-- Apply: python3 scripts/hs_ops.py apply migrations/046_claim_inbox_cluster_atomic.sql
 
 CREATE OR REPLACE FUNCTION public.claim_inbox_cluster(p_item_ids uuid[])
 RETURNS boolean
@@ -70,5 +70,5 @@ BEGIN
     AND pronargs = 1;
   ASSERT n = 1, format('claim_inbox_cluster 1-param count=%s (expected 1)', n);
 
-  RAISE NOTICE 'Migration 043 verify: OK — claim_inbox_cluster created';
+  RAISE NOTICE 'Migration 046 verify: OK — claim_inbox_cluster created';
 END $$;
