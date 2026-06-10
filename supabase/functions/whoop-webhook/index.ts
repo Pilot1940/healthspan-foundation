@@ -1,4 +1,8 @@
-// deploy: v2 (2026-06-08) — *.deleted events handled (return 200, no 404 retry storm)
+// deploy: v3 (2026-06-10) — BACKLOG #19: recovery.updated id is the SLEEP UUID in v2
+// (was treated as a cycle id → GET /v2/cycle/{uuid} 404'd on EVERY recovery event, 110
+// failed runs/week, recovery_landed pushes never fired). Resolve via the /v2/recovery
+// collection (keyed sleep_id) → fetch its integer cycle_id. Also fixes the reversed
+// recovery-for-cycle path: /v2/recovery/cycle/{id} (404) → /v2/cycle/{id}/recovery.
 // whoop-webhook — WHOOP pushes {type,id,user_id}; we verify the signature, map the
 // user to a profile, fetch the referenced record, and upsert on the confirmed key
 // (profile_id, whoop_id) for ALL THREE tables (008b/008e). Logs to wearable_sync_log.
@@ -96,7 +100,7 @@ async function refreshPriorCycle(db: any, token: string, profileId: string): Pro
   // the just-closed cycle is the most recent one that has an `end` (the current cycle is open → end null)
   const prior = cycles.find((c) => c?.end);
   if (!prior) return 0;
-  let recov = null; try { recov = await whoopGet(token, `/v2/recovery/cycle/${prior.id}`); } catch (_) {}
+  let recov = null; try { recov = await whoopGet(token, `/v2/cycle/${prior.id}/recovery`); } catch (_) {}
   const row = mapCycle(prior, recov, profileId);
   const { error } = await db.from("whoop_cycles").upsert(row, { onConflict: "profile_id,whoop_id" });
   if (error) throw new Error(`prior-cycle refresh: ${error.message}`);
@@ -404,9 +408,27 @@ Deno.serve(async (req) => {
       table = "whoop_workouts"; row = mapWorkout(await whoopGet(token, `/v2/activity/workout/${id}`), profileId);
     } else if (type?.startsWith("sleep")) {
       table = "whoop_sleeps"; row = mapSleep(await whoopGet(token, `/v2/activity/sleep/${id}`), profileId);
-    } else if (type?.startsWith("recovery") || type?.startsWith("cycle")) {
+    } else if (type?.startsWith("recovery")) {
+      // v2 recovery webhooks carry the UUID of the ASSOCIATED SLEEP, not a cycle id
+      // (v1 sent cycle ids). Find the recovery in the recent collection by sleep_id,
+      // then fetch its integer cycle_id. Verified live 2026-06-10.
+      const col = await whoopGet(token, "/v2/recovery?limit=10");
+      const recov = (col?.records ?? []).find((r: any) => String(r?.sleep_id) === String(id));
+      if (!recov) {
+        // Not in the recent window (rare — e.g. an old sleep edit). Ack so WHOOP
+        // doesn't retry-storm; the nightly sync / refresh_recent picks it up.
+        await db.from("wearable_sync_log").update({
+          status: "success", records_skipped: 1, completed_at: new Date().toISOString(),
+        }).eq("id", logId);
+        return new Response("recovery not in recent collection — acknowledged", { status: 200 });
+      }
+      const cyc = await whoopGet(token, `/v2/cycle/${recov.cycle_id}`);
+      table = "whoop_cycles"; row = mapCycle(cyc, recov, profileId);
+    } else if (type?.startsWith("cycle")) {
+      // WHOOP emits no cycle webhooks in v2 today; if one ever arrives, its id is the
+      // integer cycle id (unlike recovery events).
       const cyc = await whoopGet(token, `/v2/cycle/${id}`);
-      let recov = null; try { recov = await whoopGet(token, `/v2/recovery/cycle/${id}`); } catch (_) {}
+      let recov = null; try { recov = await whoopGet(token, `/v2/cycle/${id}/recovery`); } catch (_) {}
       table = "whoop_cycles"; row = mapCycle(cyc, recov, profileId);
     } else {
       await db.from("wearable_sync_log").update({ status: "success", completed_at: new Date().toISOString() }).eq("id", logId);

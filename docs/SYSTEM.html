@@ -347,8 +347,7 @@ code{
 <p><code>recovery.updated</code>, <code>cycle.updated</code>, <code>*.deleted</code>). Maps WHOOP <code>user_id</code> → <code>profile_id</code> via <code>whoop_tokens</code>, opens a <code>wearable_sync_log</code> row, fetches the full record from the WHOOP API (lazy-refresh token via <code>_shared/whoop.ts</code>), and upserts into <code>whoop_workouts</code> / <code>whoop_sleeps</code> / <code>whoop_cycles</code>. On <code>sleep.*</code> events re-fetches the most recent closed cycle to refresh final <code>day_strain</code>. Phase 2 push logic (debounce, quiet hours, criticality thresholds from <code>system_config</code>) sends Telegram pushes + logs <code>push_log</code>. Runs a dead-man heartbeat across all active profiles on every event.</p>
 <ul><li><strong>Additional secrets:</strong> <code>WHOOP_CLIENT_SECRET</code> (HMAC + refresh), <code>WHOOP_CLIENT_ID</code></li></ul>
 <p>(refresh via shared lib), <code>TELEGRAM_BOT_TOKEN</code> (push notifications).</p>
-<ul><li><strong>Deployed:</strong> v13, 2026-06-08 (<code>*.deleted</code> handling, stale-cycle strain refresh, Phase 2 push logic — all live).</li></ul>
-<ul><li><strong>⚠️ Known bug (2026-06-10 scan):</strong> <code>recovery.updated</code> events route to <code>GET /v2/cycle/${id}</code>, but the v2 recovery webhook <code>id</code> is a UUID while <code>/v2/cycle/</code> takes an integer cycle id — <strong>every</strong> recovery webhook 404s (110 failed <code>webhook:recovery.updated</code> sync-log rows in the week to 2026-06-10; <code>recovery_landed</code> pushes have never fired). Recovery data still lands via <code>refresh_recent</code> / nightly sync. Fix direction: mirror <code>ingest/whoop_sync.py</code> — fetch <code>/v2/recovery</code> and join on the record&#x27;s integer <code>cycle_id</code>. See BACKLOG #19.</li></ul>
+<ul><li><strong>Deployed:</strong> v3 marker / Supabase v14, 2026-06-10 — <strong>recovery.updated UUID fix (BACKLOG #19)</strong>. The v2 recovery webhook <code>id</code> is the <strong>sleep UUID</strong> (v1 sent cycle ids); the handler now resolves it via the <code>/v2/recovery</code> collection (keyed <code>sleep_id</code>) and fetches the integer <code>cycle_id</code>. Also fixed the reversed recovery-for-cycle path (<code>/v2/recovery/cycle/{id}</code> → <code>/v2/cycle/{id}/recovery</code> — the old shape 404&#x27;d silently, so webhook-sourced cycle rows never carried recovery fields). End-to-end verified with a signed synthetic event: <code>webhook:recovery.updated</code> success + first-ever <code>recovery_landed</code> push. Before the fix: 110 failed recovery webhooks/week, zero recovery pushes ever.</li></ul>
 <h4><code>whoop-oauth</code></h4>
 <ul><li><strong>verify_jwt:</strong> <code>false</code>. No inbound auth — opened by a human in a browser. The <code>state</code></li></ul>
 <p>parameter carries the profile UUID to prevent CSRF.</p>
@@ -778,7 +777,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <li>4. getValidAccessToken (lazy refresh via _shared/whoop.ts)</li>
 <li>5. Fetch full record from WHOOP API:</li>
 <li>/v2/activity/workout/{id} | /v2/activity/sleep/{id}</li>
-<li>/v2/cycle/{id} | /v2/recovery/cycle/{id}</li>
+<li>recovery → /v2/recovery collection keyed sleep_id (the event id is the SLEEP UUID) → /v2/cycle/{cycle_id}; cycle (never emitted) → /v2/cycle/{id} + /v2/cycle/{id}/recovery</li>
 <li>6. Upsert → whoop_workouts | whoop_sleeps | whoop_cycles</li>
 <li>7. SPECIAL CASE on sleep.*: re-fetch most recent closed cycle to refresh its</li>
 <li>final day_strain (WHOOP emits NO cycle.updated when a cycle closes)</li>
@@ -2156,6 +2155,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td>—</td><td>2026-06-10</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>whoop-webhook v3 (BACKLOG #19):</strong> <code>recovery.updated</code> id is the sleep UUID — resolve via <code>/v2/recovery</code> collection → integer <code>cycle_id</code>; fixed reversed <code>/v2/cycle/{id}/recovery</code> path. Verified live with a signed synthetic event; first-ever <code>recovery_landed</code> push sent.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Clarify auto-match (BACKLOG #15, mig 059):</strong> fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#6b7280;font-weight:600;">docs/schema</span></td><td>Deep-scan pass: mig 058 <strong>applied</strong> (stg_*_review RLS parity + <code>brief.dedup_sec</code> seed + version <code>rls_auto_enable</code>); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook <code>recovery.updated</code> 404 bug documented (BACKLOG #19). Review queue cleared (8 orphans).</td></tr>
 <tr><td><code>e1af853</code></td><td>2026-06-09</td><td><span style="color:#b45309;font-weight:600;">fix</span></td><td>Extraction prompt anchored to current date so partial dates keep the right year.</td></tr>

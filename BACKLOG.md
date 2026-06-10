@@ -433,9 +433,19 @@ direct maintainer write, leaving no `staging_id`/`document_id` audit trail.
 
 ---
 
-## #19 — whoop-webhook: every `recovery.updated` event 404s (wrong id type) — **OPEN, MED-HIGH**
+## #19 — whoop-webhook: every `recovery.updated` event 404s (wrong id type) — **SHIPPED 2026-06-10 (webhook v3, verified live)**
 
-**Severity:** MED-HIGH · **Owner:** CC · **Status:** OPEN — found by the 2026-06-10 deep scan.
+**Severity:** MED-HIGH · **Owner:** CC · **Status:** SHIPPED — fixed + deployed 2026-06-10.
+WHOOP docs confirmed the v2 `recovery.updated` payload `id` is the **sleep UUID** ("the UUID of the
+sleep that the recovery is associated with"); the handler now resolves it via the `/v2/recovery`
+collection (keyed `sleep_id`, `limit=10`; not-found → ack 200 + `records_skipped`, no retry storm)
+and fetches the integer `cycle_id`. Also fixed the REVERSED recovery-for-cycle path in both call
+sites: `/v2/recovery/cycle/{id}` (always 404, silently swallowed — webhook-sourced cycle rows never
+carried recovery fields) → `/v2/cycle/{id}/recovery` (verified 200 live). **End-to-end proof:** a
+signed synthetic `recovery.updated` (real sleep UUID `991f1f65…` — the same UUID from the failure
+log) produced the first-ever `webhook:recovery.updated` SUCCESS (1 upserted, recovery 51%/HRV 37.5)
+and the **first `recovery_landed` push ever sent** (push_log 2026-06-10 07:04 UTC). Original
+finding below for reference.
 
 `supabase/functions/whoop-webhook/index.ts:407-410` routes `recovery.*` (and the
 never-emitted `cycle.*`) events to `GET /v2/cycle/${id}` — but the WHOOP v2 recovery

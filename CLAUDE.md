@@ -44,6 +44,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-10)
 
+- **whoop-webhook v3: recovery webhooks FIXED (BACKLOG #19, 2026-06-10).** v2 `recovery.updated`
+  payload id is the SLEEP UUID (docs-confirmed), not a cycle id — the handler 404'd on every
+  recovery event since launch (110 fails/week; `recovery_landed` pushes never fired). Now resolves
+  via `/v2/recovery` collection keyed `sleep_id` → integer `cycle_id`; also fixed the reversed
+  `/v2/recovery/cycle/{id}` → `/v2/cycle/{id}/recovery` in BOTH call sites (old shape always 404'd
+  silently — webhook cycle rows never carried recovery). Deployed + verified end-to-end with a
+  signed synthetic event: first `webhook:recovery.updated` success + first `recovery_landed` push
+  ever (07:04 UTC). Note: PC's whoop_tokens row was manually refreshed during verification (rotated
+  pair stored back). Expect `webhook:recovery.updated` successes from tomorrow morning's real event.
 - **Clarify auto-match shipped (BACKLOG #15 closed, mig 059, 2026-06-10).** PC's call: Dea (14)
   will never use Telegram replies, so the system absorbs the fresh-message habit. Layer 1
   (`absorb_pending_clarify` in `monitor/inbox_drain.py`): a fresh TEXT message within

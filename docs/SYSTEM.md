@@ -159,15 +159,14 @@ the per-function "additional secrets" lists below).
   Runs a dead-man heartbeat across all active profiles on every event.
 - **Additional secrets:** `WHOOP_CLIENT_SECRET` (HMAC + refresh), `WHOOP_CLIENT_ID`
   (refresh via shared lib), `TELEGRAM_BOT_TOKEN` (push notifications).
-- **Deployed:** v13, 2026-06-08 (`*.deleted` handling, stale-cycle strain refresh, Phase 2
-  push logic — all live).
-- **⚠️ Known bug (2026-06-10 scan):** `recovery.updated` events route to
-  `GET /v2/cycle/${id}`, but the v2 recovery webhook `id` is a UUID while `/v2/cycle/`
-  takes an integer cycle id — **every** recovery webhook 404s (110 failed
-  `webhook:recovery.updated` sync-log rows in the week to 2026-06-10; `recovery_landed`
-  pushes have never fired). Recovery data still lands via `refresh_recent` / nightly sync.
-  Fix direction: mirror `ingest/whoop_sync.py` — fetch `/v2/recovery` and join on the
-  record's integer `cycle_id`. See BACKLOG #19.
+- **Deployed:** v3 marker / Supabase v14, 2026-06-10 — **recovery.updated UUID fix
+  (BACKLOG #19)**. The v2 recovery webhook `id` is the **sleep UUID** (v1 sent cycle ids);
+  the handler now resolves it via the `/v2/recovery` collection (keyed `sleep_id`) and
+  fetches the integer `cycle_id`. Also fixed the reversed recovery-for-cycle path
+  (`/v2/recovery/cycle/{id}` → `/v2/cycle/{id}/recovery` — the old shape 404'd silently,
+  so webhook-sourced cycle rows never carried recovery fields). End-to-end verified with a
+  signed synthetic event: `webhook:recovery.updated` success + first-ever `recovery_landed`
+  push. Before the fix: 110 failed recovery webhooks/week, zero recovery pushes ever.
 
 #### `whoop-oauth`
 - **verify_jwt:** `false`. No inbound auth — opened by a human in a browser. The `state`
@@ -580,8 +579,10 @@ WHOOP  ──event──▶  whoop-webhook  (Edge fn, verify_jwt=false)
   │  3. Open wearable_sync_log row
   │  4. getValidAccessToken (lazy refresh via _shared/whoop.ts)
   │  5. Fetch full record from WHOOP API:
-  │       /v2/activity/workout/{id} | /v2/activity/sleep/{id}
-  │       /v2/cycle/{id} | /v2/recovery/cycle/{id}
+  │       workout → /v2/activity/workout/{id} · sleep → /v2/activity/sleep/{id}
+  │       recovery → /v2/recovery collection keyed sleep_id (the event id is the
+  │                  SLEEP UUID) → /v2/cycle/{cycle_id}
+  │       cycle (never emitted) → /v2/cycle/{id} + /v2/cycle/{id}/recovery
   │  6. Upsert → whoop_workouts | whoop_sleeps | whoop_cycles
   │  7. SPECIAL CASE on sleep.*: re-fetch most recent closed cycle to refresh its
   │     final day_strain (WHOOP emits NO cycle.updated when a cycle closes)
@@ -1441,6 +1442,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| — | 2026-06-10 | fix | **whoop-webhook v3 (BACKLOG #19):** `recovery.updated` id is the sleep UUID — resolve via `/v2/recovery` collection → integer `cycle_id`; fixed reversed `/v2/cycle/{id}/recovery` path. Verified live with a signed synthetic event; first-ever `recovery_landed` push sent. |
 | — | 2026-06-10 | feat | **Clarify auto-match (BACKLOG #15, mig 059):** fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push. |
 | — | 2026-06-10 | docs/schema | Deep-scan pass: mig 058 **applied** (stg_*_review RLS parity + `brief.dedup_sec` seed + version `rls_auto_enable`); SYSTEM.md §2.2/§2.3/§3.2 rewritten to LLM-routed text reality; §4.1 recount 45/16 of 61; whoop-webhook `recovery.updated` 404 bug documented (BACKLOG #19). Review queue cleared (8 orphans). |
 | `e1af853` | 2026-06-09 | fix | Extraction prompt anchored to current date so partial dates keep the right year. |
