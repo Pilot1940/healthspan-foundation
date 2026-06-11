@@ -51,6 +51,34 @@ def test_autoreg_custom_thresholds():
     assert sprints.autoreg(60, green_min=55, yellow_min=30)[0] == "green"
 
 
+def test_parse_directives_from_rule():
+    rules = ["Massage after hard days",
+             "Autoregulate by WHOOP: Green=proceed; Yellow=downgrade hard->moderate; Red=pool+beach+massage only"]
+    d = sprints.parse_autoreg_directives(rules)
+    assert d["green"] == "proceed"
+    assert d["yellow"] == "downgrade hard->moderate"
+    assert d["red"] == "pool+beach+massage only"
+
+
+def test_parse_directives_fallback_when_absent():
+    assert sprints.parse_autoreg_directives(["just a normal rule"]) == sprints.DEFAULT_DIRECTIVES
+    assert sprints.parse_autoreg_directives(None) == sprints.DEFAULT_DIRECTIVES
+
+
+def test_autoreg_uses_supplied_directives():
+    d = {"green": "send it", "yellow": "ease off", "red": "rest only"}
+    assert sprints.autoreg(80, directives=d)[2] == "send it"
+    assert sprints.autoreg(50, directives=d)[2] == "ease off"
+    assert sprints.autoreg(10, directives=d)[2] == "rest only"
+
+
+def test_render_directive_comes_from_rule():
+    goals = dict(GOALS_V2)
+    goals["rules"] = ["Autoregulate by WHOOP: Green=send it; Yellow=hold; Red=swim only"]
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-15", 20)
+    assert "swim only" in out and "pool + beach + massage only" not in out
+
+
 def test_render_hard_day_with_recovery():
     sprint = {"name": "Phuket Sprint 2", "goals": GOALS_V2}
     out = sprints.render_training_section(sprint, "2026-06-15", 75)  # 2026-06-15 = Monday

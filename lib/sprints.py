@@ -17,16 +17,47 @@ recovery; `mark_done()` is the only DB-touching helper (read-modify-write on the
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 
 # The five adherence activities tracked per day (order = display order).
 ACTIVITIES = ["gym", "beach", "pool", "hike", "massage"]
 
 # WHOOP-standard recovery bands (defaults; overridable from system_config so no hardcoded
-# threshold lives in logic — see CLAUDE.md rule #1). The autoregulation directives mirror
-# the human-readable rule in goals.rules.
+# threshold lives in logic — see CLAUDE.md rule #1).
 DEFAULT_GREEN_MIN = 67.0
 DEFAULT_YELLOW_MIN = 34.0
+
+# Fallback directives, used only when goals.rules carries no parseable autoregulation rule.
+# The PREFERRED source is the sprint itself: a rule like
+#   "Autoregulate by WHOOP: Green=proceed; Yellow=downgrade hard->moderate; Red=pool+beach+massage only"
+# so editing the sprint changes the brief — one source of truth.
+DEFAULT_DIRECTIVES = {
+    "green": "proceed as planned",
+    "yellow": "downgrade hard → moderate",
+    "red": "pool + beach + massage only",
+}
+_AUTOREG_RE = re.compile(
+    r"green\s*=\s*(?P<green>.+?)\s*[;,]\s*"
+    r"yellow\s*=\s*(?P<yellow>.+?)\s*[;,]\s*"
+    r"red\s*=\s*(?P<red>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_autoreg_directives(rules) -> dict:
+    """Extract {green,yellow,red} directive text from a `Green=…; Yellow=…; Red=…` rule.
+
+    Returns the parsed directives (one source of truth — the sprint's own rule), or
+    DEFAULT_DIRECTIVES when no rule matches (legacy sprints / differently-worded rules).
+    Missing/blank captures fall back per band, so a partial rule never blanks a directive.
+    """
+    for rule in (rules or []):
+        m = _AUTOREG_RE.search(rule or "")
+        if m:
+            return {b: (m.group(b).strip() or DEFAULT_DIRECTIVES[b])
+                    for b in ("green", "yellow", "red")}
+    return dict(DEFAULT_DIRECTIVES)
 
 
 def normalize_goals(goals) -> dict:
@@ -54,16 +85,22 @@ def todays_plan(goals_norm: dict, weekday: str) -> dict:
 
 
 def autoreg(recovery_pct, green_min: float = DEFAULT_GREEN_MIN,
-            yellow_min: float = DEFAULT_YELLOW_MIN) -> tuple[str, str, str]:
-    """Map a WHOOP recovery % to (band, emoji, directive). recovery_pct None → unknown."""
+            yellow_min: float = DEFAULT_YELLOW_MIN,
+            directives: dict | None = None) -> tuple[str, str, str]:
+    """Map a WHOOP recovery % to (band, emoji, directive). recovery_pct None → unknown.
+
+    `directives` (from `parse_autoreg_directives(goals.rules)`) supplies the band text;
+    omitted → DEFAULT_DIRECTIVES.
+    """
+    d = directives or DEFAULT_DIRECTIVES
     if recovery_pct is None:
         return ("unknown", "", "no recovery score yet — judge by feel")
     r = float(recovery_pct)
     if r >= green_min:
-        return ("green", "🟢", "proceed as planned")
+        return ("green", "🟢", d.get("green", DEFAULT_DIRECTIVES["green"]))
     if r >= yellow_min:
-        return ("yellow", "🟡", "downgrade hard → moderate")
-    return ("red", "🔴", "pool + beach + massage only")
+        return ("yellow", "🟡", d.get("yellow", DEFAULT_DIRECTIVES["yellow"]))
+    return ("red", "🔴", d.get("red", DEFAULT_DIRECTIVES["red"]))
 
 
 def _adherence_line(goals_norm: dict, today_iso: str) -> str:
@@ -103,7 +140,8 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
     else:
         lines.append(f"Today ({wd_title}): rest / unplanned")
 
-    band, emoji, directive = autoreg(recovery_pct, green_min, yellow_min)
+    directives = parse_autoreg_directives(goals.get("rules"))
+    band, emoji, directive = autoreg(recovery_pct, green_min, yellow_min, directives)
     if band != "unknown":
         lines.append(f"Autoregulate {emoji} {int(float(recovery_pct))}% recovery → {directive}")
     else:
