@@ -49,6 +49,9 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
    - A2 (`direct_role`): psycopg2 as `healthspan_app`, already `SET ROLE authenticated` + JWT claim →
      every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (psycopg2 is imported
      lazily — only this path needs it; the App path runs without psycopg2 installed.)
+     **Exception — `direct_role.privileged=true` (unrestricted bundle only):** keeps the `postgres`
+     role (no `SET ROLE`), so RLS is BYPASSED and DELETE/DDL across all profiles is allowed. Only the
+     maintainer's own unrestricted bundle sets this; that bundle carries a louder warning at its top.
    - A1 (`supabase_client`, App/claude.ai): `get_app_connection` **signs in HERE** with the config's
      `auth_email` + `auth_password` (`client.auth.sign_in_with_password`) so the client carries the
      person's JWT → RLS scopes automatically. Missing `auth_password` → a clear error; it **never** falls
@@ -269,10 +272,28 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
 ## 7. CONNECTION CONTRACT (defence in depth)
 
 - `get_app_connection(config)` ONLY. Never the admin/service-role connection.
-- RLS scopes every read/write to the config's profile; a missing WHERE cannot leak.
-- The role cannot DELETE/TRUNCATE/DDL. `whoop_tokens` is invisible to the skill role (service_role-only).
+- **The contract below is the RESTRICTED (default) mode** — `supabase_client` (Dea/App) and
+  `direct_role` *without* `privileged`. RLS scopes every read/write to the config's profile; a
+  missing WHERE cannot leak; the role cannot DELETE/TRUNCATE/DDL; `whoop_tokens` is invisible
+  (service_role-only). **These guarantees do NOT hold in the unrestricted bundle** (which carries
+  its own warning header): there `direct_role.privileged=true` keeps the `postgres` role, so RLS
+  is bypassed and DELETE/DDL across every profile is possible by design.
 - Maintenance-table writes use client-side UUIDs / the `hs_close_sync_log` definer (so a non-maintainer can
   ingest under maintainer-only SELECT). You never need to think about this — use the modules.
+
+### Logging / write paths
+- **Maintainer (PC):** food/supplement/biomarker logging keeps the `maintainer_ingest_*` RPC path
+  (staging, plausibility gates, un-void-on-relog).
+- **Non-maintainer (e.g. Dea):** `maintainer_ingest_*` is gated → `unauthorized`. Log the user's
+  OWN rows via `ingest/self_write.py` (`log_food`/`log_supplement`/`log_biomarker`), which inserts
+  directly; RLS `has_profile_access` scopes the insert to self, so a non-maintainer can only ever
+  write their own data. Get the REST handle with `lib.db.get_app_db_rest(config)`.
+- **Strength (everyone):** "log workout / log strength / I lifted / I did N sets of X" →
+  `ingest/self_write.log_strength(handle, profile_id, performed_at=…, exercise=…, modality=…,
+  load_value=…, load_unit=…(kg|lb|bodyweight, never 'plates'), sets=…, reps=…, rir=…,
+  device_specific=…)`. `performed_on` is GENERATED — never send it. A maintainer may target any
+  family `profile_id`; a non-maintainer's only writable profile is their own (RLS). Any strength
+  READ must filter `voided_at IS NULL`; correct a mis-logged set with `maintainer_void_strength`.
 
 ---
 

@@ -1,0 +1,18 @@
+{
+  "_comment": "UNRESTRICTED maintainer bundle (v3.16.0). PRIVILEGED: bypasses RLS, can DELETE/DDL on every profile. Build: python scripts/package_skill.py v3.16.0 --person config/pc_unrestricted.config.example.json --unrestricted --out healthspan-PC-MAINTAINER-UNRESTRICTED-v3.16.0.skill",
+  "_secret_note": "db_url is read AT BUILD TIME from config/pc_unrestricted.secret.txt (gitignored). Put the privileged `postgres` session-pooler URL on the single line of that file (postgresql://postgres:<pwd>@aws-1-...pooler.supabase.com:5432/postgres). NEVER hardcode it here; NEVER commit the bundle or the secret.",
+
+  "profile_id": "21f69003-46f8-4e1c-a928-b1f694ce4aff",
+  "display_name": "PC",
+  "is_owner": true,
+  "is_minor": false,
+
+  "connection": {
+    "mode": "direct_role",
+    "direct_role": {
+      "privileged": true,
+      "db_url": "@secret:config/pc_unrestricted.secret.txt",
+      "auth_user_id": "ff4c1b88-c9de-451e-8ae7-e0d72ae89a35"
+    }
+  }
+}

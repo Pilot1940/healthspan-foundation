@@ -150,11 +150,21 @@ def load_config(path: str) -> dict:
         return _json.load(f)
 
 
-def _set_profile_claim(conn, auth_user_id: str) -> None:
-    """A2: assume authenticated + set the JWT claim so has_profile_access() resolves.
-    Must run on every fresh connection/transaction before any data query."""
+def _set_profile_claim(conn, auth_user_id: str, *, set_role: bool = True) -> None:
+    """A2: set the JWT claim so has_profile_access()/is_maintainer() resolve.
+    Must run on every fresh connection/transaction before any data query.
+
+    ``set_role`` (default True): also ``SET ROLE authenticated`` so RLS is enforced
+    and the scoped grants (no DELETE/DDL) apply — the normal restricted path.
+
+    ``set_role=False`` is the PRIVILEGED path (direct_role.privileged): the connection
+    keeps its underlying role (e.g. ``postgres``), so RLS is BYPASSED and DELETE/DDL
+    across all profiles is possible. The JWT claim is STILL set so is_maintainer()/
+    has_profile_access() return the right answers for code that calls them. Only ever
+    used with a deliberately-privileged credential in an unrestricted bundle."""
     cur = conn.cursor()
-    cur.execute("SET ROLE authenticated")
+    if set_role:
+        cur.execute("SET ROLE authenticated")
     cur.execute(
         "SELECT set_config('request.jwt.claims', %s, false)",
         (_json.dumps({"sub": auth_user_id, "role": "authenticated"}),),
@@ -177,8 +187,11 @@ def get_app_connection(config: dict):
 
     if mode == "direct_role":
         dr = conn_cfg["direct_role"]
-        conn = _psycopg2().connect(dr["db_url"])        # healthspan_app credential
-        _set_profile_claim(conn, dr["auth_user_id"])    # scope to this profile
+        conn = _psycopg2().connect(dr["db_url"])        # healthspan_app OR privileged credential
+        # privileged=true → keep the underlying role (postgres): RLS bypassed, DELETE/DDL
+        # allowed across all profiles. Otherwise SET ROLE authenticated (restricted, RLS on).
+        privileged = bool(dr.get("privileged"))
+        _set_profile_claim(conn, dr["auth_user_id"], set_role=not privileged)
         return conn, "psycopg2"
 
     if mode == "supabase_client":
@@ -212,3 +225,31 @@ def get_app_connection(config: dict):
         return client, "supabase"
 
     raise ValueError(f"connection.mode must be 'direct_role' or 'supabase_client', got {mode!r}")
+
+
+def get_app_db_rest(config: dict):
+    """Return a `lib.db_rest.DbRest` carrying this person's JWT (supabase_client mode only).
+
+    The REST handle is what the self-write path (`ingest/self_write.py`) and any direct
+    PostgREST insert want — it signs in exactly like ``get_app_connection`` and reuses the
+    session's access token, so RLS scopes every call to the caller's own profile. For a
+    non-maintainer (e.g. Dea) this is the write path; ``maintainer_ingest_*`` would 401.
+
+    direct_role mode has no Supabase URL / anon key, so there is no REST handle — that path
+    uses the psycopg2 connection from ``get_app_connection`` directly (self_write handles it).
+    """
+    conn_cfg = config.get("connection", {})
+    mode = conn_cfg.get("mode")
+    if mode != "supabase_client":
+        raise ValueError(
+            f"get_app_db_rest requires connection.mode='supabase_client', got {mode!r} "
+            "(direct_role uses the psycopg2 connection from get_app_connection instead)"
+        )
+    from lib.db_rest import DbRest, sign_in
+    sc = conn_cfg["supabase_client"]
+    url, anon = sc["supabase_url"], sc["supabase_anon_key"]
+    email, password = sc.get("auth_email"), sc.get("auth_password")
+    if not email or not password:
+        raise ValueError("supabase_client.auth_email + auth_password required for get_app_db_rest")
+    jwt = sign_in(url, anon, email, password)   # raises on bad creds — never returns anon
+    return DbRest(url, anon, jwt)

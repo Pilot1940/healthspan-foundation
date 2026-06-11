@@ -1,5 +1,43 @@
 # HealthSpan Skill — Changelog
 
+## v3.16.0 — unrestricted maintainer bundle + non-maintainer self-write + strength write path (2026-06-11)
+
+**Two new bundle variants and the write paths that make them work.**
+
+### A. Unrestricted (privileged) maintainer connection (`lib/db.py`)
+- `connection.direct_role.privileged: true` opens a connection that keeps its underlying role
+  (`postgres`): it does **NOT** `SET ROLE authenticated`, so RLS is **bypassed** and DELETE/DDL
+  across every profile is possible — the admin path the owner needs for cross-profile cleanup.
+  The `request.jwt.claims` is still set so `is_maintainer()`/`has_profile_access()` resolve.
+  Restricted mode (default, and `privileged` absent) is unchanged: `SET ROLE authenticated`, RLS on.
+- ⚠️ This is gated only by possession of a privileged credential, which lives in a gitignored
+  secret file and is injected per-bundle (never committed). The unrestricted bundle ships a loud
+  warning header (prepended to SKILL.md at build time) and SKILL.md §7 now states the restricted
+  guarantees explicitly do **not** apply in this mode.
+
+### B. Non-maintainer self-write path (`ingest/self_write.py`)
+- A non-maintainer (e.g. Dea) calling `maintainer_ingest_*` gets `unauthorized`. The new module
+  inserts the user's OWN rows directly (`log_food`/`log_supplement`/`log_biomarker`); RLS
+  `has_profile_access` scopes the insert to self, so a non-maintainer can only write their own data.
+  REST handle via `lib.db.get_app_db_rest(config)` (supabase_client mode). Maintainer keeps the RPC path.
+
+### C. Strength write path for everyone (`ingest/self_write.log_strength`)
+- `strength_logs` (mig 063) had no ingest path. `log_strength(...)` inserts a set (load/sets/reps/RIR);
+  `performed_on` is GENERATED and never sent; `load_unit` is kg|lb|bodyweight (never 'plates').
+  Maintainer may target any family profile; a non-maintainer only their own (RLS). Reads filter
+  `voided_at IS NULL`. Driver-agnostic (DbRest / psycopg2 / supabase client). 5 unit tests; suite 288/0/9.
+
+### D. Per-person bundle build (`scripts/package_skill.py`) + self-test
+- `--person CONFIG [--unrestricted] [--out NAME]`: the leak guard runs on the BASE bundle (repo
+  hygiene unchanged), then the person's config — with `@secret:FILE#KEY` sentinels resolved from
+  gitignored secret files AT BUILD TIME — is injected POST-guard into the dist/ zip only. The
+  credential never reaches the guard scan or git. `--unrestricted` prepends the warning header.
+  Committed templates: `config/pc_unrestricted.config.example.json` (privileged) +
+  `config/dea_app.config.example.json` (supabase_client). Build runbook in SYSTEM.md §7.9.
+- `scripts/self_test.py` now verdicts correctly for a maintainer: family-wide scope is EXPECTED
+  (was falsely BLOCKED on "scope != 1 profile"); privileged mode asserts `current_user='postgres'`
+  + `is_maintainer()` and sees all profiles.
+
 ## v3.15.0 — strength_logs + per-item Viome flags + supplement dedup (2026-06-11)
 
 **A new training-log table, a fix for the "mushrooms ×5" brief smear, and a catalog cleanup.**

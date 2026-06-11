@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 064 applied (2026-06-11), skill v3.15.0.
+> state with migration 064 applied (2026-06-11), skill v3.16.0.
 
 ---
 
@@ -98,8 +98,9 @@ Maintainer-only RLS SELECT applies to `query_audit`, `wearable_sync_log`,
 
 | Mode | Use case | Mechanism |
 |---|---|---|
-| `direct_role` | PC / local / Cowork / Code | psycopg2 as `healthspan_app` against the pooler; skill injects `request.jwt.claims` (`{"sub":"<auth_user_id>","role":"authenticated"}`) at session start; read-only session; RLS as defence-in-depth |
-| `supabase_client` | Dea / mobile / web / Telegram | supabase-py signs in with `auth_email` + `auth_password`; the client carries the person's JWT automatically (`auth.uid()` → RLS scopes) |
+| `direct_role` | PC / local / Cowork / Code | psycopg2 as `healthspan_app` against the pooler; skill injects `request.jwt.claims` (`{"sub":"<auth_user_id>","role":"authenticated"}`) + `SET ROLE authenticated` at session start; read-only session; RLS as defence-in-depth |
+| `direct_role` + `privileged:true` | PC UNRESTRICTED maintainer bundle only (v3.16.0) | psycopg2 as **`postgres`**; sets the JWT claim but does **NOT** `SET ROLE authenticated`, so RLS is **bypassed** and DELETE/DDL across every profile is possible. Gated only by possession of the privileged credential (gitignored secret, injected per-bundle). ⚠️ The restricted guarantees below do not apply in this mode. |
+| `supabase_client` | Dea / mobile / web / Telegram | supabase-py signs in with `auth_email` + `auth_password`; the client carries the person's JWT automatically (`auth.uid()` → RLS scopes). Non-maintainer writes go through `ingest/self_write.py` (direct insert of own rows), not `maintainer_ingest_*`. |
 
 `whoop_tokens` is intentionally **default-deny** (service_role-only credential vault).
 
@@ -913,7 +914,7 @@ One paragraph per module: what it does, key public functions, and when to reach 
 
 #### lib/
 
-**db.py** — DB connection factory and profile resolution; reads the DSN from a shared `.db-config.json` (two Dropbox paths or `$HEALTHSPAN_DB_CONFIG`) and never logs it. `get_conn(readonly=False)` opens a raw psycopg2 connection for CLI tools; `resolve_profile(conn, who)` maps a display name ("PC") or UUID to a profile UUID (raises `LookupError` on miss/ambiguity, defaults to "PC"); `get_app_connection(config)` returns either a psycopg2 connection with `SET ROLE authenticated` + JWT claim (`direct_role` mode) or a fully signed-in supabase client (`supabase_client` mode) — never an anon client. Use it as the entry point for any direct-DB tool; psycopg2 is lazily imported so the supabase path has no psycopg2 dependency.
+**db.py** — DB connection factory and profile resolution; reads the DSN from a shared `.db-config.json` (two Dropbox paths or `$HEALTHSPAN_DB_CONFIG`) and never logs it. `get_conn(readonly=False)` opens a raw psycopg2 connection for CLI tools; `resolve_profile(conn, who)` maps a display name ("PC") or UUID to a profile UUID (raises `LookupError` on miss/ambiguity, defaults to "PC"); `get_app_connection(config)` returns either a psycopg2 connection with `SET ROLE authenticated` + JWT claim (`direct_role` mode) or a fully signed-in supabase client (`supabase_client` mode) — never an anon client. **`direct_role.privileged=true`** (v3.16.0) skips the `SET ROLE` so the connection keeps its `postgres` role (RLS bypassed, DELETE/DDL allowed) — the unrestricted maintainer bundle only; the JWT claim is still set so `is_maintainer()`/`has_profile_access()` resolve. `get_app_db_rest(config)` returns a `lib.db_rest.DbRest` carrying the person's JWT (supabase_client mode) for the self-write path. Use it as the entry point for any direct-DB tool; psycopg2 is lazily imported so the supabase path has no psycopg2 dependency.
 
 **db_rest.py** — httpx-based PostgREST client for cloud environments where native packages are unavailable (GH Actions, Claude Routines — no psycopg2). `sign_in(url, anon_key, email, password)` does a password-grant and returns a JWT; `DbRest(url, anon_key, jwt)` is a context manager with `.select/.insert/.update/.rpc` plus `.claim_inbox_item(item_id)`, a compare-and-swap that only flips rows where `status='eq.pending'` so concurrent Routine fires can't double-process. Reach for this whenever code runs in the cloud REST path rather than against a direct connection.
 
@@ -936,6 +937,8 @@ One paragraph per module: what it does, key public functions, and when to reach 
 **biomarker.py** — biomarker ingestion against the `metric_definitions` catalog; a thin wrapper over `contract.ingest_record` that adds a LOINC fallback. `ingest_biomarker_row(payload, conn, profile_id, method, attended)` resolves by metric name, falls back through `loinc_reference.loinc_code → metric_definitions.loinc_id` to recover the name, then delegates to the full contract pipeline; conflict key is `(profile_id, metric_definition_id, measured_at)`. Automated callers must pass `attended=False` to arm the unverified-value fail-safe (default is `True`).
 
 **supplement.py** — supplement intake logging with alias resolution and regimen auto-attachment. `ingest_supplement_row` resolves via `supplement_aliases` (score 1.0) or `supplements.name` (0.9), auto-looks-up the active regimen, gates and validates, then upserts on `(profile_id, supplement_id, taken_on, source)`; helpers `find_active_regimen`, `list_active_regimens`, `close_regimen`, and `run_interactive` (CLI menu). Valid sources `{manual, journal, skill, csv, photo}` are checked early; `taken_on` is GENERATED — an ON CONFLICT target but excluded from INSERT.
+
+**self_write.py** (v3.16.0) — direct self-write path for a NON-maintainer (whose `maintainer_ingest_*` call would 401) and the ONLY write path for `strength_logs`. `log_food`/`log_supplement`/`log_biomarker`/`log_strength(handle, profile_id, …)` insert the caller's OWN rows; RLS `has_profile_access` scopes the insert to self (a maintainer may also target a family profile). Driver-agnostic — duck-types `lib.db_rest.DbRest` (`.insert`, the App path), a psycopg2 connection (parameterised INSERT … RETURNING + commit), or a supabase Client. GENERATED columns (`food_logs.log_date`, `supplement_intake_logs.taken_on`, `strength_logs.performed_on`) are never sent. The REST handle comes from `lib.db.get_app_db_rest(config)` (supabase_client mode). Maintainer food/supp/bio logging keeps the staging RPC path.
 
 **whoop_sync.py** — pulls WHOOP API data (workouts, cycles/recovery, sleeps, body measurements) and upserts into `whoop_*` tables; uses stdlib `urllib` only (no httpx/requests). `sync_profile(conn, profile_id, since_iso, to_iso, env)` runs all four per-table syncs (each under a `wearable_sync_log` run with SAVEPOINT isolation); `refresh_recent(conn, hours, profiles, env)` is the mini-sync the morning brief calls (and exists specifically because WHOOP emits no cycle.updated webhook, so final `day_strain` must be re-pulled); `_map_cycle/_map_sleep/_map_workout` carry the migration-045 fields; `_resolve_access_token` prefers DB `whoop_tokens` then falls back to the `.env` refresh token. CLI `--backfill` pulls from 2020-01-01. All conflict keys use `(profile_id, whoop_id)`; zone fields are written only when `total>0` so screenshot-sourced zones aren't overwritten with zeroes.
 
@@ -1378,7 +1381,42 @@ analysis, `lib/views.py`, `daily_health_summary`, ad-hoc SKILL queries) filters
 `voided_at IS NULL`. **Un-void = re-log**: re-ingesting the same conflict key
 (supplement: profile+supplement+day+source; biomarker: profile+metric+measured_at) clears the
 void automatically. `healthspan_app` holds no DELETE grants (revoked in mig 060); there is
-nothing to "hard-delete" outside the postgres role.
+nothing to "hard-delete" outside the postgres role. `strength_logs` (mig 063) follows the same
+pattern: `SELECT maintainer_void_strength('<row-uuid>', '…')` (no upsert key, so no un-void path).
+
+### 7.9 Building a Per-Person Skill Bundle (v3.16.0)
+
+Two bundle variants ship from one packager. The **leak guard always runs on the base bundle**
+(repo hygiene); the per-person config is injected **post-guard** into the `dist/` zip only —
+credentials come from gitignored `*.secret.txt` files resolved AT BUILD TIME (`@secret:FILE#KEY`
+sentinels), so they never reach the guard scan or git.
+
+**Restricted (Dea / App, supabase_client):**
+```bash
+# config/dea_app.secret.txt (gitignored), one per line:
+#   auth_email=dea@chitalkar.com
+#   auth_password=<Dea's Supabase auth password>
+#   supabase_anon_key=<project publishable anon key>
+python3 scripts/package_skill.py v3.16.0 \
+  --person config/dea_app.config.example.json \
+  --out healthspan-Dea-v3.16.0.skill
+```
+
+**Unrestricted (PC maintainer, privileged — bypasses RLS, DELETE/DDL on every profile):**
+```bash
+# config/pc_unrestricted.secret.txt (gitignored), ONE line — the privileged postgres URL:
+#   postgresql://postgres:<pwd>@aws-1-<region>.pooler.supabase.com:5432/postgres
+python3 scripts/package_skill.py v3.16.0 \
+  --person config/pc_unrestricted.config.example.json --unrestricted \
+  --out healthspan-PC-MAINTAINER-UNRESTRICTED-v3.16.0.skill
+```
+`--unrestricted` prepends the ⚠️ warning header to the bundle's SKILL.md. **Never share, sync, or
+commit an unrestricted bundle or its secret** — the credential bypasses RLS for the whole DB.
+
+**Verify each bundle** (after install, or locally against the assembled config):
+`python3 scripts/self_test.py <config>` →
+- Dea: `is_maintainer=False`, `distinct_profiles=1` (herself only), READY.
+- PC unrestricted: `current_user=postgres`, `is_maintainer=True`, sees all profiles, READY (UNRESTRICTED).
 
 ---
 

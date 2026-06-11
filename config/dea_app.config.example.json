@@ -1,0 +1,19 @@
+{
+  "_comment": "Dea App bundle (v3.16.0), supabase_client mode — RESTRICTED: RLS scopes Dea to her own profile; non-maintainer self-write path (ingest/self_write.py). Build: python scripts/package_skill.py v3.16.0 --person config/dea_app.config.example.json --out healthspan-Dea-v3.16.0.skill",
+  "_secret_note": "auth_email / auth_password / supabase_anon_key are read AT BUILD TIME from config/dea_app.secret.txt (gitignored), one per line as `auth_email=…`, `auth_password=…`, `supabase_anon_key=…`. The anon (publishable) key is RLS-gated and useless without a session, but is still injected per-bundle, not committed.",
+
+  "profile_id": "3eed5503-a26f-4b88-bb76-075208fa5de3",
+  "display_name": "Dea",
+  "is_owner": false,
+  "is_minor": true,
+
+  "connection": {
+    "mode": "supabase_client",
+    "supabase_client": {
+      "supabase_url": "https://dsnydskkjwziynwmzfkh.supabase.co",
+      "supabase_anon_key": "@secret:config/dea_app.secret.txt#supabase_anon_key",
+      "auth_email": "@secret:config/dea_app.secret.txt#auth_email",
+      "auth_password": "@secret:config/dea_app.secret.txt#auth_password"
+    }
+  }
+}

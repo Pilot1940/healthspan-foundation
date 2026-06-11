@@ -45,6 +45,27 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-11)
 
+- **Two bundle variants + their write paths SHIPPED (v3.16.0, 2026-06-11).**
+  (A) **Unrestricted maintainer connection (`lib/db.py`):** `connection.direct_role.privileged=true`
+  keeps the `postgres` role (no `SET ROLE authenticated`) → RLS BYPASSED, DELETE/DDL on every
+  profile. Still sets `request.jwt.claims` so `is_maintainer()`/`has_profile_access()` resolve.
+  Restricted mode unchanged. ⚠️ Gated only by the privileged credential (gitignored secret, injected
+  per-bundle, never committed).
+  (B) **Non-maintainer self-write (`ingest/self_write.py`):** Dea's `maintainer_ingest_*` would 401,
+  so `log_food`/`log_supplement`/`log_biomarker` insert her OWN rows directly (RLS scopes to self).
+  REST handle via `lib.db.get_app_db_rest(config)`. Maintainer keeps the staging RPC path.
+  (C) **Strength write (`self_write.log_strength`, everyone):** the only write path for `strength_logs`;
+  `performed_on` GENERATED (never sent); `load_unit` kg|lb|bodyweight; reads filter `voided_at IS NULL`.
+  (D) **Per-person bundles (`scripts/package_skill.py --person CFG [--unrestricted] [--out NAME]`):**
+  leak guard runs on the BASE bundle (repo hygiene intact); the person config — `@secret:FILE#KEY`
+  sentinels resolved from gitignored secret files at build time — is injected POST-guard into the
+  dist/ zip ONLY. Committed templates: `config/pc_unrestricted.config.example.json`,
+  `config/dea_app.config.example.json`. self_test verdicts a maintainer correctly (family-wide scope
+  expected; privileged asserts `current_user=postgres`). Suite 288/0/9. **Build runbook: SYSTEM.md §7.9.**
+  ⚠️ **Bundles NOT YET BUILT** — need PC to drop the secrets: `config/pc_unrestricted.secret.txt`
+  (privileged postgres URL, one line) and `config/dea_app.secret.txt` (`auth_email=`/`auth_password=`/
+  `supabase_anon_key=`). Then run the two §7.9 commands. Tooling verified end-to-end with dummy creds.
+
 - **strength_logs (mig 063) + per-item Viome flags + supplement dedup SHIPPED (v3.15.0, 2026-06-11).**
   (1) **strength_logs (mig 063):** new table for resistance training (`exercise`, `modality`,
   `load_value`/`load_unit`, `sets`, `reps`, `rir`, `device_specific`, `performed_on` GENERATED UTC

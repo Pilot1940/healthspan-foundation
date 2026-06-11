@@ -10,10 +10,79 @@ person-specific context file slips into the staging tree.
 Usage:  python scripts/package_skill.py [version]   # default version 'v3'
 Output: dist/healthspan-<version>.skill  (+ a printed manifest)
 """
-import os, re, sys, shutil, subprocess, zipfile
+import os, re, sys, json, shutil, subprocess, zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAME = "healthspan"
+
+# Prepended to SKILL.md ONLY in an unrestricted (privileged) bundle — never committed to
+# the shared SKILL.md (it would be false in a restricted bundle). Injected post-guard.
+_UNRESTRICTED_HEADER = (
+    "> # ⚠️ UNRESTRICTED MAINTAINER BUNDLE\n"
+    "> This bundle's config carries a **privileged `postgres` credential**. The connection\n"
+    "> **BYPASSES RLS** and can **DELETE / TRUNCATE / DDL on EVERY profile** — not just the\n"
+    "> owner's. The §7 \"role cannot DELETE/DDL\" / \"cannot cross-profile\" guarantees DO NOT\n"
+    "> apply here. **Never share, sync, copy, commit, or paste this bundle or its config.**\n"
+    "> It is for the maintainer's own machine only.\n\n"
+)
+
+
+def _resolve_secrets(obj):
+    """Recursively resolve `@secret:PATH` / `@secret:PATH#KEY` string sentinels by reading
+    the named secret file AT BUILD TIME. `#KEY` reads the value of a `KEY=…` or `KEY: …`
+    line; no `#` reads the whole file (stripped). The packager — not a human — touches the
+    credential, and only when assembling a person bundle into the gitignored dist/ zip."""
+    if isinstance(obj, dict):
+        return {k: _resolve_secrets(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_secrets(v) for v in obj]
+    if isinstance(obj, str) and obj.startswith("@secret:"):
+        spec = obj[len("@secret:"):]
+        path, _, key = spec.partition("#")
+        full = path if os.path.isabs(path) else os.path.join(ROOT, path)
+        if not os.path.isfile(full):
+            raise FileNotFoundError(
+                f"secret file not found for sentinel {obj!r}: {full} — "
+                "create it (gitignored) with the credential before building this bundle"
+            )
+        text = open(full, encoding="utf-8").read()
+        if not key:
+            return text.strip()
+        for line in text.splitlines():
+            line = line.strip()
+            for sep in ("=", ":"):
+                if line.startswith(key + sep):
+                    return line[len(key) + 1:].strip()
+        raise KeyError(f"key {key!r} not found in secret file {path}")
+    return obj
+
+
+def _inject_person(stage, person_cfg_path, unrestricted):
+    """POST-GUARD: assemble the person's config (resolving @secret sentinels) and write it +
+    their context into the staged tree, which is then zipped into dist/ (gitignored). The
+    leak guard has ALREADY run on the base bundle; the credential never reaches the guard
+    scan and never reaches git. This is the owner's personal install artifact."""
+    with open(person_cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg = _resolve_secrets(cfg)
+    slug = str(cfg.get("display_name", "user")).strip().lower().split()[0]
+    os.makedirs(os.path.join(stage, "config"), exist_ok=True)
+    cfg_rel = os.path.join("config", f"{slug}.config.json")
+    with open(os.path.join(stage, cfg_rel), "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    injected = [cfg_rel]
+    ctx_src = os.path.join(ROOT, "context", f"{slug}.context.md")
+    if os.path.isfile(ctx_src):
+        os.makedirs(os.path.join(stage, "context"), exist_ok=True)
+        ctx_rel = os.path.join("context", f"{slug}.context.md")
+        shutil.copy2(ctx_src, os.path.join(stage, ctx_rel))
+        injected.append(ctx_rel)
+    if unrestricted:
+        skill_md = os.path.join(stage, "SKILL.md")
+        body = open(skill_md, encoding="utf-8").read()
+        with open(skill_md, "w", encoding="utf-8") as f:
+            f.write(_UNRESTRICTED_HEADER + body)
+    return injected
 
 
 def _refresh_schema_map():
@@ -124,11 +193,33 @@ def _leak_guard(stage):
     return leaks
 
 
+def _parse_args(argv):
+    version, person, out, unrestricted = "v3", None, None, False
+    rest, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--person":
+            person = argv[i + 1]; i += 2
+        elif a == "--out":
+            out = argv[i + 1]; i += 2
+        elif a == "--unrestricted":
+            unrestricted = True; i += 1
+        else:
+            rest.append(a); i += 1
+    if rest:
+        version = rest[0]
+    return version, person, out, unrestricted
+
+
 def main():
-    version = sys.argv[1] if len(sys.argv) > 1 else "v3"
+    version, person_cfg, out_name, unrestricted = _parse_args(sys.argv[1:])
+    if unrestricted and not person_cfg:
+        sys.exit("--unrestricted requires --person CONFIG (the privileged config to inject)")
     _refresh_schema_map()          # ship a current schema map in every bundle
     stage = _stage(version)
 
+    # Leak guard runs on the BASE bundle (no person config/context staged yet). This is the
+    # repo-hygiene gate — it must always pass and is never weakened for a person bundle.
     leaks = _leak_guard(stage)
     if leaks:
         shutil.rmtree(stage)
@@ -136,8 +227,18 @@ def main():
         for l in leaks:
             print("  -", l)
         sys.exit(1)
+    print("OK leak guard: no secrets or person-specific context files staged")
 
-    out = os.path.join(ROOT, "dist", f"{NAME}-{version}.skill")
+    # POST-GUARD person injection (optional): the assembled config (with resolved secrets)
+    # + context land ONLY in the staged tree we are about to zip into dist/ (gitignored).
+    # They are never re-scanned and never committed. This is the owner's install artifact.
+    injected = []
+    if person_cfg:
+        injected = _inject_person(stage, person_cfg, unrestricted)
+        print(f"OK injected person bundle ({'UNRESTRICTED · ' if unrestricted else ''}"
+              f"post-guard, dist-only): " + ", ".join(injected))
+
+    out = os.path.join(ROOT, "dist", out_name or f"{NAME}-{version}.skill")
     if os.path.exists(out):
         os.remove(out)
     n = 0
@@ -149,8 +250,9 @@ def main():
                 z.write(full, arc)
                 n += 1
     size = os.path.getsize(out)
-    print(f"OK leak guard: no secrets or person-specific context files staged")
     print(f"packaged {n} files → {out}  ({size:,} bytes)")
+    if injected:
+        print("  ⚠️ this bundle carries a per-person credential — do not share or commit it")
     print("manifest (top level):")
     for entry in sorted(os.listdir(stage)):
         print("  ", entry)

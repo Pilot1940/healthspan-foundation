@@ -77,6 +77,7 @@ def _pg(conn, sql):
 
 def _probe_psycopg2(conn) -> dict:
     out = {}
+    out["current_user"] = _pg(conn, "SELECT current_user")[0]
     out["whoop_cycles"] = _pg(conn, "SELECT count(*) FROM whoop_cycles")[0]
     out["distinct_profiles"] = _pg(conn, "SELECT count(DISTINCT profile_id) FROM whoop_cycles")[0]
     cur = conn.cursor()
@@ -126,6 +127,7 @@ def main() -> int:
     cfg_path, cfg_source = _discover_config()
     cfg = dbm.load_config(cfg_path) if cfg_path else None
     mode = (cfg or {}).get("connection", {}).get("mode")
+    privileged = bool((cfg or {}).get("connection", {}).get("direct_role", {}).get("privileged"))
 
     # ===================== STEP 0 — WHERE AM I RUNNING =====================
     print("\n[0] WHERE AM I RUNNING")
@@ -135,7 +137,10 @@ def main() -> int:
         "supabase_client": "HTTPS/PostgREST — App-compatible path. If this connects, App "
                            "egress is PROVEN.",
     }.get(mode, "unknown mode")
-    print(f"    connection mode : {mode}  →  {mode_meaning}")
+    if privileged:
+        mode_meaning = ("psycopg2/local UNRESTRICTED — keeps the postgres role: RLS BYPASSED, "
+                        "DELETE/DDL on every profile. The maintainer's own admin bundle.")
+    print(f"    connection mode : {mode}{' (privileged)' if privileged else ''}  →  {mode_meaning}")
     git = _git_uptree()
     fs_context = os.path.isdir(os.path.join(ROOT, "context"))
     print(f"    config source   : {cfg_source}" + (f"  ({cfg_path})" if cfg_path else ""))
@@ -201,11 +206,28 @@ def main() -> int:
     try:
         handle, driver = dbm.get_app_connection(cfg)
         probe = _probe_psycopg2(handle) if driver == "psycopg2" else _probe_supabase(handle)
-        scoped_ok = (probe["distinct_profiles"] == 1 and probe["pids"] == [cfg["profile_id"]])
         print(f"    connected=True  driver={driver}  whoop_cycles={probe['whoop_cycles']}")
-        print(f"    RLS scope: distinct_profiles={probe['distinct_profiles']}  pids={probe['pids']}  "
-              f"== my_profile? {scoped_ok}")
-        print(f"    maintainer: is_maintainer()={probe['is_maintainer']}")
+        if privileged:
+            # Unrestricted: the CORRECT state is role=postgres + maintainer + sees ALL profiles.
+            cu = probe.get("current_user")
+            scoped_ok = (cu == "postgres" and probe["is_maintainer"] is True)
+            print(f"    UNRESTRICTED: current_user={cu}  (expect 'postgres', RLS bypassed)")
+            print(f"    cross-profile: distinct_profiles={probe['distinct_profiles']}  "
+                  f"pids={probe['pids']}  (sees ALL profiles — expected)")
+            print(f"    maintainer: is_maintainer()={probe['is_maintainer']}  "
+                  f"→ privileged-mode OK? {scoped_ok}")
+        elif probe["is_maintainer"] is True:
+            # A maintainer legitimately sees self + managed family via has_profile_access —
+            # >1 profile is EXPECTED; "scoped to exactly self" is only the non-maintainer rule.
+            scoped_ok = cfg["profile_id"] in probe["pids"]
+            print(f"    RLS scope (maintainer): distinct_profiles={probe['distinct_profiles']}  "
+                  f"pids={probe['pids']}  self_visible? {scoped_ok}  (family-wide is expected)")
+            print(f"    maintainer: is_maintainer()={probe['is_maintainer']}")
+        else:
+            scoped_ok = (probe["distinct_profiles"] == 1 and probe["pids"] == [cfg["profile_id"]])
+            print(f"    RLS scope: distinct_profiles={probe['distinct_profiles']}  pids={probe['pids']}  "
+                  f"== my_profile? {scoped_ok}")
+            print(f"    maintainer: is_maintainer()={probe['is_maintainer']}")
         if driver == "psycopg2":
             handle.rollback(); handle.close()
     except Exception as e:
@@ -252,12 +274,34 @@ def main() -> int:
 
     # ===================== STEP 8 — VERDICT =====================
     print("\n[8] VERDICT")
-    ready = bool(probe and probe["distinct_profiles"] == 1 and probe["pids"] == [cfg["profile_id"]])
+    if privileged:
+        ready = bool(probe and probe.get("current_user") == "postgres"
+                     and probe["is_maintainer"] is True)
+        if ready:
+            print(f"    READY — UNRESTRICTED (postgres role, maintainer, RLS bypassed) [{rt_tag}]")
+            print(DIV)
+            return 0
+        blocker = ("no connection" if not probe
+                   else f"privileged check failed (current_user={probe.get('current_user')}, "
+                        f"is_maintainer={probe['is_maintainer']})")
+        print(f"    BLOCKED — {blocker}  [{rt_tag}]")
+        print(DIV)
+        return 1
+    if probe and probe["is_maintainer"] is True:
+        # maintainer: READY when connected and own profile is visible (family-wide expected)
+        ready = cfg["profile_id"] in probe["pids"]
+        tag = "READY (maintainer — family-wide scope)"
+    else:
+        ready = bool(probe and probe["distinct_profiles"] == 1
+                     and probe["pids"] == [cfg["profile_id"]])
+        tag = "READY"
     if ready:
-        print(f"    READY ({rt_tag})")
+        print(f"    {tag} ({rt_tag})")
         print(DIV)
         return 0
-    blocker = "no Supabase egress / connection failed" if not probe else "RLS scope not 1==my_profile"
+    blocker = ("no Supabase egress / connection failed" if not probe
+               else "own profile not visible" if probe["is_maintainer"] is True
+               else "RLS scope not 1==my_profile")
     print(f"    BLOCKED — {blocker}  [{rt_tag}]")
     print(DIV)
     return 1
