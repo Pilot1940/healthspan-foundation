@@ -45,6 +45,19 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-11)
 
+- **Self-serve WHOOP reconnect from Telegram SHIPPED (v3.18.0, 2026-06-11).** Fixes the silent
+  token-death failure mode. (a) `ingest/whoop_oauth.py` was missing the `offline` scope → re-auth
+  yielded no refresh token; **fixed `e83de0b`**. (b) **mig 065** `whoop_oauth_codes` (one-time
+  expiring tickets — the ticket, not raw profile_id, in the URL; RLS maintainer-only; config
+  `whoop.oauth_ticket_ttl_min`=30 / `whoop.reauth_alert_debounce_hours`=24). (c) **whoop-webhook**:
+  on `getValidAccessToken` "re-auth needed", sends a debounced "⚠️ reconnect" button to the chat.
+  (d) **telegram-webhook**: `/whoop` → on-demand reconnect button. (e) **whoop-oauth**: `?t=<ticket>`
+  → consent → consume ticket → store → "✅ reconnected" Telegram confirm. Helpers in `_shared/whoop.ts`
+  (`mintOAuthTicket`/`peekTicket`/`consumeTicket`/`reconnectButton`/`sendReconnectPrompt`/`tgSend`/
+  `activeChatId`). **All 3 functions deployed.** ⚠️ GATING MANUAL STEP: PC must register
+  `…/functions/v1/whoop-oauth` as a redirect URI in the WHOOP dashboard before the live tap works
+  (also self-fixes Dea then). See [[whoop-token-reauth-pending]].
+
 - **Daily brief shows the training plan + adherence SHIPPED (v3.17.0, 2026-06-11).**
   `sprints.goals` is now an OBJECT — `{block_goals[], weekly_plan{<weekday>:{sessions,intensity,
   hard?,recovery?}}, rules[], adherence_log{<date>:{gym,beach,pool,hike,massage}}}` (legacy rows

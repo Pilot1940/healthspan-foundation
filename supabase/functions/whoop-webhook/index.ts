@@ -10,7 +10,7 @@
 // Deploy: supabase functions deploy whoop-webhook --no-verify-jwt
 // Register URL in WHOOP dashboard:
 //   https://dsnydskkjwziynwmzfkh.supabase.co/functions/v1/whoop-webhook
-import { getValidAccessToken, whoopGet, svc } from "../_shared/whoop.ts";
+import { getValidAccessToken, whoopGet, svc, sendReconnectPrompt } from "../_shared/whoop.ts";
 
 const enc = new TextEncoder();
 const b64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)));
@@ -547,6 +547,16 @@ Deno.serve(async (req) => {
     if (logId) {
       await db.from("wearable_sync_log").update({ status: "failed", records_failed: 1, completed_at: new Date().toISOString() }).eq("id", logId);
       await db.from("wearable_sync_errors").insert({ sync_log_id: logId, record_ref: `${type}/${id}`, error_code: "webhook", error_message: msg });
+    }
+    // Dead-token chain → tell the user (debounced) with a one-tap reconnect button, instead
+    // of failing silently behind a recovery number that still looks current (the 2026-06-11
+    // incident). getValidAccessToken throws "… re-auth needed" when the refresh token is dead.
+    if (/re-auth needed/.test(msg) && typeof profileId === "string") {
+      const alertTask = sendReconnectPrompt(
+        db, profileId,
+        "⚠️ WHOOP disconnected — I can't sync your data until you reconnect. Tap below (takes 10s).",
+      ).catch(() => {});
+      if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(alertTask); else await alertTask;
     }
     return new Response(`error: ${msg}`, { status: 500 });
   }

@@ -109,3 +109,109 @@ export async function whoopGet(accessToken: string, path: string): Promise<any> 
   if (!r.ok) throw new Error(`WHOOP GET ${path} ${r.status}: ${txt.slice(0, 200)}`);
   return JSON.parse(txt);
 }
+
+// ── Telegram re-auth: one-time tickets (whoop_oauth_codes, mig 065) ──────────────
+// The ticket — not the raw profile_id — travels in the reconnect URL, so a shared
+// link can't attach a stranger's WHOOP to a profile.
+
+const SELF_BASE = () => Deno.env.get("SUPABASE_URL")!;
+
+async function cfgNum(db: SupabaseClient, key: string, fallback: number): Promise<number> {
+  const { data } = await db.from("system_config").select("value").eq("key", key).eq("is_active", true).maybeSingle();
+  const n = Number(data?.value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** Mint a single-use, expiring reconnect ticket for a profile. Returns the ticket id. */
+export async function mintOAuthTicket(db: SupabaseClient, profileId: string): Promise<string> {
+  const ttlMin = await cfgNum(db, "whoop.oauth_ticket_ttl_min", 30);
+  const expires = new Date(Date.now() + ttlMin * 60_000).toISOString();
+  const { data, error } = await db
+    .from("whoop_oauth_codes")
+    .insert({ profile_id: profileId, expires_at: expires })
+    .select("code")
+    .single();
+  if (error || !data) throw new Error(`mintOAuthTicket: ${error?.message ?? "no row"}`);
+  return data.code as string;
+}
+
+/** Resolve a ticket → profile_id WITHOUT consuming it (entry step). null if invalid/expired/used. */
+export async function peekTicket(db: SupabaseClient, code: string): Promise<string | null> {
+  const { data } = await db
+    .from("whoop_oauth_codes")
+    .select("profile_id, used_at, expires_at")
+    .eq("code", code)
+    .maybeSingle();
+  if (!data || data.used_at || new Date(data.expires_at) < new Date()) return null;
+  return data.profile_id as string;
+}
+
+/** Consume a ticket ONCE (callback step): marks used, returns profile_id, or null if already spent/expired. */
+export async function consumeTicket(db: SupabaseClient, code: string): Promise<string | null> {
+  // Atomic single-use: only flip rows still unused + unexpired.
+  const { data } = await db
+    .from("whoop_oauth_codes")
+    .update({ used_at: new Date().toISOString() })
+    .eq("code", code)
+    .is("used_at", null)
+    .gt("expires_at", new Date().toISOString())
+    .select("profile_id");
+  return data && data.length ? (data[0].profile_id as string) : null;
+}
+
+/** Has this profile been alerted (ticket minted) within the debounce window? */
+export async function reauthAlertedRecently(db: SupabaseClient, profileId: string): Promise<boolean> {
+  const hours = await cfgNum(db, "whoop.reauth_alert_debounce_hours", 24);
+  const cutoff = new Date(Date.now() - hours * 3_600_000).toISOString();
+  const { data } = await db
+    .from("whoop_oauth_codes")
+    .select("code")
+    .eq("profile_id", profileId)
+    .gt("created_at", cutoff)
+    .limit(1);
+  return !!(data && data.length);
+}
+
+/** Inline keyboard with a "Reconnect WHOOP" URL button → the whoop-oauth function. */
+export function reconnectButton(ticket: string) {
+  return {
+    inline_keyboard: [[{
+      text: "🔗 Reconnect WHOOP",
+      url: `${SELF_BASE()}/functions/v1/whoop-oauth?t=${ticket}`,
+    }]],
+  };
+}
+
+/** Look up a profile's ACTIVE Telegram chat id (null if none). */
+export async function activeChatId(db: SupabaseClient, profileId: string): Promise<number | null> {
+  const { data } = await db
+    .from("telegram_identities")
+    .select("chat_id")
+    .eq("profile_id", profileId)
+    .eq("status", "active")
+    .maybeSingle();
+  return data?.chat_id ?? null;
+}
+
+/** Send a Telegram message (optionally with an inline keyboard). Best-effort. */
+export async function tgSend(chatId: number, text: string, replyMarkup?: unknown): Promise<void> {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
+  const body: Record<string, unknown> = { chat_id: chatId, text };
+  if (replyMarkup) body.reply_markup = replyMarkup;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
+/** Mint a ticket + DM the profile's chat a Reconnect button. `force` bypasses the debounce.
+ *  Returns true if a message was sent. */
+export async function sendReconnectPrompt(
+  db: SupabaseClient, profileId: string, lead: string, force = false,
+): Promise<boolean> {
+  if (!force && await reauthAlertedRecently(db, profileId)) return false;
+  const chatId = await activeChatId(db, profileId);
+  if (!chatId) return false;
+  const ticket = await mintOAuthTicket(db, profileId);
+  await tgSend(chatId, lead, reconnectButton(ticket));
+  return true;
+}

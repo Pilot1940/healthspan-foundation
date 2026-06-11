@@ -1,5 +1,28 @@
 # HealthSpan Skill — Changelog
 
+## v3.18.0 — self-serve WHOOP reconnect from Telegram (2026-06-11)
+
+**Dead WHOOP token? Tap a button in Telegram, log into WHOOP, done — no CLI, works for Dea too.**
+
+- **Root-cause fix:** `ingest/whoop_oauth.py` was missing the `offline` scope, so a re-auth returned
+  only a 1h access token (no refresh token). Added `offline` (commit `e83de0b`). The Deno `SCOPES`
+  already had it.
+- **Telegram reconnect flow (mig 065 + 3 edge functions):**
+  - `whoop_oauth_codes` — one-time, expiring tickets (the ticket, not the raw `profile_id`, travels
+    in the URL, so a shared link can't attach a stranger's WHOOP to a profile). RLS maintainer-only;
+    edge functions use service_role. Config `whoop.oauth_ticket_ttl_min` (30), `whoop.reauth_alert_debounce_hours` (24).
+  - **whoop-webhook:** when the refresh chain is dead (`getValidAccessToken` throws "re-auth needed"),
+    sends a **debounced** "⚠️ WHOOP disconnected — tap to reconnect" button to the user's chat — instead
+    of failing silently all day behind a stale-but-fresh-looking recovery number (the 2026-06-11 incident).
+  - **telegram-webhook:** `/whoop` (or "reconnect whoop") replies on-demand with a reconnect button.
+  - **whoop-oauth:** `?t=<ticket>` entry → peek → WHOOP consent → callback consumes the ticket
+    (single-use) → exchange → store tokens → "✅ WHOOP reconnected" Telegram confirm. Manual
+    `?profile_id=` path kept.
+  - Shared ticket/keyboard/Telegram helpers in `_shared/whoop.ts`. Ticket single-use + debounce
+    verified live. All three functions deployed.
+- ⚠️ One manual step gates the live flow: register `…/functions/v1/whoop-oauth` as a redirect URI in
+  the WHOOP developer dashboard (PC). Then `/whoop` → tap → consent works end-to-end (and fixes Dea).
+
 ## v3.17.1 — training-plan follow-ups: rule-sourced directive + Telegram adherence ticks (2026-06-11)
 
 **Two loose ends from v3.17.0 closed.**

@@ -18,6 +18,7 @@
 //
 // Deploy: supabase functions deploy telegram-webhook --no-verify-jwt
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { sendReconnectPrompt } from "../_shared/whoop.ts";
 
 // ── helpers (exported for unit tests) ─────────────────────────────────────────
 
@@ -404,6 +405,18 @@ Deno.serve(async (req) => {
     const body = (messageText ?? "").trim();
     if (!body) {
       // Non-text payload with no caption (sticker, location, etc.) — nothing to do.
+      await db.from("telegram_processed_updates").insert({ update_id: updateId });
+      return new Response("ok", { status: 200 });
+    }
+
+    // /whoop (or "reconnect whoop") → reply with a one-tap WHOOP reconnect button. On-demand,
+    // so it bypasses the dead-token-alert debounce (force=true). Intercepted before the
+    // enqueue path so it never reaches the food/supplement drain.
+    if (/^\/whoop\b/i.test(body) || /^reconnect\s+whoop\b/i.test(body)) {
+      const sent = await sendReconnectPrompt(
+        db, profileId, "Tap to reconnect your WHOOP — opens a quick WHOOP login, then you're done.", true,
+      );
+      if (!sent) await telegramSend(chatId, "Couldn't start the WHOOP reconnect — try again shortly.");
       await db.from("telegram_processed_updates").insert({ update_id: updateId });
       return new Response("ok", { status: 200 });
     }
