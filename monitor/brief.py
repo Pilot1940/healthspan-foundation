@@ -527,16 +527,16 @@ def compose_brief(
     ver = (_os.environ.get("GITHUB_SHA") or "")[:7] or "local"
     msg = f"{msg}\n\n—v {today} · {ver}"
 
-    # Adherence ticks: an inline keyboard on the brief lets the user check off today's
-    # activities from Telegram (the webhook persists each tap into goals.adherence_log).
+    # One "📝 Update today" button (two-level menu in the telegram-webhook: training toggles +
+    # supplement slots → individual pills). Shown whenever there's something to update — an
+    # active sprint and/or active supplement regimens. Keeps the brief uncluttered.
     reply_markup = None
-    if sprint and sprint.get("id"):
-        try:
-            done_today = (_sprints.normalize_goals(sprint.get("goals"))
-                          .get("adherence_log", {}).get(local_today) or {})
-            reply_markup = _sprints.adherence_keyboard(sprint["id"], local_today, done_today)
-        except Exception:
-            reply_markup = None
+    try:
+        has_supps = bool(supps)
+        if (sprint and sprint.get("id")) or has_supps:
+            reply_markup = _sprints.update_button(local_today)
+    except Exception:
+        reply_markup = None
 
     from monitor.inbox_drain import telegram_send
     telegram_send(token, chat_id, msg, reply_markup=reply_markup)

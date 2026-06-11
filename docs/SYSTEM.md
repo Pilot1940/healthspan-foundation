@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 065 applied (2026-06-11), skill v3.18.0.
+> state with migration 065 applied (2026-06-11), skill v3.19.0.
 
 ---
 
@@ -126,12 +126,15 @@ the per-function "additional secrets" lists below).
   brief request and composes briefs inline (LLM-routed text, 2026-06-08). Replies to a
   clarify prompt re-queue the original item with `[clarification: …]` (staged-or-logged
   supersede, migs 049/054/055). `is_minor` changes ack/push wording.
-- **Sprint adherence ticks (v8, 2026-06-11):** an additive `callback_query` branch handles taps
-  on the daily brief's inline keyboard. `callback_data` = `tick:<sprintId>:<date>:<activity>`; the
-  handler verifies the tapping chat is an active identity that OWNS the sprint (service_role
-  bypasses RLS, so ownership is checked explicitly), sets `goals.adherence_log[date][activity]=true`,
-  answers the callback toast, and refreshes the keyboard face. The message-ingestion path is
-  untouched. ⚠️ requires the bot's `allowed_updates` to include `callback_query`.
+- **"📝 Update today" two-level menu (v9, 2026-06-11):** the brief carries ONE button
+  (`menu:<date>`); the `callback_query` handler is a small router (all rendered server-side from
+  fresh data each tap): `menu:`→ top menu (training toggles `tick:<sprintId>:<date>:<activity>` +
+  supplement slot buttons `slot:<date>:<slot>`); `slot:`→ that slot's individual pills
+  `supp:<date>:<suppId>`; `supp:`→ toggle the supplement for today (append-only: untake voids today's
+  non-voided intakes, take un-voids/inserts a `telegram` row) + re-render; `back:`/`close:`→ up/collapse.
+  Training `tick:` sets `goals.adherence_log[date][activity]`. Every op is scoped to the tapping chat's
+  own profile (active identity + explicit profile_id; service_role bypasses RLS). The message-ingestion
+  path is untouched. ⚠️ requires the bot's `allowed_updates` to include `callback_query`.
 - **`/whoop` command (v3.18.0):** an active identity sending `/whoop` (or "reconnect whoop") gets a
   one-tap WHOOP reconnect button (`sendReconnectPrompt`, force-past-debounce) — intercepted before the
   drain enqueue. See `whoop-oauth` for the rest of the flow.
@@ -943,7 +946,7 @@ One paragraph per module: what it does, key public functions, and when to reach 
 
 **views.py** — centralised catalog of all named reporting queries; every emitter (reports, dashboard, exports) must go through it so SQL is never duplicated. `list_views()` returns catalog metadata; `run_view(conn, name, profile_id, **params)` runs an RLS-scoped named view and returns `{name, columns, rows, chart_hint, description, summary?}`, logging each run to `query_audit` inside a savepoint (a read-only connection or RLS failure never breaks the read path). Named views include `v_recovery_30d`, `v_sleep_debt_30d`, `v_workout_zone_summary`, `v_supplement_onoff`, `v_india_vs_travel`, `v_biomarker_timeline`, `abnormal_labs`, `vo2_status`, `hr_drop_compare`, `sprints_status`. NULL recovery (no sleep that cycle) is filtered, never averaged as 0. Use it for any catalog read.
 
-**sprints.py** (v3.17.0) — training-sprint plan + adherence from `sprints.goals` jsonb (pure logic, no DB except `mark_done`). `normalize_goals(goals)` reads both the v2 object and the legacy flat array; `weekday_name`, `todays_plan`, `autoreg(recovery_pct, green_min, yellow_min)` (WHOOP bands, defaults 67/34, overridable), and `render_training_section(sprint, today_iso, recovery_pct, …)` build the brief's 🏋️ Training block (today's sessions + intensity, hard/recovery flag, autoregulated directive, adherence ticks). `mark_done(db, sprint_id, date, activity)` persists a Telegram tick into `goals.adherence_log` (REST read-modify-write or psycopg2 `jsonb_set`; no DDL — sprints has UPDATE + RLS). `monitor/brief.py` calls it per profile (multi-tenant).
+**sprints.py** (v3.17.0) — training-sprint plan + adherence from `sprints.goals` jsonb (pure logic, no DB except `mark_done`). `normalize_goals(goals)` reads both the v2 object and the legacy flat array; `weekday_name`, `todays_plan`, `autoreg(recovery_pct, green_min, yellow_min)` (WHOOP bands, defaults 67/34, overridable), and `render_training_section(sprint, today_iso, recovery_pct, …)` build the brief's 🏋️ Training block (today's sessions + intensity, hard/recovery flag, autoregulated directive, adherence ticks). `mark_done(db, sprint_id, date, activity)` persists a Telegram tick into `goals.adherence_log` (REST read-modify-write or psycopg2 `jsonb_set`; no DDL — sprints has UPDATE + RLS). `monitor/brief.py` calls it per profile (multi-tenant). `update_button(today)` (v3.19.0) is the single "📝 Update today" button the brief now attaches; the two-level menu (training toggles + supplement slots → pills) is rendered server-side in `telegram-webhook` on tap. `adherence_keyboard` is retained (documents the layout the Deno side mirrors).
 
 **sql_guard.py** — two-layer safety on the read path for ad-hoc queries: a structural validator + EXPLAIN pre-flight, and a cite-guard that traces drafted numbers back to returned rows. `validate_readonly_sql` rejects multi-statement/write/DDL, wraps in a guarded LIMIT, and runs `EXPLAIN` (not ANALYZE, so the query never executes); `relevant_traps` surfaces TRAP-marked schema comments before compose time; `quality_check` flags hazards (`join_without_key`, `comma_join`, `aggregate_over_nullable`, `no_profile_scope`, `empty_result`, …); `log_query` audits non-blocking; `run_adhoc_audited(conn, profile_id, sql, intent, limit)` is the standard entry point for any non-catalog query — validate, run, quality-check, and log in one call.
 

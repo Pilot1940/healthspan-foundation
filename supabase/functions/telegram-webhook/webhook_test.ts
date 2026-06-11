@@ -5,7 +5,44 @@
 // injection safety) without a live DB or Telegram connection.
 // DB-layer tests (dedup row count, media_inbox schema) live in tests/unit/test_telegram_webhook.py.
 import { assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { verifySecretToken, guessKind, buildAdherenceKeyboard } from "./index.ts";
+import { verifySecretToken, guessKind, buildAdherenceKeyboard, topMenu, slotMenu } from "./index.ts";
+
+// ── two-level Update menu (option C) ─────────────────────────────────────────────
+
+Deno.test("topMenu: training toggles + supplement slot buttons + close", () => {
+  const sprint = { id: "s1", goals: { adherence_log: { "2026-06-11": { gym: true } } } };
+  const slots = {
+    morning: [{ id: "a", name: "D3", taken: true }, { id: "b", name: "K2", taken: false }],
+    dinner: [{ id: "c", name: "NAC", taken: false }],
+  };
+  const kb = topMenu("2026-06-11", sprint, slots);
+  const flat = kb.inline_keyboard.flat();
+  // training tick present + reflects done state
+  const gym = flat.find((b: any) => b.callback_data === "tick:s1:2026-06-11:gym")!;
+  assertEquals(gym.text, "✅ gym");
+  // slot buttons show done/total and route to slot:
+  const morning = flat.find((b: any) => b.callback_data === "slot:2026-06-11:morning")!;
+  assertEquals(morning.text, "💊 Morning 1/2");
+  assertEquals(flat.some((b: any) => b.callback_data === "close:2026-06-11"), true);
+});
+
+Deno.test("slotMenu: one button per pill (✅/⬜) + back", () => {
+  const kb = slotMenu("2026-06-11", "morning", [
+    { id: "a", name: "Vitamin D3", taken: true },
+    { id: "b", name: "Omega-3", taken: false },
+  ]);
+  const flat = kb.inline_keyboard.flat();
+  assertEquals(flat.find((b: any) => b.callback_data === "supp:2026-06-11:a")!.text, "✅ Vitamin D3");
+  assertEquals(flat.find((b: any) => b.callback_data === "supp:2026-06-11:b")!.text, "⬜ Omega-3");
+  assertEquals(flat.some((b: any) => b.callback_data === "back:2026-06-11"), true);
+});
+
+Deno.test("topMenu: no sprint → only supplement slots + close", () => {
+  const kb = topMenu("2026-06-11", null, { anytime: [{ id: "x", name: "Creatine", taken: false }] });
+  const flat = kb.inline_keyboard.flat();
+  assertEquals(flat.some((b: any) => b.callback_data.startsWith("tick:")), false);
+  assertEquals(flat.some((b: any) => b.callback_data === "slot:2026-06-11:anytime"), true);
+});
 
 // ── buildAdherenceKeyboard (sprint adherence ticks) ──────────────────────────────
 

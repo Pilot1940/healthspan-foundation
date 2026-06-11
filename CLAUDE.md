@@ -45,6 +45,14 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-11)
 
+- **Two-level "📝 Update today" menu SHIPPED (v3.19.0, telegram-webhook v9, 2026-06-11).** The brief
+  now carries ONE button (`lib/sprints.update_button` → `menu:<date>`); the `callback_query` router
+  expands it: `menu:`→ training toggles + supplement slot buttons (`💊 Morning 4/5`…); `slot:`→ that
+  slot's individual pills (✅/⬜); `supp:`→ toggle the supplement for today (append-only — untake voids
+  today's non-voided intakes, take un-voids/inserts a `telegram` row); `back:`/`close:`; `tick:` (training)
+  re-renders the full top menu. All rendered server-side from fresh data, scoped to the tapping chat's
+  own profile. Slot grouping + toggle verified live against PC's 16-supp regimen; deployed. ⚠️ menu's
+  "taken today" uses `taken_on` (UTC date) vs the brief's tz-local window — can differ 00:00–07:00 ICT.
 - **Self-serve WHOOP reconnect from Telegram SHIPPED (v3.18.0, 2026-06-11).** Fixes the silent
   token-death failure mode. (a) `ingest/whoop_oauth.py` was missing the `offline` scope → re-auth
   yielded no refresh token; **fixed `e83de0b`**. (b) **mig 065** `whoop_oauth_codes` (one-time

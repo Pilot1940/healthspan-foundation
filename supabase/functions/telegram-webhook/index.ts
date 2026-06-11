@@ -1,3 +1,4 @@
+// deploy: 2026-06-11 v9 — two-level "📝 Update today" menu (training ticks + supplement slots/pills) + /whoop reconnect
 // deploy: 2026-06-11 v8 — sprint adherence ticks: callback_query → goals.adherence_log (additive)
 // deploy: 2026-06-09 ce91936 — supersede-on-reply (logged food) + retire review row on clarify
 // telegram-webhook — Phase 1 + 3A ingestion: auth, dedup, media→Storage, enqueue, Routine fire.
@@ -137,7 +138,113 @@ async function applyTick(
   return day;
 }
 
+// ── Two-level "📝 Update today" menu: training toggles + supplement slots (option C) ─────
+// The brief carries ONE button (menu:<date>); tapping expands to this menu, so the brief
+// stays clean no matter how many actions exist. All keyboards are rendered server-side from
+// fresh data on each tap (no state in callback_data beyond date + ids).
+
+const SLOT_ORDER = ["morning", "lunch", "dinner", "bedtime", "anytime"];
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+interface SuppItem { id: string; name: string; taken: boolean }
+
+// Fetch everything the menu needs for a profile + day: the active sprint (training toggles)
+// and the active supplement regimens grouped by timing slot with today's taken state.
+async function getMenuData(db: SupabaseClient, profileId: string, dateIso: string) {
+  const { data: sprint } = await db
+    .from("sprints").select("id, goals")
+    .eq("profile_id", profileId).lte("start_date", dateIso).gte("end_date", dateIso)
+    .order("start_date", { ascending: false }).limit(1).maybeSingle();
+
+  const { data: regs } = await db
+    .from("supplement_regimens").select("supplement_id, timing")
+    .eq("profile_id", profileId).eq("status", "active")
+    .lte("start_date", dateIso).or(`end_date.is.null,end_date.gte.${dateIso}`);
+
+  const ids = [...new Set((regs ?? []).map((r: any) => r.supplement_id))];
+  const names: Record<string, string> = {};
+  if (ids.length) {
+    const { data: supps } = await db.from("supplements").select("id, display_name, name").in("id", ids);
+    for (const s of supps ?? []) names[s.id] = s.display_name || s.name || s.id;
+  }
+  // "taken today" = ANY non-voided intake (any source), matching the brief's count.
+  const { data: intakes } = await db
+    .from("supplement_intake_logs").select("supplement_id")
+    .eq("profile_id", profileId).eq("taken_on", dateIso).is("voided_at", null);
+  const taken = new Set((intakes ?? []).map((r: any) => r.supplement_id));
+
+  const slots: Record<string, SuppItem[]> = {};
+  for (const r of regs ?? []) {
+    let timing = (r as any).timing;
+    if (typeof timing === "string") timing = [timing];
+    if (!Array.isArray(timing) || !timing.length) timing = ["anytime"];
+    for (const t of timing) {
+      const key = SLOT_ORDER.includes(t) ? t : "anytime";
+      (slots[key] ??= []).push({ id: r.supplement_id, name: names[r.supplement_id] ?? r.supplement_id, taken: taken.has(r.supplement_id) });
+    }
+  }
+  return { sprint, slots };
+}
+
+export function topMenu(dateIso: string, sprint: any, slots: Record<string, SuppItem[]>) {
+  const rows: any[] = [];
+  if (sprint?.id) {
+    const adher: Record<string, boolean> = sprint.goals?.adherence_log?.[dateIso] ?? {};
+    const tbtn = (a: string) => ({ text: `${adher[a] ? "✅" : "⬜"} ${a}`, callback_data: `tick:${sprint.id}:${dateIso}:${a}` });
+    rows.push(TICK_ACTIVITIES.slice(0, 3).map(tbtn));
+    rows.push(TICK_ACTIVITIES.slice(3).map(tbtn));
+  }
+  const slotBtns: any[] = [];
+  for (const slot of SLOT_ORDER) {
+    const items = slots[slot];
+    if (!items?.length) continue;
+    const done = items.filter((i) => i.taken).length;
+    slotBtns.push({ text: `💊 ${cap(slot)} ${done}/${items.length}`, callback_data: `slot:${dateIso}:${slot}` });
+  }
+  for (let i = 0; i < slotBtns.length; i += 2) rows.push(slotBtns.slice(i, i + 2));
+  rows.push([{ text: "✕ close", callback_data: `close:${dateIso}` }]);
+  return { inline_keyboard: rows };
+}
+
+export function slotMenu(dateIso: string, slot: string, items: SuppItem[]) {
+  const rows = items.map((i) => [{ text: `${i.taken ? "✅" : "⬜"} ${i.name}`, callback_data: `supp:${dateIso}:${i.id}` }]);
+  rows.push([{ text: "⬅ back", callback_data: `back:${dateIso}` }]);
+  return { inline_keyboard: rows };
+}
+
+// Toggle a supplement's "taken today" state. Append-only: untake = void today's non-voided
+// intakes (any source); take = un-void a prior voided row or insert a fresh telegram one.
+// All scoped to profileId (the caller's own profile). Returns the new taken bool.
+async function toggleSupplement(db: SupabaseClient, profileId: string, suppId: string, dateIso: string): Promise<boolean> {
+  const { data: live } = await db
+    .from("supplement_intake_logs").select("id")
+    .eq("profile_id", profileId).eq("supplement_id", suppId).eq("taken_on", dateIso).is("voided_at", null);
+  if (live?.length) {
+    await db.from("supplement_intake_logs")
+      .update({ voided_at: new Date().toISOString(), void_reason: "untapped via Telegram" })
+      .in("id", live.map((r: any) => r.id));
+    return false;
+  }
+  const { data: voided } = await db
+    .from("supplement_intake_logs").select("id")
+    .eq("profile_id", profileId).eq("supplement_id", suppId).eq("taken_on", dateIso).not("voided_at", "is", null).limit(1);
+  if (voided?.length) {
+    await db.from("supplement_intake_logs").update({ voided_at: null, void_reason: null }).eq("id", voided[0].id);
+    return true;
+  }
+  await db.from("supplement_intake_logs")
+    .insert({ profile_id: profileId, supplement_id: suppId, taken_at: new Date().toISOString(), source: "telegram" });
+  return true;
+}
+
 async function alertMaintainer(db: SupabaseClient, unknownChatId: number, preview?: string): Promise<void> {
+  // Find the maintainer's active Telegram chat (best-effort; may not exist at bootstrap).
+  const { data: profile } = await db
+    .from("profiles")
+    .select("id")
+    .eq("is_maintainer", true)
+    .single();
+  if (!profile) return;
   // Find the maintainer's active Telegram chat (best-effort; may not exist at bootstrap).
   const { data: profile } = await db
     .from("profiles")
@@ -279,29 +386,60 @@ Deno.serve(async (req) => {
     const cbChatId: number | undefined = cb.message?.chat?.id;
     const cbMsgId: number | undefined = cb.message?.message_id;
     const data: string = cb.data ?? "";
-    const m = /^tick:([^:]+):(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data);
-    if (!m || cbChatId === undefined) {
-      await answerCallback(cb.id, "");
-      await db.from("telegram_processed_updates").insert({ update_id: updateId });
+    const ack = async () => { await db.from("telegram_processed_updates").insert({ update_id: updateId }); };
+
+    // The tapping chat must be an ACTIVE identity; every DB op below is scoped to its
+    // profile_id, so a tap can only ever read/write the tapper's own data.
+    const { data: cbIdentity } = cbChatId === undefined ? { data: null } : await db
+      .from("telegram_identities").select("profile_id, status").eq("chat_id", cbChatId).maybeSingle();
+    if (!cbIdentity || cbIdentity.status !== "active" || cbChatId === undefined) {
+      await answerCallback(cb.id, ""); await ack();
       return new Response("ok", { status: 200 });
     }
-    const [, sprintId, dateIso, activity] = m;
-    // The tapping chat must be an ACTIVE identity; the sprint must belong to that profile
-    // (applyTick enforces ownership). A non-maintainer can only tick their own sprint.
-    const { data: cbIdentity } = await db
-      .from("telegram_identities")
-      .select("profile_id, status")
-      .eq("chat_id", cbChatId)
-      .maybeSingle();
-    let day: Record<string, boolean> | null = null;
-    if (cbIdentity?.status === "active") {
-      day = await applyTick(db, sprintId, dateIso, activity, cbIdentity.profile_id);
+    const pid: string = cbIdentity.profile_id;
+    const refresh = async (markup: unknown) => {
+      if (cbMsgId !== undefined) await editKeyboard(cbChatId, cbMsgId, markup);
+    };
+
+    let m: RegExpExecArray | null;
+    if ((m = /^menu:(\d{4}-\d{2}-\d{2})$/.exec(data))) {
+      // 📝 Update today → expand to the top menu (training toggles + supplement slots).
+      const { sprint, slots } = await getMenuData(db, pid, m[1]);
+      await answerCallback(cb.id, "");
+      await refresh(topMenu(m[1], sprint, slots));
+    } else if ((m = /^back:(\d{4}-\d{2}-\d{2})$/.exec(data))) {
+      const { sprint, slots } = await getMenuData(db, pid, m[1]);
+      await answerCallback(cb.id, "");
+      await refresh(topMenu(m[1], sprint, slots));
+    } else if ((m = /^close:(\d{4}-\d{2}-\d{2})$/.exec(data))) {
+      await answerCallback(cb.id, "");
+      await refresh({ inline_keyboard: [[{ text: "📝 Update today", callback_data: `menu:${m[1]}` }]] });
+    } else if ((m = /^slot:(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data))) {
+      const { slots } = await getMenuData(db, pid, m[1]);
+      await answerCallback(cb.id, "");
+      await refresh(slotMenu(m[1], m[2], slots[m[2]] ?? []));
+    } else if ((m = /^supp:(\d{4}-\d{2}-\d{2}):([0-9a-f-]{36})$/.exec(data))) {
+      // Toggle the supplement, then re-render its slot drill-in with fresh state.
+      const dateIso = m[1], suppId = m[2];
+      const nowTaken = await toggleSupplement(db, pid, suppId, dateIso);
+      const { slots } = await getMenuData(db, pid, dateIso);
+      // find which slot this supplement is in (for the re-render)
+      const slot = SLOT_ORDER.find((s) => (slots[s] ?? []).some((i) => i.id === suppId)) ?? "anytime";
+      await answerCallback(cb.id, nowTaken ? "✅ logged" : "↩ unlogged");
+      await refresh(slotMenu(dateIso, slot, slots[slot] ?? []));
+    } else if ((m = /^tick:([^:]+):(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data))) {
+      // Training adherence tick (inside the menu) → re-render the FULL top menu.
+      const [, sprintId, dateIso, activity] = m;
+      const day = await applyTick(db, sprintId, dateIso, activity, pid);
+      await answerCallback(cb.id, day ? `✅ ${activity}` : "Couldn't log that");
+      if (day) {
+        const { sprint, slots } = await getMenuData(db, pid, dateIso);
+        await refresh(topMenu(dateIso, sprint, slots));
+      }
+    } else {
+      await answerCallback(cb.id, "");
     }
-    await answerCallback(cb.id, day ? `✅ ${activity} logged` : "Couldn't log that");
-    if (day && cbMsgId !== undefined) {
-      await editKeyboard(cbChatId, cbMsgId, buildAdherenceKeyboard(sprintId, dateIso, day));
-    }
-    await db.from("telegram_processed_updates").insert({ update_id: updateId });
+    await ack();
     return new Response("ok", { status: 200 });
   }
 

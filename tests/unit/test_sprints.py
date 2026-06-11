@@ -116,6 +116,13 @@ def test_render_legacy_array_no_weekly_plan():
     assert "rest / unplanned" in out  # no weekly_plan in legacy shape
 
 
+def test_update_button():
+    kb = sprints.update_button("2026-06-11")
+    btn = kb["inline_keyboard"][0][0]
+    assert btn["text"] == "📝 Update today"
+    assert btn["callback_data"] == "menu:2026-06-11"
+
+
 def test_adherence_keyboard_shape_and_callback_data():
     kb = sprints.adherence_keyboard("sprint-9", "2026-06-11", {"gym": True})
     rows = kb["inline_keyboard"]

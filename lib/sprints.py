@@ -153,6 +153,12 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
     return "\n".join(lines)
 
 
+def update_button(today_iso: str) -> dict:
+    """Single '📝 Update today' button on the brief → expands (in the telegram-webhook) to the
+    two-level menu (training toggles + supplement slots). Keeps the brief uncluttered."""
+    return {"inline_keyboard": [[{"text": "📝 Update today", "callback_data": f"menu:{today_iso}"}]]}
+
+
 def adherence_keyboard(sprint_id: str, today_iso: str, done_map: dict | None = None) -> dict:
     """Telegram inline keyboard to tick today's activities (callback → telegram-webhook).
 

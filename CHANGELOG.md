@@ -1,5 +1,28 @@
 # HealthSpan Skill — Changelog
 
+## v3.19.0 — two-level "📝 Update today" menu: training + supplements as buttons (2026-06-11)
+
+**The brief stays one tidy button; tap it to tick training AND supplements from Telegram.**
+
+- **Brief** now carries a single **`📝 Update today`** button (`lib/sprints.update_button`) instead of
+  the flat training keyboard — shown whenever there's an active sprint or active supplement regimens.
+- **telegram-webhook v9** — the `callback_query` handler became a small router (all rendered
+  server-side from fresh data each tap):
+  - `menu:` → top menu = training toggles (gym/beach/pool/hike/massage) + one button per supplement
+    **timing slot** (`💊 Morning 4/5`, `💊 Dinner 3/4`, …).
+  - `slot:` → drill into that slot's **individual pills** (✅/⬜ per supplement) + ⬅ back.
+  - `supp:` → **toggle** that supplement for today, re-render the slot. Append-only: untake voids
+    today's non-voided intakes (any source); take un-voids a prior row or inserts a fresh `telegram`
+    one. Matches the brief's "taken today" (any non-voided intake).
+  - `back:`/`close:` → up a level / collapse to the single Update button. `tick:` (training) now
+    re-renders the full top menu.
+  - Every op is scoped to the tapping chat's own profile (service_role + explicit profile_id).
+- Two-level keeps the brief uncluttered no matter how many actions we add. Slot grouping + toggle
+  verified live against PC's 16-supplement regimen (Morning 5 / Lunch 1 / Dinner 4 / Bedtime 2 /
+  Anytime 5). Deno keyboard builders exported + tested; Python suite 21 sprint tests green.
+- ⚠️ Minor: the menu's "taken today" uses `taken_on` (UTC date); the brief uses the tz-local-day
+  window — they can differ for intakes logged 00:00–07:00 ICT. Acceptable for a tick UI.
+
 ## v3.18.0 — self-serve WHOOP reconnect from Telegram (2026-06-11)
 
 **Dead WHOOP token? Tap a button in Telegram, log into WHOOP, done — no CLI, works for Dea too.**
