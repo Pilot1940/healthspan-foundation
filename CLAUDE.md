@@ -53,8 +53,8 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   (FOR ALL on `has_profile_access`; authenticated S/I/U, NO DELETE, no `healthspan_app`). Verified
   live in the migration's own DO-block. Seed is SEPARATE (`scripts/seed_strength_063.py`,
   `--commit`) — transportable schema keeps personal data out of the migration. PC's 2026-06-11
-  session seeded (trap-bar DL 165 lb 5×5; 2× cable lat-pulldown). **`machine_chest_press` HELD** —
-  recorded `load_unit='plates'` value 140 (invalid unit; likely 140 lb stack); confirm before seeding.
+  session seeded — all 4 sets (trap-bar DL 165 lb 5×5; 2× cable lat-pulldown; machine_chest_press
+  140 lb, PC-confirmed 2026-06-11, was recorded as 'plates').
   (2) **Viome flags now PER ITEM, not meal-wide (`inbox_drain.py`):** a multi-dish photo used to
   stamp the meal-wide verdict + the FULL flagged-ingredient list onto EVERY row, so one
   "mushrooms = superfood" showed as "Superfoods: mushrooms ×5" in the brief. Now each inserted row

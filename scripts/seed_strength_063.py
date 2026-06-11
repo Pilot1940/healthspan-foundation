@@ -5,9 +5,13 @@ SEPARATE from migration 063 by design: strength_logs is transportable/multi-tena
 so personal session data must NOT live in a schema migration (it would replay on
 every instance). This script seeds only PC's profile.
 
-HELD: the machine_chest_press set recorded load_unit='plates' value 140 — 'plates'
-is not a valid load_unit. Not seeded until PC confirms the real unit (likely 140 lb
-stack). Flagged back, not guessed.
+machine_chest_press was recorded as load_unit='plates' value 140 ('plates' is not a
+valid unit); PC confirmed 2026-06-11 it is 140 lb (stack), now included below.
+
+NOTE: strength_logs has no natural key (rows append), so this script is NOT
+idempotent — running it twice double-inserts. On PC's live DB the first three rows
+were seeded 2026-06-11 and the chest-press row added after confirmation; do not
+re-run --commit against that DB. The full ROWS list is the record for a fresh instance.
 
 Run: python3 scripts/seed_strength_063.py [--commit]
 Without --commit it prints what it WOULD insert (dry run).
@@ -30,6 +34,8 @@ ROWS = [
     ("cable_lat_pulldown", "cable", 28, "kg", 2, 6, None, True, None),
     ("cable_lat_pulldown", "cable", 24.5, "kg", 2, 6, None, True,
      "dropped from 28 to hold form"),
+    ("machine_chest_press", "machine", 140, "lb", None, None, None, True,
+     "PC confirmed 140 lb stack (recorded as 'plates' at source)"),
 ]
 
 
@@ -41,7 +47,8 @@ def main() -> None:
     for (exercise, modality, load_value, load_unit, sets, reps, rir,
          device_specific, notes) in ROWS:
         if not commit:
-            print(f"  DRY    {exercise:20s} {load_value}{load_unit} {sets}x{reps}")
+            rep_str = f"{sets}x{reps}" if sets and reps else "—"
+            print(f"  DRY    {exercise:20s} {load_value}{load_unit} {rep_str}")
             continue
         cur.execute(
             """INSERT INTO public.strength_logs
@@ -53,9 +60,8 @@ def main() -> None:
              sets, reps, rir, device_specific, notes),
         )
         rid = cur.fetchone()[0]
-        print(f"  INSERT {exercise:20s} {load_value}{load_unit} {sets}x{reps} -> {rid}")
-    print("  HELD: machine_chest_press (load_unit='plates', value 140) — "
-          "confirm real unit before seeding.")
+        rep_str = f"{sets}x{reps}" if sets and reps else "—"
+        print(f"  INSERT {exercise:20s} {load_value}{load_unit} {rep_str} -> {rid}")
     if commit:
         conn.commit()
         print("Committed.")
