@@ -1,9 +1,9 @@
 # HealthSpan — Schema Map (semantic reference)
 
 > **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-11 12:52 UTC.
-> generated_at: 2026-06-11T12:52:04Z
-> coverage: 61 of 62 public base tables documented.
+> Generated 2026-06-11 15:53 UTC.
+> generated_at: 2026-06-11T15:53:38Z
+> coverage: 62 of 63 public base tables documented.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -1123,6 +1123,17 @@ _Long-form WHOOP journal answers: one row per (cycle, behaviour). The whoop_jour
 | `notes` | text | Free text. |
 | `source_file` | text | Origin CSV/export name. |
 | `created_at` | timestamp with time zone | Row insert time. |
+
+## `whoop_oauth_codes`
+_One-time, expiring tickets carrying the WHOOP OAuth state for the Telegram reconnect flow (mig 065). Minted by the bot/webhook, consumed once by whoop-oauth on the WHOOP callback. service_role only in practice._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `code` | uuid | The ticket (also the OAuth state param). Single-use. |
+| `profile_id` | uuid | Profile this consent is for (FK profiles.id, ON DELETE CASCADE). |
+| `created_at` | timestamp with time zone | Mint time (also the alert-debounce clock). |
+| `expires_at` | timestamp with time zone | Ticket expiry (mint + whoop.oauth_ticket_ttl_min). |
+| `used_at` | timestamp with time zone | Set when the WHOOP callback consumes the ticket; non-NULL = spent. |
 
 ## `whoop_tokens`
 _WHOOP OAuth tokens per profile, used by the WHOOP API sync (ingest/whoop_sync). UNIQUE(profile_id). SECRET — access/refresh tokens; never surface in skill output._

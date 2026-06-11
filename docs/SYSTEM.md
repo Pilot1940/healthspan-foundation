@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 064 applied (2026-06-11), skill v3.17.1.
+> state with migration 065 applied (2026-06-11), skill v3.18.0.
 
 ---
 
@@ -132,6 +132,9 @@ the per-function "additional secrets" lists below).
   bypasses RLS, so ownership is checked explicitly), sets `goals.adherence_log[date][activity]=true`,
   answers the callback toast, and refreshes the keyboard face. The message-ingestion path is
   untouched. ⚠️ requires the bot's `allowed_updates` to include `callback_query`.
+- **`/whoop` command (v3.18.0):** an active identity sending `/whoop` (or "reconnect whoop") gets a
+  one-tap WHOOP reconnect button (`sendReconnectPrompt`, force-past-debounce) — intercepted before the
+  drain enqueue. See `whoop-oauth` for the rest of the flow.
 - **Additional secrets:** `TELEGRAM_BOT_TOKEN` (download files + send replies),
   `TELEGRAM_WEBHOOK_SECRET` (verify inbound signature), and optionally
   `ROUTINE_TRIGGER_URL` + `ROUTINE_BEARER` (fire the legacy Routine drain — debounced
@@ -178,11 +181,19 @@ the per-function "additional secrets" lists below).
 #### `whoop-oauth`
 - **verify_jwt:** `false`. No inbound auth — opened by a human in a browser. The `state`
   parameter carries the profile UUID to prevent CSRF.
-- **Purpose:** One-time OAuth 2.0 consent. `GET ?profile_id=<uuid>` redirects to the WHOOP
-  consent page. Callback `GET ?code=...&state=<profile_id>` exchanges the code for access +
-  refresh tokens, fetches the WHOOP `user_id` from `/v2/user/profile/basic`, and upserts
-  into `whoop_tokens` (keyed on `profile_id`). Returns an HTML success page.
-- **Additional secrets:** `WHOOP_CLIENT_ID`, `WHOOP_CLIENT_SECRET`.
+- **Purpose:** OAuth 2.0 consent (offline scope → refresh token), exchange, and token store.
+  Two entry points: `GET ?profile_id=<uuid>` (manual/admin) and **`GET ?t=<ticket>`** (the
+  Telegram self-serve reconnect, v3.18.0 — a one-time `whoop_oauth_codes` ticket, mig 065).
+  Both redirect to the WHOOP consent page with a prefixed `state` (`p.<profile>` or `t.<ticket>`).
+  Callback `GET ?code=...&state=...` resolves the profile (consuming the ticket **single-use**),
+  exchanges the code, fetches the WHOOP `user_id` from `/v2/user/profile/basic`, upserts into
+  `whoop_tokens`, sends a **"✅ WHOOP reconnected" Telegram confirm**, and returns an HTML success page.
+- **Reconnect UX (v3.18.0):** `whoop-webhook` DMs a debounced "⚠️ reconnect" button when the refresh
+  chain dies (`getValidAccessToken` → "re-auth needed"); `telegram-webhook` replies to `/whoop` with
+  the same button on demand. The button URL is `…/whoop-oauth?t=<ticket>`. So a dead token → tap →
+  WHOOP login → done, no CLI (and it works for any profile, e.g. Dea via her own login). The
+  **redirect URI `…/functions/v1/whoop-oauth` must be registered in the WHOOP developer dashboard.**
+- **Additional secrets:** `WHOOP_CLIENT_ID`, `WHOOP_CLIENT_SECRET`, `TELEGRAM_BOT_TOKEN` (confirm DM).
 
 #### `_shared/whoop.ts` (shared library, not deployed standalone)
 Imported by `whoop-webhook` and `whoop-oauth`. Provides `getValidAccessToken` (lazy
@@ -692,9 +703,9 @@ Supabase Postgres with Row Level Security on every table. The applied DB state i
 source of truth — there is no `schema_migrations` table; the migration filename sequence
 (`001`…`NNN`) is the canonical ordering record.
 
-### 4.1 Tables (46 active / 16 dormant of 62 base + 7 views, 2026-06-11)
+### 4.1 Tables (47 active / 16 dormant of 63 base + 7 views, 2026-06-11)
 
-> Live DB as of 2026-06-11: **62 base tables + 7 views** — **46 active / 16 dormant** (dormant = zero live rows per `pg_stat_user_tables` estimates: `audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs`). `strength_logs` (mig 063) is the 62nd base table. Figures are point-in-time — re-count via `select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`.
+> Live DB as of 2026-06-11: **63 base tables + 7 views** — **47 active / 16 dormant** (dormant = zero live rows per `pg_stat_user_tables` estimates: `audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs`). `strength_logs` (mig 063) + `whoop_oauth_codes` (mig 065) are the newest base tables. Figures are point-in-time — re-count via `select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`.
 
 
 Grouped by domain. The six most-important tables carry full key-column lists; the rest
@@ -709,6 +720,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | family_memberships | `auth_user_id → profile_id` binding with `role`. Drives both `has_profile_access()` and `is_maintainer()`. One auth identity can map to several profiles (PC + Dea + Dev; drain account → all three). |
 | telegram_identities | `chat_id (PK) → profile_id`. `status` (pending/active/revoked), `is_minor`, `linked_at`, `link_code`. Profile_id for an inbound photo is derived ONLY from here, never from caption text. |
 | telegram_link_codes | One-time activation codes: `code (PK), profile_id, expires_at, used_at`. |
+| whoop_oauth_codes | Mig 065. One-time, expiring tickets for the Telegram WHOOP-reconnect flow: `code (PK), profile_id, created_at, expires_at, used_at`. The ticket (not the raw profile_id) is the OAuth `state` in the reconnect URL; `whoop-oauth` consumes it single-use on the WHOOP callback. RLS maintainer-only; service_role for the edge functions. |
 | telegram_processed_updates | Inbound idempotency latch: `update_id (PK), received_at`. Written AFTER the `media_inbox` insert succeeds, never before. |
 | whoop_tokens | WHOOP OAuth credentials: `profile_id, access_token, refresh_token, expires_at, scope, whoop_user_id`. service_role only — RLS default-deny for all other roles. Never surfaced in skill output. |
 | families | Family container (1 row — Chitalkar): `id, name, created_by`. Root of `family_memberships`. |
@@ -834,7 +846,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–062)
+### 4.4 Migration History (001–065)
 
 | # | File | Summary |
 |---|---|---|
@@ -909,6 +921,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 062 | media_retention_config | **Applied 2026-06-10.** BACKLOG #7: seeds `media.retention_days` (45) for the health-media Storage prune (`monitor/media_retention.py` + `media-retention.yml` daily cron). |
 | 063 | strength_logs | **Applied 2026-06-11.** New `strength_logs` table (resistance-training sets: load/sets/reps/RIR + `performed_on` GENERATED UTC date). Soft-delete via `voided_at`/`void_reason` + `maintainer_void_strength()` (mirrors mig 060); RLS + grants copied from `food_logs` (FOR ALL on `has_profile_access`; authenticated S/I/U, no DELETE). Seed is separate (`scripts/seed_strength_063.py`) — transportable schema, no personal data in the migration. All 4 sets seeded (PC confirmed `machine_chest_press` = 140 lb 2026-06-11; was recorded as 'plates'). Verified live. |
 | 064 | food_reference_common_items | **Applied 2026-06-11.** BACKLOG #25: brand-accurate aliases for PC's frequent items (`food_reference` matches by EXACT lower(name)/alias). Sets `brand='Proten'` + `proten*` aliases on the Thai Tea row (brand is "Proten", not "protein"); adds the distinct **Hooray Banana** shake (220 kcal/31P, vs Strawberry's 250/different carbs). Idempotent (works on fresh + live). PC's personal "TWT" (The Whole Truth) morning whey+creatine+glutamine shake seeded separately (`scripts/seed_food_ref_personal_064.py`) — profile-scoped, not in the migration. All three resolve via `lookup_food_reference` (verified). |
+| 065 | whoop_oauth_codes | **Applied 2026-06-11.** Self-serve WHOOP reconnect from Telegram: `whoop_oauth_codes` one-time, expiring tickets carry the OAuth `state` (the ticket, not the raw `profile_id`, travels in the reconnect URL, so a shared link can't attach a stranger's WHOOP to a profile). RLS maintainer-only (edge functions use service_role). Seeds config `whoop.oauth_ticket_ttl_min` (30) + `whoop.reauth_alert_debounce_hours` (24). Consumed single-use by `whoop-oauth` on the WHOOP callback. |
 
 ---
 
@@ -1518,7 +1531,7 @@ There is no separate release number — **the deployed git commit IS the version
 The `<commit7>` is the short SHA injected at build time from `GITHUB_SHA`, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:
 
 - **Application code** — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.
-- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 062** (2026-06-10). Full DB-side history: §4 + `CLAUDE.md`.
+- **Database schema** — forward-only numbered migrations (`migrations/NNN_*.sql`); the live DB state is the source of truth (there is no `schema_migrations` table). Latest applied: **mig 065** (2026-06-11). Full DB-side history: §4 + `CLAUDE.md`.
 
 ### Recent deploys
 
@@ -1526,6 +1539,9 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| — | 2026-06-11 | feat | **Self-serve WHOOP reconnect from Telegram (v3.18.0, mig 065):** dead token → debounced "reconnect" button (whoop-webhook) or `/whoop` on demand (telegram-webhook) → `whoop-oauth?t=<ticket>` consent → token stored → "✅ reconnected" confirm. One-time `whoop_oauth_codes` tickets. Fixed the `offline`-scope bug in `ingest/whoop_oauth.py` (`e83de0b`). 3 functions deployed. Gating: register the edge redirect URI in the WHOOP dashboard. |
+| — | 2026-06-11 | feat | **Daily-brief training plan + adherence (v3.17.0/.1):** `sprints.goals` object shape (`lib/sprints.py`); brief 🏋️ section with WHOOP-autoregulated directive (read from `goals.rules`); Telegram adherence ticks (`tick:` callback → `goals.adherence_log`, telegram-webhook v8). |
+| — | 2026-06-11 | feat | **Bundle variants + write paths (v3.16.0):** privileged maintainer connection (`direct_role.privileged` → postgres role, RLS bypassed); non-maintainer self-write (`ingest/self_write.py`); strength write path; per-person bundle build (post-guard config injection). |
 | — | 2026-06-11 | feat/schema/fix | **strength_logs (mig 063) + per-item Viome flags + supplement dedup (v3.15.0):** new `strength_logs` table (load/sets/reps/RIR, `performed_on` GENERATED UTC, soft-delete via `maintainer_void_strength`, RLS mirrored from `food_logs`); seed separate (`scripts/seed_strength_063.py`, `machine_chest_press` held). Drain now stamps Viome verdict/flags **per food item** not meal-wide (fixes "Superfoods: mushrooms ×5"); regression test added. Merged 4 duplicate learned supplements into canonical rows + confirmed 2 real ones. Suite 283/0/9. |
 | — | 2026-06-10 | feat/schema | **Backlog batch (migs 060–062):** #18 void soft-delete (`maintainer_void_*` RPCs, read filters everywhere, healthspan_app DELETE revoked) · #20 WHOOP token-race recovery (Python + `_shared/whoop.ts`; whoop-webhook v17 + whoop-oauth v13 deployed) · #7 media retention prune (`media-retention.yml`, 45d) · #21 hygiene (INSERT policies scoped, legacy fns revoked, dead keys deleted, `claim_inbox_cluster` dropped, `hs_ops verify` rewritten runtime-derived). Suite 282/0/9. |
 | — | 2026-06-10 | fix | **whoop-webhook v3 (BACKLOG #19):** `recovery.updated` id is the sleep UUID — resolve via `/v2/recovery` collection → integer `cycle_id`; fixed reversed `/v2/cycle/{id}/recovery` path. Verified live with a signed synthetic event; first-ever `recovery_landed` push sent. |
