@@ -31,6 +31,9 @@ _AUTH_URL = "https://api.prod.whoop.com/oauth/oauth2/auth"
 _TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 _REDIRECT_URI = "http://localhost:8080/callback"
 _SCOPES = (
+    # `offline` is REQUIRED for WHOOP to return a refresh_token — without it the token
+    # exchange yields only a ~1h access_token (no refresh), so the webhook dies in an hour.
+    "offline "
     "read:recovery read:cycles read:workout "
     "read:sleep read:profile read:body_measurement"
 )
