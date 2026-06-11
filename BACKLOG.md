@@ -625,14 +625,18 @@ inserting), or surface a "did you mean <existing>?" confirm. Until then the brie
 
 ---
 
-## #25 — Common repeat items should never need clarification — **OPEN, MED (PC, 2026-06-11)**
+## #25 — Common repeat items should never need clarification — **PARTIALLY SHIPPED 2026-06-11 (mig 064); broader follow-up OPEN**
 
-**Severity:** MED (friction on daily logs) · **Owner:** CC (build) · **Status:** OPEN — partially
-addressed 2026-06-11.
-PC's frequently-logged items — the Hooray Proten Thai Tea, the Hooray lactose-free banana shake, and
-his daily morning whey + creatine + glutamine shake ("TWT") — keep triggering clarify/guess cycles.
-They should resolve deterministically with known macros every time. Mechanism already exists:
-`food_reference` (mig 041) with `servings` scaling (#10) — seed these as reference rows (global for
-the branded shakes, PC-personal for the morning recipe) with `serving_desc` so fractional logs scale.
-Broader follow-up: food auto-promote-to-reference after N confirmed logs (the food analogue of
-supplement learn-on-clarify) — see #13.
+**Severity:** MED (friction on daily logs) · **Owner:** CC (build) · **Status:** the three named items
+SHIPPED 2026-06-11; the general auto-promote mechanism remains OPEN.
+PC's frequently-logged items — the **Proten** Thai Tea, the Hooray lactose-free **banana** shake, and
+his daily morning **TWT (The Whole Truth)** whey + creatine + glutamine shake — kept triggering
+clarify/guess cycles. Root cause: `food_reference` matches by EXACT `lower(name)`/alias (mig 041), and
+(a) the Thai Tea brand is literally "Proten" but the aliases only had "protein", (b) the banana flavour
+had no row (the generic Hooray alias pointed at Strawberry's different macros), (c) the TWT shake had no
+row at all. **Fixed (mig 064 + `scripts/seed_food_ref_personal_064.py`):** `brand='Proten'` + `proten*`
+aliases on the Thai Tea row; new global Hooray Banana row (220/31); PC-personal TWT row (195/30, with
+`twt`/`the whole truth`/`morning protein shake` aliases). All verified via `lookup_food_reference`.
+**Still OPEN (broader):** match is exact, not fuzzy — a novel phrasing still misses; and there's no
+food auto-promote-to-reference after N confirmed logs (the food analogue of supplement
+learn-on-clarify). That generalisation is the remaining work — see #13.

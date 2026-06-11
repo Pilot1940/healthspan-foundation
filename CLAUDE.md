@@ -68,6 +68,13 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   rows); confirmed the 2 genuinely-new items (ashwagandha gummy, ketone electrolytes) so the
   brief's "Recently learned (review)" list is clean. Deeper fix (fuzzier dedup) is backlog.
   ⚠️ The inbox_drain.py flag fix goes live on push (CI runs `monitor/` directly, no deploy).
+- **Common repeat items now auto-resolve (mig 064, BACKLOG #25, 2026-06-11).** `food_reference`
+  matches by EXACT `lower(name)`/alias, so PC's frequent shakes kept clarifying. Mig 064: Thai Tea
+  brand is **"Proten"** (not "protein") → `brand='Proten'` + `proten*` aliases; added the distinct
+  **Hooray Banana** shake (220/31, vs Strawberry 250). PC's personal **"TWT" = The Whole Truth**
+  morning whey+creatine+glutamine shake seeded separately (`scripts/seed_food_ref_personal_064.py`,
+  profile-scoped). All verified via `lookup_food_reference`. ("hooray shake" generic still defaults
+  to Strawberry.) Deeper fix = fuzzier match / food auto-promote (#25/#13).
 - **Today's food corrections (2026-06-11, with PC):** quiche halved (50% eaten), avocado bowl →250
   kcal, fettuccine meat removed (→135 kcal). Direct value edits on `food_logs` (not voided/re-logged).
 

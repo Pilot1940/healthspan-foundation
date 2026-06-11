@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 063 applied (2026-06-11), skill v3.15.0.
+> state with migration 064 applied (2026-06-11), skill v3.15.0.
 
 ---
 
@@ -901,6 +901,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 061 | security_hygiene | **Applied 2026-06-10.** BACKLOG #21: `media_inbox`/`push_log` INSERT scoped to `authenticated` + `has_profile_access OR is_maintainer`; open INSERT policies on `telegram_processed_updates`/`wearable_sync_errors` dropped (service_role/postgres writers only); EXECUTE on legacy `ingest_health_artifact`/`mint_ingestion_token` revoked from anon+authenticated; 3 dead config keys deleted; unused `claim_inbox_cluster(uuid[])` dropped. |
 | 062 | media_retention_config | **Applied 2026-06-10.** BACKLOG #7: seeds `media.retention_days` (45) for the health-media Storage prune (`monitor/media_retention.py` + `media-retention.yml` daily cron). |
 | 063 | strength_logs | **Applied 2026-06-11.** New `strength_logs` table (resistance-training sets: load/sets/reps/RIR + `performed_on` GENERATED UTC date). Soft-delete via `voided_at`/`void_reason` + `maintainer_void_strength()` (mirrors mig 060); RLS + grants copied from `food_logs` (FOR ALL on `has_profile_access`; authenticated S/I/U, no DELETE). Seed is separate (`scripts/seed_strength_063.py`) — transportable schema, no personal data in the migration. `machine_chest_press` row held pending real `load_unit` (recorded 'plates'). Verified live. |
+| 064 | food_reference_common_items | **Applied 2026-06-11.** BACKLOG #25: brand-accurate aliases for PC's frequent items (`food_reference` matches by EXACT lower(name)/alias). Sets `brand='Proten'` + `proten*` aliases on the Thai Tea row (brand is "Proten", not "protein"); adds the distinct **Hooray Banana** shake (220 kcal/31P, vs Strawberry's 250/different carbs). Idempotent (works on fresh + live). PC's personal "TWT" (The Whole Truth) morning whey+creatine+glutamine shake seeded separately (`scripts/seed_food_ref_personal_064.py`) — profile-scoped, not in the migration. All three resolve via `lookup_food_reference` (verified). |
 
 ---
 
