@@ -45,6 +45,21 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-11)
 
+- **Daily brief shows the training plan + adherence SHIPPED (v3.17.0, 2026-06-11).**
+  `sprints.goals` is now an OBJECT — `{block_goals[], weekly_plan{<weekday>:{sessions,intensity,
+  hard?,recovery?}}, rules[], adherence_log{<date>:{gym,beach,pool,hike,massage}}}` (legacy rows
+  still flat arrays; `lib/sprints.normalize_goals` reads both). New `lib/sprints.py` + a 🏋️ Training
+  section in `monitor/brief.py`: `_fetch_active_sprint` (today BETWEEN start/end, profile-local day),
+  `render_training_section` shows today's `weekly_plan[weekday]` sessions+intensity (hard/recovery
+  flagged), the WHOOP-autoregulated directive (green ≥67 proceed / yellow 34–66 downgrade hard→
+  moderate / red <34 pool+beach+massage; cutoffs overridable via `system_config`
+  `sprint.recovery_green_min`/`_yellow_min`), and `goals.adherence_log[today]` ticks. `mark_done(db,
+  sprint_id, date, activity)` persists a Telegram tick (REST RMW or psycopg2 `jsonb_set`; no DDL —
+  sprints has UPDATE+RLS). `sprints_status` view returns `block_goals` for object rows (existing
+  consumers unchanged). Multi-tenant (works for Dea once she has a sprint row). Suite 303/0/9.
+  Live-verified render for PC's "Phuket Sprint 2" (Thursday: pool/beach/hike/massage, 🟡 66% → downgrade).
+  ⚠️ No Telegram tick UI yet — `mark_done` is ready but unwired (no tick buttons in the webhook).
+
 - **Two bundle variants + their write paths SHIPPED (v3.16.0, 2026-06-11).**
   (A) **Unrestricted maintainer connection (`lib/db.py`):** `connection.direct_role.privileged=true`
   keeps the `postgres` role (no `SET ROLE authenticated`) → RLS BYPASSED, DELETE/DDL on every

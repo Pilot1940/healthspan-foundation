@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 064 applied (2026-06-11), skill v3.16.0.
+> state with migration 064 applied (2026-06-11), skill v3.17.0.
 
 ---
 
@@ -771,7 +771,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | program_workouts | `program_id, phase_id, workout_id, workout_type, prescribed`. `(empty)`. |
 | **strength_logs** | Mig 063. Resistance-training sets: `profile_id, performed_at, performed_on (GENERATED date, UTC), exercise, modality (barbell\|machine\|cable\|dumbbell\|bodyweight), load_value, load_unit (kg\|lb\|bodyweight — never 'plates'), sets, reps, rir, device_specific, notes, source, voided_at, void_reason`. Append-only; void via `maintainer_void_strength()`. RLS + grants mirror `food_logs` (FOR ALL on `has_profile_access`; authenticated S/I/U, no DELETE). Every read must carry `WHERE voided_at IS NULL`. |
 | user_goals | `profile_id, metric_definition_id, title, target_value/unit/date, is_active, progress_pct, program_id, baseline_value, achieved_value, achieved_date`. Multiple concurrent active goals allowed (mig 020). |
-| sprints | `profile_id, name, slug, location, start_date, end_date, goals (jsonb)`. No status column — derive active/completed/upcoming from dates vs today. |
+| sprints | `profile_id, name, slug, location, start_date, end_date, goals (jsonb)`. No status column — derive active/completed/upcoming from dates vs today. **`goals` is an OBJECT** (v2): `{block_goals:[str], weekly_plan:{<weekday>:{sessions:[str],intensity,hard?,recovery?}}, rules:[str], adherence_log:{<YYYY-MM-DD>:{gym,beach,pool,hike,massage}}}`. Legacy rows are still a flat `[str]` — read via `lib/sprints.normalize_goals()`. The daily brief renders today's plan + adherence from it; the `sprints_status` view returns `block_goals` for object rows so existing consumers keep the goal-strings contract. |
 
 #### Monitoring
 
@@ -923,6 +923,8 @@ One paragraph per module: what it does, key public functions, and when to reach 
 **context.py** — loads and parses per-person `context/<slug>.context.md` into a structured dict; the profile context is the sole source of targets, norms, coaching voice, and safety constraints (no population defaults). `parse_context_md(text)` is a pure parser; `load_context(profile, base_dir)` reads the file and hard-stops (`FileNotFoundError`) if absent; `get_context(config, base_dir)` bootstraps a session and hard-errors on a profile_id mismatch between context file and config (prevents coaching one person with another's rules); `get_target(ctx, key)` returns a value or None ("not specified — ask, don't assume"). Call it at session start before any targeted coaching.
 
 **views.py** — centralised catalog of all named reporting queries; every emitter (reports, dashboard, exports) must go through it so SQL is never duplicated. `list_views()` returns catalog metadata; `run_view(conn, name, profile_id, **params)` runs an RLS-scoped named view and returns `{name, columns, rows, chart_hint, description, summary?}`, logging each run to `query_audit` inside a savepoint (a read-only connection or RLS failure never breaks the read path). Named views include `v_recovery_30d`, `v_sleep_debt_30d`, `v_workout_zone_summary`, `v_supplement_onoff`, `v_india_vs_travel`, `v_biomarker_timeline`, `abnormal_labs`, `vo2_status`, `hr_drop_compare`, `sprints_status`. NULL recovery (no sleep that cycle) is filtered, never averaged as 0. Use it for any catalog read.
+
+**sprints.py** (v3.17.0) — training-sprint plan + adherence from `sprints.goals` jsonb (pure logic, no DB except `mark_done`). `normalize_goals(goals)` reads both the v2 object and the legacy flat array; `weekday_name`, `todays_plan`, `autoreg(recovery_pct, green_min, yellow_min)` (WHOOP bands, defaults 67/34, overridable), and `render_training_section(sprint, today_iso, recovery_pct, …)` build the brief's 🏋️ Training block (today's sessions + intensity, hard/recovery flag, autoregulated directive, adherence ticks). `mark_done(db, sprint_id, date, activity)` persists a Telegram tick into `goals.adherence_log` (REST read-modify-write or psycopg2 `jsonb_set`; no DDL — sprints has UPDATE + RLS). `monitor/brief.py` calls it per profile (multi-tenant).
 
 **sql_guard.py** — two-layer safety on the read path for ad-hoc queries: a structural validator + EXPLAIN pre-flight, and a cite-guard that traces drafted numbers back to returned rows. `validate_readonly_sql` rejects multi-statement/write/DDL, wraps in a guarded LIMIT, and runs `EXPLAIN` (not ANALYZE, so the query never executes); `relevant_traps` surfaces TRAP-marked schema comments before compose time; `quality_check` flags hazards (`join_without_key`, `comma_join`, `aggregate_over_nullable`, `no_profile_scope`, `empty_result`, …); `log_query` audits non-blocking; `run_adhoc_audited(conn, profile_id, sql, intent, limit)` is the standard entry point for any non-catalog query — validate, run, quality-check, and log in one call.
 

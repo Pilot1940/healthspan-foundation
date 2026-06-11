@@ -234,7 +234,12 @@ VIEWS: dict[str, dict] = {
         "chart_hint": "table",
         "default_columns": ["name", "location", "start_date", "end_date", "status", "goals"],
         "sql": """
-            SELECT name, location, start_date, end_date, goals,
+            SELECT name, location, start_date, end_date,
+                   -- goals is now an object {block_goals,weekly_plan,rules,adherence_log};
+                   -- legacy rows are still a flat array. Return the goal-strings array either
+                   -- way so existing consumers keep the original contract.
+                   CASE WHEN jsonb_typeof(goals) = 'object' THEN goals->'block_goals'
+                        ELSE goals END AS goals,
                    CASE WHEN start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE THEN 'active'
                         WHEN end_date < CURRENT_DATE THEN 'completed'
                         ELSE 'upcoming' END AS status

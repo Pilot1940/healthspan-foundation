@@ -4,6 +4,8 @@ Sections (adult):
     Food    — kcal / protein / carbs / fat vs targets, remaining
     Supps   — taken vs active regimen by timing slot
     WHOOP   — latest recovery / HRV / RHR / sleep; stale flag if cycle_start < today
+    Training— active sprint's plan for today's weekday (sessions + intensity), WHOOP-
+              autoregulated directive, and today's adherence ticks (sprints.goals jsonb)
     Viome   — today's flagged (avoid/minimize) + superfood items from food_logs.verdict
     Actions — 2-4 concrete suggestions from Claude (haiku)
 
@@ -174,6 +176,25 @@ def _fetch_whoop(db, profile_id: str, today: str) -> dict:
             "energy_burned_cal":        r.get("energy_burned_cal"),
             "stale":                    stale,
         }
+    except Exception:
+        return {}
+
+
+def _fetch_active_sprint(db, profile_id: str, today_iso: str) -> dict:
+    """The sprint whose [start_date, end_date] window contains today (latest start wins)."""
+    try:
+        rows = db.select(
+            "sprints",
+            select="id,name,goals,notes,start_date,end_date",
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "start_date": f"lte.{today_iso}",
+                "end_date": f"gte.{today_iso}",
+            },
+            order="start_date.desc",
+            limit=1,
+        )
+        return rows[0] if rows else {}
     except Exception:
         return {}
 
@@ -363,6 +384,7 @@ def _call_claude_actions(
     whoop_txt: str,
     viome_txt: str,
     is_minor: bool,
+    training_txt: str = "",
 ) -> str:
     """Ask Claude for 2-4 concrete rest-of-day actions. Best-effort, empty string on failure."""
     try:
@@ -372,7 +394,7 @@ def _call_claude_actions(
             if is_minor
             else "an adult tracking health and longevity"
         )
-        context = "\n".join(s for s in [food_txt, supps_txt, whoop_txt, viome_txt] if s)
+        context = "\n".join(s for s in [food_txt, supps_txt, whoop_txt, training_txt, viome_txt] if s)
         prompt = (
             f"You are a concise health coach for {frame}.\n"
             f"Their health data today:\n\n{context}\n\n"
@@ -452,6 +474,7 @@ def compose_brief(
     food        = _fetch_food_full(db, profile_id, day_start, day_end)
     supps       = _fetch_supplement_status(db, profile_id, local_today, day_start, day_end)
     whoop       = _fetch_whoop(db, profile_id, local_today)
+    sprint      = _fetch_active_sprint(db, profile_id, local_today)
     viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, day_start, day_end)
 
     model      = str(cfg.get("brief.model", _BRIEF_MODEL)).strip('"')
@@ -460,12 +483,22 @@ def compose_brief(
                                is_stale=whoop.get("stale", False))
     supps_txt  = _supps_section(supps)
     whoop_txt  = _whoop_section(whoop, is_minor)
+    # Training plan + adherence from the active sprint's goals jsonb, autoregulated by WHOOP
+    # recovery. Recovery bands overridable via system_config (defaults = WHOOP-standard 67/34).
+    from lib import sprints as _sprints
+    g_min = float(str(cfg.get("sprint.recovery_green_min", _sprints.DEFAULT_GREEN_MIN)).strip('"'))
+    y_min = float(str(cfg.get("sprint.recovery_yellow_min", _sprints.DEFAULT_YELLOW_MIN)).strip('"'))
+    training_txt = _sprints.render_training_section(
+        sprint, local_today, whoop.get("recovery"), green_min=g_min, yellow_min=y_min)
     viome_txt  = _viome_section(viome_flags)
     actions_txt = _call_claude_actions(
         api_key, model, food_txt, supps_txt, whoop_txt, viome_txt, is_minor,
+        training_txt=training_txt,
     )
 
     sections = [f"*Daily brief — {display_name}*", food_txt, supps_txt, whoop_txt]
+    if training_txt:
+        sections.append(training_txt)
     if viome_txt:
         sections.append(viome_txt)
     if actions_txt:

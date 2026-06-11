@@ -1,5 +1,28 @@
 # HealthSpan Skill — Changelog
 
+## v3.17.0 — daily brief shows the training plan + adherence (sprints.goals jsonb) (2026-06-11)
+
+**The Telegram daily review now renders today's training plan, autoregulated by WHOOP recovery.**
+
+### `sprints.goals` is now an OBJECT (was a flat `string[]`)
+- New shape: `{block_goals:[str], weekly_plan:{<weekday>:{sessions:[str],intensity:str,hard?,recovery?}},
+  rules:[str], adherence_log:{<YYYY-MM-DD>:{gym,beach,pool,hike,massage}}}`. Legacy rows (still arrays)
+  read safely via `normalize_goals()`. The `sprints_status` view now returns `goals->'block_goals'`
+  for object rows so every existing consumer (dashboard, markdown report) keeps the goal-strings contract.
+
+### New `lib/sprints.py` + Training brief section (`monitor/brief.py`)
+- `_fetch_active_sprint` selects the sprint whose `[start_date,end_date]` contains today (profile's
+  local day, latest start wins). `render_training_section` shows today's `weekly_plan[weekday]`
+  sessions + intensity (HARD / recovery flagged), the WHOOP-autoregulated directive, and today's
+  adherence ticks. Recovery bands: green ≥67 proceed / yellow 34–66 downgrade hard→moderate /
+  red <34 pool+beach+massage — defaults overridable via `system_config`
+  (`sprint.recovery_green_min`/`_yellow_min`), so no threshold is hardcoded in logic. Minor-safe
+  (sessions/intensity only). The rest-of-day Claude actions now see the plan too.
+- `mark_done(db, sprint_id, date, activity)` persists a Telegram tick into `goals.adherence_log`
+  (read-modify-write over REST, or `jsonb_set` over psycopg2) — no DDL; `sprints` already has
+  UPDATE + `has_profile_access` RLS. Multi-tenant: works for any profile with a sprint row (Dea once
+  hers exists). 15 unit tests; suite 303/0/9.
+
 ## v3.16.0 — unrestricted maintainer bundle + non-maintainer self-write + strength write path (2026-06-11)
 
 **Two new bundle variants and the write paths that make them work.**
