@@ -1,5 +1,29 @@
 # HealthSpan Skill — Changelog
 
+## v3.17.1 — training-plan follow-ups: rule-sourced directive + Telegram adherence ticks (2026-06-11)
+
+**Two loose ends from v3.17.0 closed.**
+
+### Autoregulation directive reads from `goals.rules` (one source of truth)
+- `parse_autoreg_directives()` extracts the `Green=…; Yellow=…; Red=…` text from the sprint's own
+  autoregulation rule, so editing the sprint changes the brief with no code change. Falls back to
+  `DEFAULT_DIRECTIVES` for legacy / differently-worded rules. PC's brief now shows his rule's exact
+  wording ("downgrade hard->moderate").
+
+### Telegram adherence ticks (wired `mark_done` end-to-end)
+- The daily brief now carries an inline keyboard (`lib/sprints.adherence_keyboard`, 3+2 layout,
+  ✅/⬜ per activity); `monitor/inbox_drain.telegram_send` gained an optional `reply_markup`.
+- **telegram-webhook v8 (deployed 2026-06-11):** an additive `callback_query` branch handles a tap —
+  parses `tick:<sprintId>:<date>:<activity>`, verifies the tapping chat owns the sprint
+  (service_role bypasses RLS, so ownership is checked explicitly), sets
+  `goals.adherence_log[date][activity]=true`, answers the callback toast, and refreshes the keyboard
+  face. The message-ingestion path is untouched. Legacy array-shaped goals are normalized on write.
+- Python `adherence_keyboard` + Deno `buildAdherenceKeyboard` share the exact layout/callback_data
+  (≤64-byte limit verified both sides). Live write-path proven idempotent against PC's sprint.
+  Suite 308/0/9.
+- ⚠️ Telegram only delivers callbacks if the bot's `allowed_updates` includes `callback_query`
+  (re-set the webhook with it if ticks don't register). Final live confirmation = tap a button on a brief.
+
 ## v3.17.0 — daily brief shows the training plan + adherence (sprints.goals jsonb) (2026-06-11)
 
 **The Telegram daily review now renders today's training plan, autoregulated by WHOOP recovery.**

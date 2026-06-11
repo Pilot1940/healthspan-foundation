@@ -787,13 +787,19 @@ def content_cluster_ungrouped(
 
 # ── telegram ──────────────────────────────────────────────────────────────────
 
-def telegram_send(token: str, chat_id: int, text: str) -> int | None:
+def telegram_send(token: str, chat_id: int, text: str, reply_markup: dict | None = None) -> int | None:
     """Best-effort Telegram sendMessage. Never raises. Returns the sent message_id (so a
-    staged item can correlate the user's reply back to it), or None on failure."""
+    staged item can correlate the user's reply back to it), or None on failure.
+
+    `reply_markup` (optional) attaches an inline keyboard — e.g. the sprint adherence ticks
+    (`lib.sprints.adherence_keyboard`); the telegram-webhook handles the button callbacks."""
     try:
+        payload: dict = {"chat_id": chat_id, "text": text}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         resp = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json=payload,
             timeout=10.0,
         )
         return resp.json().get("result", {}).get("message_id")

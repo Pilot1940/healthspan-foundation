@@ -116,6 +116,23 @@ def test_render_legacy_array_no_weekly_plan():
     assert "rest / unplanned" in out  # no weekly_plan in legacy shape
 
 
+def test_adherence_keyboard_shape_and_callback_data():
+    kb = sprints.adherence_keyboard("sprint-9", "2026-06-11", {"gym": True})
+    rows = kb["inline_keyboard"]
+    assert len(rows) == 2 and len(rows[0]) == 3 and len(rows[1]) == 2  # 3+2 layout
+    flat = [b for row in rows for b in row]
+    gym = next(b for b in flat if b["callback_data"].endswith(":gym"))
+    assert gym["text"] == "✅ gym"  # already-done shows ✅
+    assert gym["callback_data"] == "tick:sprint-9:2026-06-11:gym"
+    pool = next(b for b in flat if b["callback_data"].endswith(":pool"))
+    assert pool["text"] == "⬜ pool"
+    # callback_data must stay within Telegram's 64-byte limit even with a real UUID
+    import uuid
+    long = sprints.adherence_keyboard(str(uuid.uuid4()), "2026-06-11", {})
+    assert all(len(b["callback_data"].encode()) <= 64
+               for row in long["inline_keyboard"] for b in row)
+
+
 def test_mark_done_rejects_unknown_activity():
     import pytest
     with pytest.raises(ValueError):

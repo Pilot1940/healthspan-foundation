@@ -58,7 +58,14 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   sprints has UPDATE+RLS). `sprints_status` view returns `block_goals` for object rows (existing
   consumers unchanged). Multi-tenant (works for Dea once she has a sprint row). Suite 303/0/9.
   Live-verified render for PC's "Phuket Sprint 2" (Thursday: pool/beach/hike/massage, 🟡 66% → downgrade).
-  ⚠️ No Telegram tick UI yet — `mark_done` is ready but unwired (no tick buttons in the webhook).
+- **Training-plan follow-ups SHIPPED (v3.17.1, 2026-06-11).** (1) Autoregulation directive now reads
+  from `goals.rules` (`parse_autoreg_directives` extracts `Green=/Yellow=/Red=` text → one source of
+  truth; falls back to defaults). (2) **Telegram adherence ticks wired end-to-end:** brief carries an
+  inline keyboard (`lib/sprints.adherence_keyboard`; `telegram_send` gained `reply_markup`);
+  **telegram-webhook v8 deployed** with an additive `callback_query` branch → verifies sprint
+  ownership → sets `goals.adherence_log[date][activity]=true` → toast + keyboard refresh. Message
+  path untouched. Suite 308/0/9. ⚠️ Needs the bot's `allowed_updates` to include `callback_query`;
+  final live confirmation = tap a button on a brief (I can't send one without CI creds).
 
 - **Two bundle variants + their write paths SHIPPED (v3.16.0, 2026-06-11).**
   (A) **Unrestricted maintainer connection (`lib/db.py`):** `connection.direct_role.privileged=true`

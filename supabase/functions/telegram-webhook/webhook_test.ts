@@ -5,7 +5,31 @@
 // injection safety) without a live DB or Telegram connection.
 // DB-layer tests (dedup row count, media_inbox schema) live in tests/unit/test_telegram_webhook.py.
 import { assertEquals, assertNotEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { verifySecretToken, guessKind } from "./index.ts";
+import { verifySecretToken, guessKind, buildAdherenceKeyboard } from "./index.ts";
+
+// ── buildAdherenceKeyboard (sprint adherence ticks) ──────────────────────────────
+
+Deno.test("buildAdherenceKeyboard: 3+2 layout, ✅ for done, tick callback_data", () => {
+  const kb = buildAdherenceKeyboard("sprint-9", "2026-06-11", { gym: true });
+  assertEquals(kb.inline_keyboard.length, 2);
+  assertEquals(kb.inline_keyboard[0].length, 3);
+  assertEquals(kb.inline_keyboard[1].length, 2);
+  const flat = kb.inline_keyboard.flat();
+  const gym = flat.find((b) => b.callback_data.endsWith(":gym"))!;
+  assertEquals(gym.text, "✅ gym");
+  assertEquals(gym.callback_data, "tick:sprint-9:2026-06-11:gym");
+  const pool = flat.find((b) => b.callback_data.endsWith(":pool"))!;
+  assertEquals(pool.text, "⬜ pool");
+});
+
+Deno.test("buildAdherenceKeyboard: callback_data stays within Telegram 64-byte limit", () => {
+  const kb = buildAdherenceKeyboard(crypto.randomUUID(), "2026-06-11", {});
+  for (const row of kb.inline_keyboard) {
+    for (const b of row) {
+      assertEquals(new TextEncoder().encode(b.callback_data).length <= 64, true);
+    }
+  }
+});
 
 // ── verifySecretToken ──────────────────────────────────────────────────────────
 

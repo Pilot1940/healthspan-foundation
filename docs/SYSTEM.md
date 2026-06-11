@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 064 applied (2026-06-11), skill v3.17.0.
+> state with migration 064 applied (2026-06-11), skill v3.17.1.
 
 ---
 
@@ -126,6 +126,12 @@ the per-function "additional secrets" lists below).
   brief request and composes briefs inline (LLM-routed text, 2026-06-08). Replies to a
   clarify prompt re-queue the original item with `[clarification: …]` (staged-or-logged
   supersede, migs 049/054/055). `is_minor` changes ack/push wording.
+- **Sprint adherence ticks (v8, 2026-06-11):** an additive `callback_query` branch handles taps
+  on the daily brief's inline keyboard. `callback_data` = `tick:<sprintId>:<date>:<activity>`; the
+  handler verifies the tapping chat is an active identity that OWNS the sprint (service_role
+  bypasses RLS, so ownership is checked explicitly), sets `goals.adherence_log[date][activity]=true`,
+  answers the callback toast, and refreshes the keyboard face. The message-ingestion path is
+  untouched. ⚠️ requires the bot's `allowed_updates` to include `callback_query`.
 - **Additional secrets:** `TELEGRAM_BOT_TOKEN` (download files + send replies),
   `TELEGRAM_WEBHOOK_SECRET` (verify inbound signature), and optionally
   `ROUTINE_TRIGGER_URL` + `ROUTINE_BEARER` (fire the legacy Routine drain — debounced

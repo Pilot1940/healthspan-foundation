@@ -153,6 +153,20 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
     return "\n".join(lines)
 
 
+def adherence_keyboard(sprint_id: str, today_iso: str, done_map: dict | None = None) -> dict:
+    """Telegram inline keyboard to tick today's activities (callback → telegram-webhook).
+
+    callback_data = `tick:<sprint_id>:<YYYY-MM-DD>:<activity>` (≤64 bytes — uuid+date+activity
+    fits). Already-done activities show ✅. Laid out 3 + 2 to stay tappable on mobile.
+    """
+    done = done_map or {}
+    def btn(a: str) -> dict:
+        return {"text": f"{'✅' if done.get(a) else '⬜'} {a}",
+                "callback_data": f"tick:{sprint_id}:{today_iso}:{a}"}
+    return {"inline_keyboard": [[btn(a) for a in ACTIVITIES[:3]],
+                               [btn(a) for a in ACTIVITIES[3:]]]}
+
+
 def mark_done(db, sprint_id: str, date_iso: str, activity: str, *, current_goals=None) -> dict:
     """Persist a Telegram tick: set goals.adherence_log[date_iso][activity] = true.
 

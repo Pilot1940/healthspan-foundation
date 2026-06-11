@@ -1,3 +1,4 @@
+// deploy: 2026-06-11 v8 — sprint adherence ticks: callback_query → goals.adherence_log (additive)
 // deploy: 2026-06-09 ce91936 — supersede-on-reply (logged food) + retire review row on clarify
 // telegram-webhook — Phase 1 + 3A ingestion: auth, dedup, media→Storage, enqueue, Routine fire.
 // Phase 3A adds: media_group_id capture (album clustering) + Routine fire-trigger (deduped).
@@ -71,6 +72,68 @@ async function telegramSend(chatId: number, text: string): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text }),
   }).catch(() => {}); // best-effort — never let a reply failure lose the update
+}
+
+// ── Sprint adherence ticks (inline-keyboard callbacks) ───────────────────────────
+// The daily brief attaches an inline keyboard (lib/sprints.adherence_keyboard); each tap
+// is a callback_query handled here. Must mirror the Python keyboard layout exactly.
+
+const TICK_ACTIVITIES = ["gym", "beach", "pool", "hike", "massage"];
+
+export function buildAdherenceKeyboard(sprintId: string, dateIso: string, done: Record<string, boolean>) {
+  const btn = (a: string) => ({
+    text: `${done[a] ? "✅" : "⬜"} ${a}`,
+    callback_data: `tick:${sprintId}:${dateIso}:${a}`,
+  });
+  return {
+    inline_keyboard: [
+      TICK_ACTIVITIES.slice(0, 3).map(btn),
+      TICK_ACTIVITIES.slice(3).map(btn),
+    ],
+  };
+}
+
+async function answerCallback(callbackId: string, text: string): Promise<void> {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
+  await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackId, text }),
+  }).catch(() => {});
+}
+
+async function editKeyboard(chatId: number, messageId: number, replyMarkup: unknown): Promise<void> {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
+  await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: replyMarkup }),
+  }).catch(() => {}); // best-effort — the DB write is the source of truth, not the button face
+}
+
+// Persist one adherence tick into sprints.goals.adherence_log[date][activity] = true.
+// service_role bypasses RLS, so ownership is enforced explicitly (sprint.profile_id ===
+// the caller's identity). Returns the day's done-map for the keyboard refresh, or null on
+// a rejected/failed tick. Idempotent (set true).
+async function applyTick(
+  db: SupabaseClient, sprintId: string, dateIso: string, activity: string, profileId: string,
+): Promise<Record<string, boolean> | null> {
+  if (!TICK_ACTIVITIES.includes(activity)) return null;
+  const { data: sprint } = await db
+    .from("sprints").select("id, profile_id, goals").eq("id", sprintId).maybeSingle();
+  if (!sprint || sprint.profile_id !== profileId) return null;  // ownership check
+
+  // Normalize like lib/sprints.normalize_goals: legacy flat array → {block_goals: [...]}.
+  const goals: any = Array.isArray(sprint.goals)
+    ? { block_goals: sprint.goals }
+    : (sprint.goals && typeof sprint.goals === "object" ? sprint.goals : {});
+  const log = (goals.adherence_log && typeof goals.adherence_log === "object") ? goals.adherence_log : {};
+  const day = { ...(log[dateIso] ?? {}), [activity]: true };
+  const newGoals = { ...goals, adherence_log: { ...log, [dateIso]: day } };
+
+  const { error } = await db.from("sprints").update({ goals: newGoals }).eq("id", sprintId);
+  if (error) return null;
+  return day;
 }
 
 async function alertMaintainer(db: SupabaseClient, unknownChatId: number, preview?: string): Promise<void> {
@@ -208,10 +271,43 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (seen) return new Response("already processed", { status: 200 });
 
+  // 3b. callback_query — a sprint adherence-tick button on the daily brief. Additive: the
+  // message-ingestion path below is untouched. callback_data = tick:<sprintId>:<date>:<activity>.
+  const cb = update.callback_query;
+  if (cb) {
+    const cbChatId: number | undefined = cb.message?.chat?.id;
+    const cbMsgId: number | undefined = cb.message?.message_id;
+    const data: string = cb.data ?? "";
+    const m = /^tick:([^:]+):(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data);
+    if (!m || cbChatId === undefined) {
+      await answerCallback(cb.id, "");
+      await db.from("telegram_processed_updates").insert({ update_id: updateId });
+      return new Response("ok", { status: 200 });
+    }
+    const [, sprintId, dateIso, activity] = m;
+    // The tapping chat must be an ACTIVE identity; the sprint must belong to that profile
+    // (applyTick enforces ownership). A non-maintainer can only tick their own sprint.
+    const { data: cbIdentity } = await db
+      .from("telegram_identities")
+      .select("profile_id, status")
+      .eq("chat_id", cbChatId)
+      .maybeSingle();
+    let day: Record<string, boolean> | null = null;
+    if (cbIdentity?.status === "active") {
+      day = await applyTick(db, sprintId, dateIso, activity, cbIdentity.profile_id);
+    }
+    await answerCallback(cb.id, day ? `✅ ${activity} logged` : "Couldn't log that");
+    if (day && cbMsgId !== undefined) {
+      await editKeyboard(cbChatId, cbMsgId, buildAdherenceKeyboard(sprintId, dateIso, day));
+    }
+    await db.from("telegram_processed_updates").insert({ update_id: updateId });
+    return new Response("ok", { status: 200 });
+  }
+
   // 4. Extract message (message or edited_message; ignore non-message updates)
   const msg = update.message ?? update.edited_message;
   if (!msg) {
-    // Non-message update (inline query, callback, etc.) — ack without enqueuing
+    // Non-message update (inline query, etc.) — ack without enqueuing
     await db.from("telegram_processed_updates").insert({ update_id: updateId });
     return new Response("ok", { status: 200 });
   }
