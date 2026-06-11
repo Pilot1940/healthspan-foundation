@@ -1294,8 +1294,6 @@ def _process_cluster(
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
-    meal_verdict: str = "clean"
-    meal_flags: list[str] = []
 
     # An image is ALWAYS a log, never a brief. The vision prompt says so, but the model
     # occasionally returns "brief" for a caption-less / ambiguous photo (e.g. a French
@@ -1328,6 +1326,7 @@ def _process_cluster(
         food_items: list[dict] = extracted if isinstance(extracted, list) else [extracted]
         statuses: list[str] = []
         inserted_ids: list[str] = []   # food_logs.id for rows we successfully inserted
+        inserted_pairs: list[tuple[dict, str]] = []  # (food_item, id) for per-item verdict
         food_stage_reason: str | None = None  # first stage_reason from any staged RPC result
         has_ref_miss = False  # any item without a food_reference hit
         for food_item in food_items:
@@ -1377,6 +1376,7 @@ def _process_cluster(
                 statuses.append(s)
                 if s == "inserted" and res.get("id"):
                     inserted_ids.append(str(res["id"]))
+                    inserted_pairs.append((food_item, str(res["id"])))
                 if s == "staged":
                     if res.get("id"):
                         staged_review_ids_out.append(str(res["id"]))  # retire on clarify-supersede
@@ -1406,30 +1406,39 @@ def _process_cluster(
             mark_rows(db, _ids(cluster), "done")
             written_food_ids = list(inserted_ids)  # for supersede-on-reply correlation
 
-        # Viome cross-check — collect all ingredient + description candidates across items
-        if rpc_status == "inserted" and not is_minor:
-            viome_candidates: list[str] = []
+        # Viome cross-check — PER ITEM, not meal-wide. A single flagged ingredient
+        # (e.g. mushrooms in one dish) must tag only the dish that contains it, never
+        # smear across every row in the photo cluster. ONE lookup over the union of
+        # candidates; then each row gets only the verdicts whose ingredient is its own.
+        if rpc_status == "inserted" and not is_minor and inserted_pairs:
+            item_terms: list[set[str]] = []   # parallel to inserted_pairs: each item's own terms
+            all_candidates: list[str] = []
             seen_vc: set[str] = set()
-            for fi in food_items:
-                if not isinstance(fi, dict):
-                    continue
-                for c in ([f.get("name") or "" for f in (fi.get("foods") or [])]
-                           + [fi.get("description") or ""]):
+            for fi, _fid in inserted_pairs:
+                cands = ([f.get("name") or "" for f in (fi.get("foods") or [])]
+                         + [fi.get("description") or ""])
+                terms = {c.strip().lower() for c in cands if c and c.strip()}
+                item_terms.append(terms)
+                for c in cands:
                     cl = c.strip().lower()
                     if cl and cl not in seen_vc:
                         seen_vc.add(cl)
-                        viome_candidates.append(c.strip())
-            if viome_candidates:
-                viome_verdicts = lookup_viome_verdicts(db, viome_candidates, str(profile_id))
+                        all_candidates.append(c.strip())
 
-            # Compute meal verdict and store on food_logs (best-effort)
-            meal_verdict, meal_flags = compute_meal_verdict(viome_verdicts)
-            if inserted_ids:
+            # Meal-level union also feeds the Telegram confirmation lines (one line per
+            # unique flagged ingredient — _viome_verdict_lines, below). Per-row storage
+            # is scoped; the confirmation summary stays meal-level.
+            viome_verdicts = (lookup_viome_verdicts(db, all_candidates, str(profile_id))
+                              if all_candidates else [])
+            for (fi, fid), terms in zip(inserted_pairs, item_terms):
+                own = [v for v in viome_verdicts
+                       if (v.get("item") or "").strip().lower() in terms]
+                item_verdict, item_flags = compute_meal_verdict(own)
                 try:
                     db.update(
                         "food_logs",
-                        {"id": f"in.({','.join(inserted_ids)})"},
-                        {"verdict": meal_verdict, "flags": meal_flags},
+                        {"id": f"eq.{fid}"},
+                        {"verdict": item_verdict, "flags": item_flags},
                     )
                 except Exception as exc:
                     log.warning("verdict UPDATE on food_logs failed: %s", exc)

@@ -808,6 +808,43 @@ def test_food_list_writes_each_item():
     assert link_patches[0]["body"]["logged_food_ids"] == ["f1", "f2", "f3"]
 
 
+def test_food_list_viome_flag_is_per_item_not_meal_wide():
+    """A flagged ingredient (mushrooms=superfood) must tag ONLY the dish that contains
+    it — never smear across every row in the photo cluster (the 'mushrooms x5' bug)."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),  # fettuccine (has mushrooms)
+        (200, {"id": "f2", "status": "inserted"}),  # salad (no mushrooms)
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="fettuccine and a salad")]
+
+    food_list = [
+        {"description": "fettuccine with mushrooms", "calories": 420, "protein_g": 14,
+         "foods": [{"name": "mushrooms"}], "confidence": 0.9},
+        {"description": "garden salad", "calories": 90, "protein_g": 3,
+         "foods": [{"name": "lettuce"}], "confidence": 0.9},
+    ]
+    viome = [{"item": "mushrooms", "effective_classification": "superfood", "reason": ""}]
+
+    with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_past_food_macros", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=viome), \
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    # Per-row verdict PATCHes on food_logs — one per inserted item, scoped by id.
+    verdict_patches = {
+        c["url"].split("id=eq.")[1].split("&")[0]: c["body"]
+        for c in captured
+        if "food_logs" in c["url"] and "flags" in (c["body"] or {})
+    }
+    assert verdict_patches["f1"] == {"verdict": "superfood", "flags": ["mushrooms"]}
+    assert verdict_patches["f2"] == {"verdict": "clean", "flags": []}
+
+
 def test_food_list_mixed_status_stages_cluster():
     """If any item in a list stages (none fail), the whole cluster is staged."""
     db, captured = _db_capture([

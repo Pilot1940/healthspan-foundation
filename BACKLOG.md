@@ -596,3 +596,43 @@ for the Edge function, or mock the Supabase client in the existing tests.
    real override is the `HS_FOOD_MODEL` env var); `tests/unit/test_telegram_webhook.py`'s
    9 live-DB tests self-skip in CI, so the deployed webhook v7 supersede path has no
    credential-less coverage.
+
+---
+
+## #23 — Viome flags smeared across a photo cluster (meal-wide, not per-item) — **SHIPPED 2026-06-11 (v3.15.0)**
+
+**Severity:** LOW (cosmetic) · **Owner:** CC · **Status:** SHIPPED.
+A multi-dish photo stamped the meal-wide verdict + the FULL flagged-ingredient list onto EVERY
+`food_logs` row, so one "mushrooms = superfood" ingredient rendered as "Superfoods: mushrooms ×5"
+in the brief. `inbox_drain.py` now scopes the verdict/flags per inserted row (one viome lookup over
+the candidate union, mapped back per item by its own `foods[]`/description terms); the Telegram
+confirmation summary stays meal-level. Regression test
+`test_food_list_viome_flag_is_per_item_not_meal_wide`. Today's 5 lunch rows corrected (only the
+fettuccine keeps mushrooms/superfood). Live on push (CI runs `monitor/`).
+
+---
+
+## #24 — `learn_supplement` dedup is too literal (near-dup catalog rows) — **OPEN, LOW**
+
+**Severity:** LOW · **Owner:** CC · **Status:** OPEN (data cleaned 2026-06-11; root-cause fix pending).
+`learn_supplement` dedups by normalized name, so "B12 Methylcobalamin", "Vitamin B12 Methylcobalamin"
+and the catalog "Methylcobalamin (B12)" all became separate rows; same for "Magnesium Biglycinate"
+(typo) vs "Magnesium Bisglycinate" and "Fish Oil" vs "Omega-3 (EPA+DHA)". Cleaned manually 2026-06-11
+(4 dups merged into canonical, intake logs repointed; 2 real new items confirmed). Fix: fuzzier match
+in `learn_supplement` (token-set / key_active / alias check against the active catalog before
+inserting), or surface a "did you mean <existing>?" confirm. Until then the brief's "Recently learned
+(review)" list is the safety net.
+
+---
+
+## #25 — Common repeat items should never need clarification — **OPEN, MED (PC, 2026-06-11)**
+
+**Severity:** MED (friction on daily logs) · **Owner:** CC (build) · **Status:** OPEN — partially
+addressed 2026-06-11.
+PC's frequently-logged items — the Hooray Proten Thai Tea, the Hooray lactose-free banana shake, and
+his daily morning whey + creatine + glutamine shake ("TWT") — keep triggering clarify/guess cycles.
+They should resolve deterministically with known macros every time. Mechanism already exists:
+`food_reference` (mig 041) with `servings` scaling (#10) — seed these as reference rows (global for
+the branded shakes, PC-personal for the morning recipe) with `serving_desc` so fractional logs scale.
+Broader follow-up: food auto-promote-to-reference after N confirmed logs (the food analogue of
+supplement learn-on-clarify) — see #13.

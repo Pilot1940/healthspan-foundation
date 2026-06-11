@@ -1,5 +1,21 @@
 # HealthSpan Skill — Changelog
 
+## v3.15.0 — strength_logs + per-item Viome flags + supplement dedup (2026-06-11)
+
+**A new training-log table, a fix for the "mushrooms ×5" brief smear, and a catalog cleanup.**
+
+### `strength_logs` table (migration 063)
+- New `strength_logs` table for resistance training — load / sets / reps / RIR per exercise group, with a `performed_on` GENERATED date (UTC, the immutable form copied from `supplement_intake_logs.taken_on`).
+- Soft-delete via `voided_at`/`void_reason` + `maintainer_void_strength(p_id, p_reason)` SECURITY DEFINER RPC — byte-for-byte mirror of mig 060's `maintainer_void_food` (maintainer-gated, reason ≥5 chars, idempotent `already_voided`). Rows append; never DELETE.
+- RLS + grants copied from `food_logs`: one FOR ALL policy on `has_profile_access(profile_id)`; `authenticated` gets SELECT/INSERT/UPDATE only (no DELETE, no `healthspan_app`). Verified live in the migration's own DO-block.
+- Seed is **separate** (`scripts/seed_strength_063.py`) — the schema is transportable/multi-tenant, so PC's personal session never lives in the migration. PC's 2026-06-11 session seeded (trap-bar deadlift 165 lb 5×5, two cable lat-pulldown sets). The `machine_chest_press` row recorded `load_unit='plates'` and is **held** pending the real unit (likely 140 lb stack) — flagged, not guessed.
+
+### Viome flags are now PER ITEM, not meal-wide (`inbox_drain.py`)
+- A multi-dish photo used to stamp the meal-wide verdict + the FULL flagged-ingredient list onto **every** row in the cluster — so one "mushrooms = superfood" ingredient showed as "Superfoods: mushrooms ×5" in the brief. Now each inserted row gets only the verdicts whose ingredient is its own (one viome lookup over the union, scoped back per item by the item's own `foods[]`/description terms). The Telegram confirmation summary stays meal-level. Regression test added.
+
+### Supplement catalog dedup (data)
+- `learn_supplement`'s normalized-name dedup let near-duplicates through ("B12 Methylcobalamin" vs "Methylcobalamin (B12)"). Merged 4 learned duplicates into their canonical rows (2× B12, "Magnesium Biglycinate" typo → Bisglycinate, "Fish Oil" → Omega-3): repointed the intake logs, deleted the dup catalog rows. Confirmed the 2 genuinely-new learned items (ashwagandha gummy, ketone electrolytes) so the brief's "Recently learned (review)" list is clean. (Deeper fix — fuzzier dedup in `learn_supplement` — is backlog.)
+
 ## v3.14.3 — Single extractor + confidence gate + portion scaling (2026-06-08, advisor clean pass)
 
 **The structural fix for "I fixed it but it happened again" — one prompt, one source of truth — plus clarify-on-uncertainty and portion-aware references. NEEDS LIVE VERIFICATION.**

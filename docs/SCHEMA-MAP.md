@@ -1,8 +1,9 @@
-Wrote /Users/p.chitalkar/Library/CloudStorage/Dropbox/Development/HealthSpan/CODE/healthspan-foundation/docs/SCHEMA-MAP.md (60/61 tables documented, 1 unmapped)
-n `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-10 10:10 UTC.
-> generated_at: 2026-06-10T10:10:34Z
-> coverage: 60 of 61 public base tables documented.
+# HealthSpan — Schema Map (semantic reference)
+
+> **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
+> Generated 2026-06-11 10:57 UTC.
+> generated_at: 2026-06-11T10:57:25Z
+> coverage: 61 of 62 public base tables documented.
 
 ## `profiles`
 _One row per tracked person. auth_user_id nullable (children with no login). Health data keys to profile_id; access via family_memberships + has_profile_access()._
@@ -851,6 +852,29 @@ _Staging queue for AI-extracted test/investigation results (rule #2). TRAP: not 
 | `raw_text` | text | Source text snippet. |
 | `created_at` | timestamp with time zone | Row insert time. |
 | `profile_id` | uuid | FK profiles.id — the LIVE per-person key. |
+
+## `strength_logs`
+_Resistance-training sets: load / sets / reps / RIR per exercise group. Append-only; void via maintainer_void_strength(). RLS mirrors food_logs._
+
+| column | type | meaning / unit / trap |
+|---|---|---|
+| `id` | uuid | Primary key. |
+| `profile_id` | uuid | Owner profile (FK profiles.id, ON DELETE CASCADE). |
+| `performed_at` | timestamp with time zone | When the set group was performed (timestamptz). |
+| `performed_on` | date | GENERATED ALWAYS from performed_at AT TIME ZONE UTC — never insert/update; set performed_at. |
+| `exercise` | text | Exercise name, e.g. trap_bar_deadlift, cable_lat_pulldown. |
+| `modality` | text | Equipment type: barbell \| machine \| cable \| dumbbell \| bodyweight. |
+| `load_value` | numeric | Load magnitude in load_unit (NULL for pure bodyweight). |
+| `load_unit` | text | Unit of load_value: kg \| lb \| bodyweight. Never 'plates' — resolve to the real stack unit first. |
+| `sets` | integer | Number of sets in this group. |
+| `reps` | integer | Reps per set in this group. |
+| `rir` | numeric | Reps in reserve (proximity to failure). |
+| `device_specific` | boolean | True when machine/cable loads are not comparable to free-weight loads. |
+| `notes` | text | Free-text note for the set group. |
+| `source` | text | Origin of the row, default 'skill'. |
+| `voided_at` | timestamp with time zone | Soft-delete marker (mig 060 pattern). Non-NULL = excluded from every read/aggregation (WHERE voided_at IS NULL). Set via maintainer_void_strength(). |
+| `void_reason` | text | Why the row was voided (audit trail; >=5 chars, set by maintainer_void_strength()). |
+| `created_at` | timestamp with time zone | Row insert time. |
 
 ## `supplement_aliases`
 _Alias → supplements resolution (brand names, abbreviations, OCR variants). UNIQUE(alias, source)._

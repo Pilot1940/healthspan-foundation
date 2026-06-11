@@ -43,6 +43,34 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
+## Current State (2026-06-11)
+
+- **strength_logs (mig 063) + per-item Viome flags + supplement dedup SHIPPED (v3.15.0, 2026-06-11).**
+  (1) **strength_logs (mig 063):** new table for resistance training (`exercise`, `modality`,
+  `load_value`/`load_unit`, `sets`, `reps`, `rir`, `device_specific`, `performed_on` GENERATED UTC
+  date). Soft-delete via `voided_at`/`void_reason` + `maintainer_void_strength(p_id, p_reason)` —
+  byte-for-byte mirror of mig 060's `maintainer_void_food`. RLS + grants copied from `food_logs`
+  (FOR ALL on `has_profile_access`; authenticated S/I/U, NO DELETE, no `healthspan_app`). Verified
+  live in the migration's own DO-block. Seed is SEPARATE (`scripts/seed_strength_063.py`,
+  `--commit`) — transportable schema keeps personal data out of the migration. PC's 2026-06-11
+  session seeded (trap-bar DL 165 lb 5×5; 2× cable lat-pulldown). **`machine_chest_press` HELD** —
+  recorded `load_unit='plates'` value 140 (invalid unit; likely 140 lb stack); confirm before seeding.
+  (2) **Viome flags now PER ITEM, not meal-wide (`inbox_drain.py`):** a multi-dish photo used to
+  stamp the meal-wide verdict + the FULL flagged-ingredient list onto EVERY row, so one
+  "mushrooms = superfood" showed as "Superfoods: mushrooms ×5" in the brief. Now each inserted row
+  gets only the verdicts whose ingredient is its own (one viome lookup over the union, scoped back
+  per item by `foods[]`/description terms). Confirmation summary stays meal-level. Regression test
+  `test_food_list_viome_flag_is_per_item_not_meal_wide`; suite **283/0/9**. Today's 5 lunch rows
+  corrected (only the fettuccine keeps mushrooms/superfood).
+  (3) **Supplement catalog dedup (data):** `learn_supplement`'s normalized-name dedup let
+  near-dups through. Merged 4 learned duplicates into canonical rows (2× B12, "Magnesium
+  Biglycinate" typo → Bisglycinate, "Fish Oil" → Omega-3 — repointed intake logs, deleted dup
+  rows); confirmed the 2 genuinely-new items (ashwagandha gummy, ketone electrolytes) so the
+  brief's "Recently learned (review)" list is clean. Deeper fix (fuzzier dedup) is backlog.
+  ⚠️ The inbox_drain.py flag fix goes live on push (CI runs `monitor/` directly, no deploy).
+- **Today's food corrections (2026-06-11, with PC):** quiche halved (50% eaten), avocado bowl →250
+  kcal, fettuccine meat removed (→135 kcal). Direct value edits on `food_logs` (not voided/re-logged).
+
 ## Current State (2026-06-10)
 
 - **Backlog batch SHIPPED — #18 #20 #7 #21 (migs 060–062, 2026-06-10).**

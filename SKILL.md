@@ -133,10 +133,11 @@ Every NON-catalog query goes through `run_adhoc_audited`**, which:
     result is NOT "no data"; re-check the traps first.
   - **logs the query + verdict to `query_audit`** (maintainer-reviewable).
 
-**Voided rows (mig 060):** `supplement_intake_logs`, `food_logs` and `biomarkers` carry a soft-delete
-marker — every ad-hoc query over them MUST include `voided_at IS NULL` (a voided row is a corrected
-mistake, kept only for audit). To void a mis-logged row, call `maintainer_void_supplement/_food/
-_biomarker(p_id, p_reason)` (SECURITY DEFINER; maintainer-only; reason ≥5 chars) — never DELETE.
+**Voided rows (mig 060/063):** `supplement_intake_logs`, `food_logs`, `biomarkers` and `strength_logs`
+carry a soft-delete marker — every ad-hoc query over them MUST include `voided_at IS NULL` (a voided
+row is a corrected mistake, kept only for audit). To void a mis-logged row, call
+`maintainer_void_supplement/_food/_biomarker/_strength(p_id, p_reason)` (SECURITY DEFINER;
+maintainer-only; reason ≥5 chars) — never DELETE.
 Re-logging the same supplement/biomarker conflict key automatically un-voids the row.
 
 **CITE guard (BaySys A9 for health — the primary defence against a confidently-wrong number):**
@@ -237,7 +238,11 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
   p_profile_id)` (per-ingredient Viome verdict), `promote_food_to_reference(p_food_log_id)` (promote a
   confirmed log entry to the shared library). `food_reference.learn_min_logs` threshold in `system_config`.
 - **supplements / _regimens / _intake_logs** — the stack. `_intake_logs.voided_at` non-NULL =
-  corrected mistake; filter `voided_at IS NULL` (same on `food_logs` / `biomarkers`).
+  corrected mistake; filter `voided_at IS NULL` (same on `food_logs` / `biomarkers` / `strength_logs`).
+- **strength_logs** (mig 063) — resistance-training sets: `performed_at`, `exercise`, `modality`,
+  `load_value`/`load_unit`, `sets`, `reps`, `rir`, `device_specific`. Append-only; void via
+  `maintainer_void_strength`; filter `voided_at IS NULL`. `device_specific=true` ⇒ machine/cable
+  loads aren't comparable to free-weight loads (don't trend them against barbell numbers).
 - **training_programs / program_phases / program_workouts** — training plans (prescription in
   `program_phases.weekly_template`). **user_goals** — multiple concurrent goals. **trend_alerts** —
   persisted monitor findings. **health_context_notes** — session memory. **query_audit** — ad-hoc query log

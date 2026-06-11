@@ -178,7 +178,7 @@ code{
 </aside>
 <main class="content">
   <div class="inner">
-<blockquote>The <strong>live Supabase DB is the source of truth for numbers</strong>; the per-person context MD is the source of truth for targets, norms, and coaching voice. Generated against repo state with migration 046 applied (2026-06-08), skill v3.13.0.</blockquote>
+<blockquote>The <strong>live Supabase DB is the source of truth for numbers</strong>; the per-person context MD is the source of truth for targets, norms, and coaching voice. Generated against repo state with migration 063 applied (2026-06-11), skill v3.15.0.</blockquote>
 </section>
 <section id="sec-1">
 <h2 class="section-header">1. SYSTEM OVERVIEW</h2>
@@ -838,8 +838,8 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <section id="sec-4">
 <h2 class="section-header">4. DATABASE SCHEMA</h2>
 <p>Supabase Postgres with Row Level Security on every table. The applied DB state is the source of truth — there is no <code>schema_migrations</code> table; the migration filename sequence (<code>001</code>…<code>NNN</code>) is the canonical ordering record.</p>
-<h3>4.1 Tables (45 active / 16 dormant of 61 base + 7 views, 2026-06-10)</h3>
-<p style="color:#6b7280;font-size:0.9em;">Live DB as of 2026-06-10: <strong>61 base tables + 7 views</strong> — <strong>45 active / 16 dormant</strong> (dormant = zero live rows per <code>pg_stat_user_tables</code> estimates: <code>audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs</code>). Figures are point-in-time — re-count via <code>select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'</code>.</p>
+<h3>4.1 Tables (46 active / 16 dormant of 62 base + 7 views, 2026-06-11)</h3>
+<p style="color:#6b7280;font-size:0.9em;">Live DB as of 2026-06-11: <strong>62 base tables + 7 views</strong> — <strong>46 active / 16 dormant</strong> (dormant = zero live rows per <code>pg_stat_user_tables</code> estimates: <code>audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs</code>). <code>strength_logs</code> (mig 063) is the 62nd base table. Figures are point-in-time — re-count via <code>select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'</code>.</p>
 <p>Grouped by domain. The six most-important tables carry full key-column lists; the rest carry a one-line purpose. Tables marked <code>(empty)</code> or <code>(dormant)</code> exist with RLS but hold no live rows per the SCHEMA-MAP — they are kept for forward use, not yet written by v3.</p>
 <h4>Profiles &amp; Auth</h4>
 <div class="table-wrap"><table>
@@ -1050,6 +1050,10 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <td><code>program_id, phase_id, workout_id, workout_type, prescribed</code>. <code>(empty)</code>.</td>
 </tr>
 <tr>
+<td><strong>strength_logs</strong></td>
+<td>Mig 063. Resistance-training sets: <code>profile_id, performed_at, performed_on (GENERATED date, UTC), exercise, modality (barbell|machine|cable|dumbbell|bodyweight), load_value, load_unit (kg|lb|bodyweight — never 'plates'), sets, reps, rir, device_specific, notes, source, voided_at, void_reason</code>. Append-only; void via <code>maintainer_void_strength()</code>. RLS + grants mirror <code>food_logs</code> (FOR ALL on <code>has_profile_access</code>; authenticated S/I/U, no DELETE). Every read must carry <code>WHERE voided_at IS NULL</code>.</td>
+</tr>
+<tr>
 <td>user_goals</td>
 <td><code>profile_id, metric_definition_id, title, target_value/unit/date, is_active, progress_pct, program_id, baseline_value, achieved_value, achieved_date</code>. Multiple concurrent active goals allowed (mig 020).</td>
 </tr>
@@ -1161,6 +1165,11 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <td>Mig 060 — same contract, for <code>biomarkers</code>.</td>
 </tr>
 <tr>
+<td><code>maintainer_void_strength(p_id, p_reason)</code></td>
+<td>DEFINER</td>
+<td>Mig 063 — same contract, for <code>strength_logs</code>.</td>
+</tr>
+<tr>
 <td><code>claim_inbox_item(item_id)</code></td>
 <td>client method (<code>lib/db_rest.py</code>)</td>
 <td>Single-item claim via filtered PATCH (<code>status pending → processing</code>, <code>prefer_return</code>); returns <code>True</code> if this caller won the race. Not a DB RPC — runs under the drainer&#x27;s JWT, governed by <code>media_inbox</code> RLS.</td>
@@ -1213,7 +1222,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 </tbody></table></div>
 <h3>4.3 RLS Model</h3>
 <ul><li><strong>RLS is enabled on every public table.</strong> New tables without an RLS policy in the same migration do not pass review (Rule 3).</li><li><strong>Two PostgREST roles:</strong></li><li><code>authenticated</code> — every skill/drain session. All reads and writes are scoped to the caller&#x27;s accessible profiles via <code>has_profile_access()</code> / <code>is_maintainer()</code> policies. Cannot see other families&#x27; data.</li><li><code>service_role</code> — bypasses RLS entirely. Used <strong>only</strong> by Edge functions and sync jobs (e.g. <code>whoop_tokens</code> access, webhook inserts). Never used by the skill.</li><li><strong><code>healthspan_app</code></strong> — a Postgres LOGIN role for the direct-psycopg2 path (PC local). Member of <code>authenticated</code> with <code>NOINHERIT</code>, so it must <code>SET ROLE authenticated</code> and set JWT claims explicitly; a bare connection sees nothing. Inherits mig 010&#x27;s grants and all RLS via that path. DELETE/TRUNCATE revoked directly.</li><li><strong>Maintainer-only tables</strong> (SELECT gated to <code>is_maintainer()</code>): <code>query_audit</code>, <code>wearable_sync_log</code>, <code>wearable_sync_errors</code>, <code>stg_food_log_review</code>, <code>stg_supplement_intake_review</code>, <code>stg_biomarker_review</code> (+ <code>stg_food_rule_review</code>, <code>stg_test_result_review</code>). Dea/Dev sessions see zero rows on these by design — they see outcomes, never the machinery. INSERTs to these tables use client-generated UUIDs and no <code>RETURNING</code> (which would invoke the SELECT policy). (Mig 022 originally missed three of these — <code>stg_supplement_intake_review</code>, <code>stg_food_rule_review</code>, <code>stg_test_result_review</code> kept their mig-004 <code>ALL/has_profile_access</code> policy. <strong>Fixed by mig 058, applied 2026-06-10</strong> — all eight now follow the maintainer-SELECT + owner-INSERT pattern, verified live. <strong>Mig 059</strong> added maintainer-gated UPDATE policies on the five <code>stg_*_review</code> tables so the drain — which passes <code>is_maintainer()</code> via its membership to PC&#x27;s maintainer profile, the same mechanism that authorises its <code>maintainer_ingest_*</code> calls — can retire review rows for the clarify auto-match; non-maintainers still cannot UPDATE.)</li><li><strong>Drain service account:</strong> <code>healthspan.drainer@chitalkar.com</code> (env <code>HS_AUTH_EMAIL</code>). Holds <code>owner</code> <code>family_memberships</code> to PC, Dea, and Dev profiles so the three <code>maintainer_ingest_*</code> RPCs pass <code>has_profile_access()</code>. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.</li><li><strong>Grant hardening</strong> (mig 010/014): DELETE and TRUNCATE revoked from <code>authenticated</code> and <code>healthspan_app</code> on all public tables; <code>ALL</code> revoked from <code>anon</code>; shared catalogs are SELECT-only for <code>authenticated</code>.</li></ul>
-<h3>4.4 Migration History (001–062)</h3>
+<h3>4.4 Migration History (001–063)</h3>
 <div class="table-wrap"><table>
 <thead><tr>
 <th>#</th>
@@ -1513,6 +1522,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr><td>060</td><td>void_soft_delete</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #18: <code>voided_at</code>/<code>void_reason</code> on <code>supplement_intake_logs</code>/<code>food_logs</code>/<code>biomarkers</code>; <code>maintainer_void_supplement/_food/_biomarker</code> SECURITY DEFINER RPCs (maintainer-gated, idempotent, reason ≥5 chars); supplement+biomarker ingest RPCs un-void on ON CONFLICT re-log; <code>daily_health_summary</code> food subselects exclude voided; <strong>REVOKE DELETE ON ALL TABLES FROM healthspan_app</strong> (the 2026-06-08 grant had landed on all 60+ tables). Live-verified in a rolled-back txn.</td></tr>
 <tr><td>061</td><td>security_hygiene</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #21: <code>media_inbox</code>/<code>push_log</code> INSERT scoped to <code>authenticated</code> + <code>has_profile_access OR is_maintainer</code>; open INSERT policies on <code>telegram_processed_updates</code>/<code>wearable_sync_errors</code> dropped (service_role/postgres writers only); EXECUTE on legacy <code>ingest_health_artifact</code>/<code>mint_ingestion_token</code> revoked from anon+authenticated; 3 dead config keys deleted; unused <code>claim_inbox_cluster(uuid[])</code> dropped.</td></tr>
 <tr><td>062</td><td>media_retention_config</td><td><strong>Applied 2026-06-10.</strong> BACKLOG #7: seeds <code>media.retention_days</code> (45) for the health-media Storage prune (<code>monitor/media_retention.py</code> + <code>media-retention.yml</code> daily cron).</td></tr>
+<tr><td>063</td><td>strength_logs</td><td><strong>Applied 2026-06-11.</strong> New <code>strength_logs</code> table (resistance sets: load/sets/reps/RIR + <code>performed_on</code> GENERATED UTC date). Soft-delete via <code>voided_at</code>/<code>void_reason</code> + <code>maintainer_void_strength()</code> (mirrors mig 060); RLS + grants copied from <code>food_logs</code> (FOR ALL on <code>has_profile_access</code>; authenticated S/I/U, no DELETE). Seed separate (<code>scripts/seed_strength_063.py</code>) — transportable schema. <code>machine_chest_press</code> row held pending real <code>load_unit</code> ('plates' recorded). Verified live.</td></tr>
 </tbody></table></div>
 </section>
 <section id="sec-5">
@@ -2169,7 +2179,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <p>The <code>&lt;commit7&gt;</code> is the short SHA injected at build time from <code>GITHUB_SHA</code>, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:</p>
 <ul>
   <li><strong>Application code</strong> — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.</li>
-  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 062</strong> (2026-06-10). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
+  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 063</strong> (2026-06-11). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
 </ul>
 
 <h3>Recent deploys</h3>
@@ -2177,6 +2187,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td>—</td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat/schema/fix</span></td><td><strong>strength_logs (mig 063) + per-item Viome flags + supplement dedup (v3.15.0):</strong> new <code>strength_logs</code> table (load/sets/reps/RIR, <code>performed_on</code> GENERATED UTC, soft-delete via <code>maintainer_void_strength</code>, RLS mirrored from <code>food_logs</code>); seed separate (<code>scripts/seed_strength_063.py</code>, <code>machine_chest_press</code> held). Drain stamps Viome verdict/flags <strong>per food item</strong> not meal-wide (fixes "Superfoods: mushrooms ×5"); regression test added. Merged 4 duplicate learned supplements into canonical rows + confirmed 2 real ones. Suite 283/0/9.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#16a34a;font-weight:600;">feat/schema</span></td><td><strong>Backlog batch (migs 060–062):</strong> #18 void soft-delete (<code>maintainer_void_*</code> RPCs, read filters everywhere, healthspan_app DELETE revoked) · #20 WHOOP token-race recovery (Python + <code>_shared/whoop.ts</code>; whoop-webhook v17 + whoop-oauth v13 deployed) · #7 media retention prune (<code>media-retention.yml</code>, 45d) · #21 hygiene (INSERT policies scoped, legacy fns revoked, dead keys deleted, <code>claim_inbox_cluster</code> dropped, <code>hs_ops verify</code> rewritten runtime-derived). Suite 282/0/9.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>whoop-webhook v3 (BACKLOG #19):</strong> <code>recovery.updated</code> id is the sleep UUID — resolve via <code>/v2/recovery</code> collection → integer <code>cycle_id</code>; fixed reversed <code>/v2/cycle/{id}/recovery</code> path. Verified live with a signed synthetic event; first-ever <code>recovery_landed</code> push sent.</td></tr>
 <tr><td>—</td><td>2026-06-10</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Clarify auto-match (BACKLOG #15, mig 059):</strong> fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push.</td></tr>

@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 046 applied (2026-06-08), skill v3.13.0.
+> state with migration 063 applied (2026-06-11), skill v3.15.0.
 
 ---
 
@@ -685,9 +685,9 @@ Supabase Postgres with Row Level Security on every table. The applied DB state i
 source of truth — there is no `schema_migrations` table; the migration filename sequence
 (`001`…`NNN`) is the canonical ordering record.
 
-### 4.1 Tables (45 active / 16 dormant of 61 base + 7 views, 2026-06-10)
+### 4.1 Tables (46 active / 16 dormant of 62 base + 7 views, 2026-06-11)
 
-> Live DB as of 2026-06-10: **61 base tables + 7 views** — **45 active / 16 dormant** (dormant = zero live rows per `pg_stat_user_tables` estimates: `audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs`). Figures are point-in-time — re-count via `select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`.
+> Live DB as of 2026-06-11: **62 base tables + 7 views** — **46 active / 16 dormant** (dormant = zero live rows per `pg_stat_user_tables` estimates: `audit_log, biomarker_targets, body_metrics_history, canonical_aliases, daily_log_metrics, daily_logs, documents, food_rules, ingestion_tokens, program_workouts, stg_biomarker_review, stg_food_rule_review, stg_test_result_review, test_targets, trend_alerts, weight_logs`). `strength_logs` (mig 063) is the 62nd base table. Figures are point-in-time — re-count via `select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`.
 
 
 Grouped by domain. The six most-important tables carry full key-column lists; the rest
@@ -768,6 +768,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | training_programs | `profile_id, name, objective, target_event, start_date, end_date, status (planned\|active\|done\|abandoned)`. |
 | program_phases | `program_id, name, ordinal, start_date, end_date, weekly_template (jsonb)`. |
 | program_workouts | `program_id, phase_id, workout_id, workout_type, prescribed`. `(empty)`. |
+| **strength_logs** | Mig 063. Resistance-training sets: `profile_id, performed_at, performed_on (GENERATED date, UTC), exercise, modality (barbell\|machine\|cable\|dumbbell\|bodyweight), load_value, load_unit (kg\|lb\|bodyweight — never 'plates'), sets, reps, rir, device_specific, notes, source, voided_at, void_reason`. Append-only; void via `maintainer_void_strength()`. RLS + grants mirror `food_logs` (FOR ALL on `has_profile_access`; authenticated S/I/U, no DELETE). Every read must carry `WHERE voided_at IS NULL`. |
 | user_goals | `profile_id, metric_definition_id, title, target_value/unit/date, is_active, progress_pct, program_id, baseline_value, achieved_value, achieved_date`. Multiple concurrent active goals allowed (mig 020). |
 | sprints | `profile_id, name, slug, location, start_date, end_date, goals (jsonb)`. No status column — derive active/completed/upcoming from dates vs today. |
 
@@ -800,6 +801,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | `maintainer_void_supplement(p_id, p_reason)` | DEFINER | Mig 060 (BACKLOG #18). Soft-deletes a `supplement_intake_logs` row (`voided_at = now()`, `void_reason`); maintainer + profile-access gated, reason ≥5 chars, idempotent (`already_voided`). Voided rows are excluded by every read path (`WHERE voided_at IS NULL`). The scoped replacement for the revoked blanket DELETE grant. |
 | `maintainer_void_food(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `food_logs`. |
 | `maintainer_void_biomarker(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `biomarkers`. |
+| `maintainer_void_strength(p_id, p_reason)` | DEFINER | Mig 063 — same contract, for `strength_logs`. |
 | `lookup_food_reference(p_name, p_profile_id)` | DEFINER | Best macro match from `food_reference`; personal rows beat global. |
 | `lookup_viome_verdicts(p_items[], p_profile_id)` | DEFINER | Returns avoid/minimize/superfood verdicts for a list of ingredient names. |
 | `promote_food_to_reference(p_name, p_profile_id, …)` | DEFINER | Upserts a user-confirmed food into their personal `food_reference` library. |
@@ -898,6 +900,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 060 | void_soft_delete | **Applied 2026-06-10.** BACKLOG #18: `voided_at`/`void_reason` on `supplement_intake_logs`/`food_logs`/`biomarkers`; `maintainer_void_supplement/_food/_biomarker` SECURITY DEFINER RPCs (maintainer-gated, idempotent, reason ≥5 chars); supplement+biomarker ingest RPCs un-void on ON CONFLICT re-log; `daily_health_summary` food subselects exclude voided; **REVOKE DELETE ON ALL TABLES FROM healthspan_app** (the 2026-06-08 grant had landed on all 60+ tables). Live-verified in a rolled-back txn. |
 | 061 | security_hygiene | **Applied 2026-06-10.** BACKLOG #21: `media_inbox`/`push_log` INSERT scoped to `authenticated` + `has_profile_access OR is_maintainer`; open INSERT policies on `telegram_processed_updates`/`wearable_sync_errors` dropped (service_role/postgres writers only); EXECUTE on legacy `ingest_health_artifact`/`mint_ingestion_token` revoked from anon+authenticated; 3 dead config keys deleted; unused `claim_inbox_cluster(uuid[])` dropped. |
 | 062 | media_retention_config | **Applied 2026-06-10.** BACKLOG #7: seeds `media.retention_days` (45) for the health-media Storage prune (`monitor/media_retention.py` + `media-retention.yml` daily cron). |
+| 063 | strength_logs | **Applied 2026-06-11.** New `strength_logs` table (resistance-training sets: load/sets/reps/RIR + `performed_on` GENERATED UTC date). Soft-delete via `voided_at`/`void_reason` + `maintainer_void_strength()` (mirrors mig 060); RLS + grants copied from `food_logs` (FOR ALL on `has_profile_access`; authenticated S/I/U, no DELETE). Seed is separate (`scripts/seed_strength_063.py`) — transportable schema, no personal data in the migration. `machine_chest_press` row held pending real `load_unit` (recorded 'plates'). Verified live. |
 
 ---
 
@@ -1476,6 +1479,7 @@ Most-recent first. Curated to deploys that changed live behaviour — keep to th
 
 | Commit | Date | Type | Change |
 |--------|------|------|--------|
+| — | 2026-06-11 | feat/schema/fix | **strength_logs (mig 063) + per-item Viome flags + supplement dedup (v3.15.0):** new `strength_logs` table (load/sets/reps/RIR, `performed_on` GENERATED UTC, soft-delete via `maintainer_void_strength`, RLS mirrored from `food_logs`); seed separate (`scripts/seed_strength_063.py`, `machine_chest_press` held). Drain now stamps Viome verdict/flags **per food item** not meal-wide (fixes "Superfoods: mushrooms ×5"); regression test added. Merged 4 duplicate learned supplements into canonical rows + confirmed 2 real ones. Suite 283/0/9. |
 | — | 2026-06-10 | feat/schema | **Backlog batch (migs 060–062):** #18 void soft-delete (`maintainer_void_*` RPCs, read filters everywhere, healthspan_app DELETE revoked) · #20 WHOOP token-race recovery (Python + `_shared/whoop.ts`; whoop-webhook v17 + whoop-oauth v13 deployed) · #7 media retention prune (`media-retention.yml`, 45d) · #21 hygiene (INSERT policies scoped, legacy fns revoked, dead keys deleted, `claim_inbox_cluster` dropped, `hs_ops verify` rewritten runtime-derived). Suite 282/0/9. |
 | — | 2026-06-10 | fix | **whoop-webhook v3 (BACKLOG #19):** `recovery.updated` id is the sleep UUID — resolve via `/v2/recovery` collection → integer `cycle_id`; fixed reversed `/v2/cycle/{id}/recovery` path. Verified live with a signed synthetic event; first-ever `recovery_landed` push sent. |
 | — | 2026-06-10 | feat | **Clarify auto-match (BACKLOG #15, mig 059):** fresh-message answers to a pending clarify are LLM-matched and processed as the clarification; end-of-run orphan sweep retires staged items independently logged. 13 unit tests; live via CI on push. |
