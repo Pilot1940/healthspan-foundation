@@ -154,14 +154,14 @@ code{
 <body>
 <aside class="sidebar">
   <div class="brand">HealthSpan<small>System Manifest</small></div>
-  <div class="deploy-badge">
+  <a href="#sec-2" class="deploy-badge" style="text-decoration:none">
     <span class="db-dot"></span>
     <div class="db-meta">
-      <span class="db-label">DOCUMENTS</span>
-      <span class="db-date">skill v3.19.1</span>
-      <span class="db-ver">schema mig 065</span>
+      <span class="db-label">LAST DEPLOY · 2026-06-12</span>
+      <span class="db-date">telegram-webhook v9</span>
+      <span class="db-ver">skill v3.19.1 · mig 065 · full list ↗</span>
     </div>
-  </div>
+  </a>
   <nav>
 <a href="#sec-1">1. SYSTEM OVERVIEW</a>
 <a href="#sec-2">2. INFRASTRUCTURE</a>
@@ -271,6 +271,18 @@ code{
 </section>
 <section id="sec-2">
 <h2 class="section-header">2. INFRASTRUCTURE</h2>
+<h3>2.0 Live Deployment — versions &amp; deploy dates</h3>
+<p>What's actually running, and when each piece was last shipped. <strong>Live source of truth:</strong> <code>supabase functions list</code> (edge <code>VERSION</code> = Supabase's deploy counter + <code>UPDATED_AT</code>), <code>CHANGELOG.md</code> (skill), <code>migrations/</code> (schema). Re-run those to refresh this table.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Component</th><th>Version</th><th>Last deployed (UTC)</th><th>What's live</th></tr></thead><tbody>
+<tr><td><strong>Skill</strong> (Python: drain / brief / ingest)</td><td><strong>v3.19.1</strong></td><td>on push to <code>main</code> (GH Actions — no edge deploy)</td><td><code>daily_overrides</code> + override marker</td></tr>
+<tr><td><strong>DB schema</strong></td><td><strong>mig 065</strong></td><td>2026-06-11</td><td><code>whoop_oauth_codes</code> (Telegram WHOOP reconnect)</td></tr>
+<tr style="background:#eef2ff"><td><strong>telegram-webhook</strong></td><td><strong>v9</strong> (Supabase #26)</td><td><strong>2026-06-12 01:12</strong></td><td>two-level "📝 Update today" menu (training ticks + supplement slots/pills) + <code>/whoop</code> reconnect; boot-fix redeploy 06-12</td></tr>
+<tr><td><strong>whoop-webhook</strong></td><td>recovery-v3 + reconnect-alert (Supabase #18)</td><td>2026-06-11 15:39</td><td><code>recovery.updated</code> fix + debounced dead-token reconnect prompt</td></tr>
+<tr><td><strong>whoop-oauth</strong></td><td>ticket-reconnect (Supabase #14)</td><td>2026-06-11 15:39</td><td><code>offline</code>-scope consent + one-time <code>?t=</code> ticket flow + token store + TG confirm</td></tr>
+<tr><td><strong>trigger-drain</strong></td><td>no-auth (mig 047) (Supabase #9)</td><td>2026-06-09 17:12</td><td>pg_net → GH <code>inbox-drain</code> dispatch</td></tr>
+</tbody></table></div>
+<p style="color:#6b7280;font-size:0.9em;">Edge <code>VERSION</code> is Supabase's deploy counter (increments every deploy); the <strong>v9 / recovery-v3 / ticket-reconnect</strong> labels are the human marker in each function's top-of-file <code>// deploy:</code> comment.</p>
 <h3>2.1 Supabase Project</h3>
 <div class="table-wrap"><table>
 <thead><tr>

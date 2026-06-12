@@ -86,6 +86,24 @@ Maintainer-only RLS SELECT applies to `query_audit`, `wearable_sync_log`,
 
 ## 2. INFRASTRUCTURE
 
+### 2.0 Live Deployment — versions & deploy dates
+
+What's actually running, and when each piece was last shipped. **Live source of truth:**
+`supabase functions list` (edge `VERSION` = Supabase's deploy counter + `UPDATED_AT`),
+`CHANGELOG.md` (skill), `migrations/` (schema). Re-run those to refresh this table.
+
+| Component | Version | Last deployed (UTC) | What's live |
+|---|---|---|---|
+| **Skill** (Python: drain / brief / ingest) | **v3.19.1** | on push to `main` (GH Actions — no edge deploy) | `daily_overrides` + override marker |
+| **DB schema** | **mig 065** | 2026-06-11 | `whoop_oauth_codes` (Telegram WHOOP reconnect) |
+| **telegram-webhook** | **v9** (Supabase #26) | **2026-06-12 01:12** | two-level "📝 Update today" menu (training ticks + supplement slots/pills) + `/whoop` reconnect; boot-fix redeploy 06-12 |
+| **whoop-webhook** | recovery-v3 + reconnect-alert (Supabase #18) | 2026-06-11 15:39 | `recovery.updated` fix + debounced dead-token reconnect prompt |
+| **whoop-oauth** | ticket-reconnect (Supabase #14) | 2026-06-11 15:39 | `offline`-scope consent + one-time `?t=` ticket flow + token store + TG confirm |
+| **trigger-drain** | no-auth (mig 047) (Supabase #9) | 2026-06-09 17:12 | pg_net → GH `inbox-drain` dispatch |
+
+> Edge `VERSION` is Supabase's deploy counter (increments every deploy); the **v9 / recovery-v3 /
+> ticket-reconnect** labels are the human marker in each function's top-of-file `// deploy:` comment.
+
 ### 2.1 Supabase Project
 
 | Field | Value |
