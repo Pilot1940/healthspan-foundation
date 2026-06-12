@@ -1489,7 +1489,9 @@ These rules are sourced from `CLAUDE.md` and apply to every code change, migrati
 
 ## 10. Verification Tests
 
-Live verification for the 2026-06-08/09 changes — tick each as you confirm it in Telegram. Run as PC unless noted.
+Live verification — tick each as you confirm it in Telegram. Run as PC unless noted. **Groups A–E**
+cover the 2026-06-08/09 logging & clarify changes; **Group F** covers the Telegram interactivity
+shipped in v3.17–v3.19.1 (2026-06-11/12).
 
 (Markdown checkboxes are text `[ ]` — tick by editing to `[x]`.)
 
@@ -1540,9 +1542,20 @@ Live verification for the 2026-06-08/09 changes — tick each as you confirm it 
 | `[ ]` | **E3** | Dea sends `how am I doing?` | brief with no calorie-deficit line, no Viome restrictions | minor-safe brief |
 | `[ ]` | **E4** | Dea sends a vague one → reply to clarify | warm, simple question (no clinical language) | minor-aware clarify loop |
 
+### Group F — Telegram interactivity (v3.17–v3.19.1, 2026-06-11/12)
+
+| ✓ | Test | Tap / Send | Expect | Proves |
+|---|------|-----------|--------|--------|
+| `[ ]` | **F1** | Tap **📝 Update today** on a brief | expands to training toggles + supplement slot buttons (`💊 Morning 4/5`…) | two-level menu router (`menu:`) |
+| `[ ]` | **F2** | Tap a supplement slot (e.g. `💊 Dinner`) | drills into that slot's individual pills (✅/⬜) + ⬅ back | slot drill-in (`slot:`) |
+| `[ ]` | **F3** | Tap a pill (e.g. ⬜ NAC) | flips ✅ + count updates; tap again → ⬜ | supplement toggle (`supp:`, append-only void/un-void) |
+| `[ ]` | **F4** | Tap a training activity (e.g. ⬜ hike) | flips ✅; persists across briefs | `goals.adherence_log` write (`tick:`) |
+| `[ ]` | **F5** | Send `/whoop` | "🔗 Reconnect WHOOP" button → consent → "✅ WHOOP reconnected" | self-serve reconnect (one-time ticket) |
+| `[ ]` | **F6** | Set `goals.daily_overrides[<date>]`, get that day's brief | training line reads "Today (…, override)" with the override sessions | daily_overrides supersede + marker |
+
 ### What pass means
 
-Must-pass before relying = **A1–A4, B1–B2, C1, D1–D2**. **B2 is the keystone** (proves the clarify architecture). If any C test logs a wrong guess instead of asking, the confidence calibration needs a nudge.
+Must-pass before relying = **A1–A4, B1–B2, C1, D1–D2**. **B2 is the keystone** (proves the clarify architecture). If any C test logs a wrong guess instead of asking, the confidence calibration needs a nudge. **Group F** is the current Telegram interactivity layer (menu + reconnect + overrides).
 
 ---
 

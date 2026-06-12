@@ -153,13 +153,13 @@ code{
 </head>
 <body>
 <aside class="sidebar">
-  <div class="brand">HealthSpan<small>System Manifest · mig 055</small></div>
+  <div class="brand">HealthSpan<small>System Manifest</small></div>
   <div class="deploy-badge">
     <span class="db-dot"></span>
     <div class="db-meta">
-      <span class="db-label">LIVE · DEPLOYED</span>
-      <span class="db-date">2026-06-09</span>
-      <span class="db-ver">d4e2590</span>
+      <span class="db-label">DOCUMENTS</span>
+      <span class="db-date">skill v3.19.1</span>
+      <span class="db-ver">schema mig 065</span>
     </div>
   </div>
   <nav>
@@ -1979,8 +1979,11 @@ Document the manual cleanup query in <code>CLAUDE.md</code>.
 </section>
 <section id="sec-10">
 <h2 class="section-header">10. VERIFICATION TESTS</h2>
-<p>Live verification for the 2026-06-08/09 changes — tick each as you confirm it in Telegram.
-Run as PC unless noted.</p>
+<p><strong>Groups A–E</strong> are the live verification for the <strong>2026-06-08/09 logging &amp;
+clarify changes</strong> (single extractor, reply-to-clarify loop, photo path, brief/energy/timezone,
+minor-safety) — tick each as you confirm it in Telegram. <strong>Group F</strong> covers the later
+<strong>Telegram interactivity (v3.17–v3.19.1, 2026-06-11/12)</strong> — the "📝 Update today" menu,
+WHOOP self-serve reconnect, and the daily-override marker. Run as PC unless noted.</p>
 
 <h3>Group A — Text logging (single extractor)</h3>
 <div class="table-wrap"><table>
@@ -2180,10 +2183,68 @@ Run as PC unless noted.</p>
 </tr>
 </tbody></table></div>
 
+<h3>Group F — Telegram interactivity (v3.17–v3.19.1, 2026-06-11/12)</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>✓</th>
+<th>Test</th>
+<th>Tap</th>
+<th>Expect</th>
+<th>Proves</th>
+</tr></thead><tbody>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F1</strong></td>
+<td>tap <strong>📝 Update today</strong> on a brief</td>
+<td>the top menu expands: training toggles (gym/beach/pool/hike/massage) + one button per supplement timing slot (<code>💊 Morning 4/5</code>, <code>💊 Dinner 3/4</code>, …)</td>
+<td><code>menu:</code> router renders training + supplement slots server-side (v3.19.0, webhook v9)</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F2</strong></td>
+<td>tap a supplement <strong>slot</strong> button (e.g. <code>💊 Morning</code>)</td>
+<td>drills into that slot's individual pills (✅/⬜ per supplement) + ⬅ back</td>
+<td><code>slot:</code> → per-pill render from fresh data</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F3</strong></td>
+<td>tap an individual <strong>pill</strong> (toggle taken/untaken)</td>
+<td>the pill flips ✅⇄⬜ and re-renders; append-only — take un-voids/inserts a <code>telegram</code> intake, untake voids today's non-voided intakes</td>
+<td><code>supp:</code> toggle writes <code>supplement_intake_logs</code> (scoped to the tapping chat's profile)</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F4</strong></td>
+<td>tap a <strong>training</strong> toggle (e.g. <code>🏖️ beach</code>)</td>
+<td>the tick persists; a re-opened brief / menu shows it ticked</td>
+<td><code>tick:</code> sets <code>goals.adherence_log[date][activity]</code> on the sprint (v3.17.1)</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F5</strong></td>
+<td>send <code>/whoop</code> (or "reconnect whoop")</td>
+<td>a one-tap <strong>Reconnect WHOOP</strong> button → tap → WHOOP login → "✅ WHOOP reconnected" Telegram confirm</td>
+<td>self-serve reconnect: <code>whoop-oauth?t=&lt;ticket&gt;</code> ticket flow (v3.18.0, mig 065) — needs the redirect URI registered in the WHOOP dashboard</td>
+</tr>
+<tr>
+<td><input type="checkbox"></td>
+<td><strong>F6</strong></td>
+<td><em>(set <code>goals.daily_overrides[today]</code> via the skill, then)</em> <code>how am I doing?</code></td>
+<td>the 🏋️ Training line reads <strong>"Today (&lt;weekday&gt;, override): …"</strong> — the override, not the weekday template</td>
+<td><code>daily_overrides[today]</code> supersedes <code>weekly_plan[weekday]</code> (v3.19.1, <code>lib/sprints.todays_plan</code>)</td>
+</tr>
+<tr>
+<td colspan="5"><strong>NOTE:</strong> the menu requires the bot's <code>allowed_updates</code> to include <code>callback_query</code>. F1–F4 read/write the tapping chat's own profile only (service_role + explicit profile_id; multi-tenant-safe).</td>
+</tr>
+</tbody></table></div>
+
 <h4>What pass means</h4>
 <p>Must-pass before relying = <strong>A1–A4, B1–B2, C1, D1–D2</strong>. <strong>B2 is the
 keystone</strong> (proves the clarify architecture). If any C test logs a wrong guess
-instead of asking, the confidence calibration needs a nudge.</p>
+instead of asking, the confidence calibration needs a nudge. <strong>Group F</strong> is the
+tap-test for the Telegram interactivity layer — confirm F1–F4 (the Update-today menu) and F5
+(WHOOP reconnect) once <code>callback_query</code> updates and the WHOOP redirect URI are live.</p>
 </section>
 
 <section id="sec-deploy">
@@ -2191,7 +2252,7 @@ instead of asking, the confidence calibration needs a nudge.</p>
 
 <h3>How versioning works</h3>
 <p>There is no separate release number — <strong>the deployed git commit IS the version</strong>. Every daily brief ends with a footer:</p>
-<blockquote><code>—v &lt;date&gt; · &lt;commit7&gt;</code> &nbsp;— e.g. <code>—v 2026-06-09 · 506a61c</code></blockquote>
+<blockquote><code>—v &lt;date&gt; · &lt;commit7&gt;</code> &nbsp;— e.g. <code>—v 2026-06-12 · ea0e8b0</code></blockquote>
 <p>The <code>&lt;commit7&gt;</code> is the short SHA injected at build time from <code>GITHUB_SHA</code>, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:</p>
 <ul>
   <li><strong>Application code</strong> — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.</li>
@@ -2203,6 +2264,9 @@ instead of asking, the confidence calibration needs a nudge.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td><code>ea0e8b0</code></td><td>2026-06-12</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Sprint <code>daily_overrides</code> + override marker (v3.19.1):</strong> <code>goals.daily_overrides[today]</code> SUPERSEDES <code>weekly_plan[weekday]</code> for one date (<code>lib/sprints.todays_plan</code>; <code>normalize_goals</code> carries the key; legacy rows unaffected); the brief labels it <strong>"Today (&lt;weekday&gt;, override): …"</strong>. Also documented the dual-surface PLAN/TRACK model (claude.ai skill = planning, Telegram = tracking, one RLS-scoped DB) in §1. Python-only, live on push.</td></tr>
+<tr><td><code>c9e091f</code></td><td>2026-06-12</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>telegram-webhook BOOT_ERROR incident:</strong> a duplicate <code>alertMaintainer</code> block (redeclared <code>const profile</code>) bundled cleanly but crashed the isolate → HTTP <strong>503</strong> for ~17h, every inbound update silently dropped. Fixed in <code>c9e091f</code>. <strong>New guard (SYSTEM.md §7.4):</strong> <code>deno check</code> + a 401-not-503 boot smoke-test are now REQUIRED before any edge deploy.</td></tr>
+<tr><td><code>e2a7f2f</code></td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Two-level "📝 Update today" menu (v3.19.0, telegram-webhook v9):</strong> the brief carries ONE <code>📝 Update today</code> button (<code>lib/sprints.update_button</code>); the <code>callback_query</code> handler is a router — <code>menu:</code> → training toggles + supplement slot buttons (<code>💊 Morning 4/5</code>…), <code>slot:</code> → that slot's individual pills, <code>supp:</code> → toggle the supplement for today (append-only un-void/void), <code>back:</code>/<code>close:</code> → up/collapse. All rendered server-side per tap, scoped to the tapping chat's profile. Needs <code>allowed_updates</code> ⊇ <code>callback_query</code>.</td></tr>
 <tr><td>—</td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Self-serve WHOOP reconnect from Telegram (v3.18.0, mig 065):</strong> dead token → debounced "reconnect" button (whoop-webhook) or <code>/whoop</code> on demand (telegram-webhook) → <code>whoop-oauth?t=&lt;ticket&gt;</code> consent → token stored → "✅ reconnected" confirm. One-time <code>whoop_oauth_codes</code> tickets. Fixed the <code>offline</code>-scope bug in <code>ingest/whoop_oauth.py</code> (<code>e83de0b</code>). 3 functions deployed. Gating: register the edge redirect URI in the WHOOP dashboard.</td></tr>
 <tr><td>—</td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Daily-brief training plan + adherence (v3.17.0/.1):</strong> <code>sprints.goals</code> object shape (<code>lib/sprints.py</code>); brief 🏋️ section with WHOOP-autoregulated directive (read from <code>goals.rules</code>); Telegram adherence ticks (<code>tick:</code> callback → <code>goals.adherence_log</code>, telegram-webhook v8).</td></tr>
 <tr><td>—</td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Bundle variants + write paths (v3.16.0):</strong> privileged maintainer connection (<code>direct_role.privileged</code> → postgres role, RLS bypassed); non-maintainer self-write (<code>ingest/self_write.py</code>); strength write path; per-person bundle build (post-guard config injection).</td></tr>
