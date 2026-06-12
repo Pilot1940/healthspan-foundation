@@ -53,6 +53,11 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   re-renders the full top menu. All rendered server-side from fresh data, scoped to the tapping chat's
   own profile. Slot grouping + toggle verified live against PC's 16-supp regimen; deployed. ⚠️ menu's
   "taken today" uses `taken_on` (UTC date) vs the brief's tz-local window — can differ 00:00–07:00 ICT.
+  ⚠️ **DEPLOY GOTCHA (2026-06-12 incident):** the first v9 deploy had a duplicate `const profile` (my
+  Edit doubled an `alertMaintainer` block) → `supabase functions deploy` bundled it FINE but it 503'd
+  `BOOT_ERROR` at runtime, dropping ALL inbound Telegram for ~17h. **ALWAYS `deno check
+  supabase/functions/<fn>/index.ts` (deno now installed via brew) + curl-probe for 401-not-503 BEFORE
+  trusting an edge deploy** — see SYSTEM.md §7.4. Fixed (`c9e091f`); webhook boots; magnesium re-dated.
 - **Self-serve WHOOP reconnect from Telegram SHIPPED (v3.18.0, 2026-06-11).** Fixes the silent
   token-death failure mode. (a) `ingest/whoop_oauth.py` was missing the `offline` scope → re-auth
   yielded no refresh token; **fixed `e83de0b`**. (b) **mig 065** `whoop_oauth_codes` (one-time
