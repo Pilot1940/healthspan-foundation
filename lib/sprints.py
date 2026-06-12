@@ -137,8 +137,10 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
     goals = normalize_goals(sprint.get("goals"))
     weekday = weekday_name(today_iso)
     plan = todays_plan(goals, weekday, today_iso)   # daily_overrides supersede the weekday template
+    # Mark when today's plan came from a one-off date override (not the weekly template).
+    is_override = bool(goals.get("daily_overrides", {}).get(today_iso))
+    wd_label = f"{weekday.capitalize()}, override" if is_override else weekday.capitalize()
     name = (sprint.get("name") or "Training").strip()
-    wd_title = weekday.capitalize()
 
     lines = [f"🏋️ Training — {name}"]
     if plan:
@@ -147,9 +149,9 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
         tag = " · HARD day" if plan.get("hard") else (" · recovery day" if plan.get("recovery") else "")
         sess_txt = "; ".join(sessions) if sessions else "see plan"
         intensity_txt = f" — {intensity} intensity" if intensity else ""
-        lines.append(f"Today ({wd_title}): {sess_txt}{intensity_txt}{tag}")
+        lines.append(f"Today ({wd_label}): {sess_txt}{intensity_txt}{tag}")
     else:
-        lines.append(f"Today ({wd_title}): rest / unplanned")
+        lines.append(f"Today ({wd_label}): rest / unplanned")
 
     directives = parse_autoreg_directives(goals.get("rules"))
     band, emoji, directive = autoreg(recovery_pct, green_min, yellow_min, directives)

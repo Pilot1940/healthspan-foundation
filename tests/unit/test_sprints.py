@@ -74,6 +74,13 @@ def test_render_uses_daily_override():
     out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-15", 80)
     assert "pool only" in out and "gym hard" not in out
     assert "recovery day" in out  # override's recovery flag honored
+    assert "(Monday, override)" in out  # marker shows the plan is a one-off override
+
+
+def test_render_no_override_marker_on_template_day():
+    goals = {"weekly_plan": {"monday": {"sessions": ["gym hard"], "intensity": "hard"}}}
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-15", 80)
+    assert "override" not in out and "(Monday)" in out
 
 
 def test_normalize_includes_daily_overrides_key():

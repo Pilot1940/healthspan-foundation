@@ -6,6 +6,10 @@
   brief's training plan now uses `daily_overrides[today] or weekly_plan[weekday]` — a date override
   supersedes the weekday template for that one date only (`lib/sprints.todays_plan(goals, weekday,
   today_iso)`; `normalize_goals` carries the new key; legacy rows unaffected). Python-only, live on push.
+- When an override is active the brief labels the line **"Today (Friday, override): …"** so it's clear
+  the day's plan is a one-off, not the weekly template.
+- **Docs:** captured the dual-surface model in SYSTEM.md §1 — claude.ai skill = PLANNING surface,
+  Telegram bot = TRACKING surface, both writing the same RLS-scoped DB.
 
 ## v3.19.0 — two-level "📝 Update today" menu: training + supplements as buttons (2026-06-11)
 

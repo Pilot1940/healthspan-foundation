@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 065 applied (2026-06-11), skill v3.19.0.
+> state with migration 065 applied (2026-06-11), skill v3.19.1.
 
 ---
 
@@ -30,6 +30,18 @@ pipeline.
 
 - **DB is truth for numbers; context MD is truth for targets and voice.** Every number in
   any answer comes from a query result, never from model memory (CITE guard).
+- **Two write surfaces, one database — PLAN vs TRACK.** The same Supabase DB is updated from
+  both ends, by design:
+  - **claude.ai skill (`SKILL.md`) = the PLANNING surface.** Used at a desk to *design*: build
+    training sprints + `weekly_plan`/`daily_overrides`, set goals/targets, curate context, learn
+    food/supplement references, run analyses. Writes sprints, goals, regimens, references, context.
+  - **Telegram bot = the TRACKING surface.** Used on the phone to *record what actually happened*:
+    food photos/text → drain, supplement + training-adherence ticks via the "📝 Update today" menu,
+    WHOOP, the daily brief. Writes `food_logs`, `supplement_intake_logs`, `strength_logs`,
+    `goals.adherence_log`, etc.
+  - They share the same RLS-scoped tables, so a plan made in claude.ai immediately shapes the
+    Telegram brief, and a tick in Telegram immediately updates what the skill reads next. Neither
+    surface owns the data — the DB does.
 - **AI interprets, the DB gates.** All AI extraction output lands in `stg_*` staging
   tables first; plausibility gates (kcal range, biomarker min/max) live in the DB, not the
   prompt. Abnormal-but-plausible values write to production flagged; implausible values

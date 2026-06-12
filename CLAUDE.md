@@ -43,6 +43,16 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
+## Current State (2026-06-12)
+
+- **Sprint `daily_overrides` + dual-surface doc (v3.19.1, 2026-06-12).** `goals.daily_overrides`
+  (`{<YYYY-MM-DD>:{sessions[],intensity,hard?,recovery?}}`) supersedes `weekly_plan[weekday]` for one
+  date; brief labels it "Today (Friday, override)". `lib/sprints.todays_plan(goals, weekday, today_iso)`.
+  Python-only, live on push. **Architecture framing now documented (SYSTEM.md §1 + .html):** TWO write
+  surfaces, one DB — **claude.ai skill = PLANNING** (sprints/plans/goals/context/references),
+  **Telegram = TRACKING** (food/supp/training-adherence ticks/WHOOP via drain + 📝 menu). Both write the
+  same RLS-scoped tables; a plan in claude.ai shapes the brief, a tick in Telegram updates what the skill reads.
+
 ## Current State (2026-06-11)
 
 - **Two-level "📝 Update today" menu SHIPPED (v3.19.0, telegram-webhook v9, 2026-06-11).** The brief
