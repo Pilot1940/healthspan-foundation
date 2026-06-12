@@ -1296,6 +1296,17 @@ Score states to watch:
 
 Always run from the `healthspan-foundation` repo root, not from another project directory.
 
+> ⚠️ **ALWAYS `deno check` before deploying.** `supabase functions deploy` bundles with esbuild,
+> which strips types and will happily ship a file that **fails to boot at runtime** (HTTP 503
+> `BOOT_ERROR` → every inbound update silently dropped). A duplicate `const` / redeclared variable
+> is bundled cleanly but crashes the isolate. `deno check` catches it; the deploy CLI does not.
+> ```bash
+> deno check supabase/functions/<fn>/index.ts   # 0 errors (EdgeRuntime type-not-found is benign)
+> ```
+> After deploying, smoke-test it boots: `curl -s -o /dev/null -w "%{http_code}\n" -X POST
+> <fn-url> -d '{}'` → expect **401** (alive, rejecting unauth), NOT **503** (BOOT_ERROR).
+> (2026-06-12 incident: a duplicated `alertMaintainer` block 503'd telegram-webhook for ~17h.)
+
 ```bash
 # Trigger-drain (pg_net webhook → GH Actions inbox-drain dispatch)
 supabase functions deploy trigger-drain
