@@ -640,3 +640,49 @@ aliases on the Thai Tea row; new global Hooray Banana row (220/31); PC-personal 
 **Still OPEN (broader):** match is exact, not fuzzy — a novel phrasing still misses; and there's no
 food auto-promote-to-reference after N confirmed logs (the food analogue of supplement
 learn-on-clarify). That generalisation is the remaining work — see #13.
+
+---
+
+## #26 — "📝 Update today" menu: toggles don't update the brief text / no clear confirmation — **A+C SHIPPED 2026-06-12 (telegram-webhook v11); B deferred**
+
+**Severity:** MED (daily-driver confusion) · **Owner:** PC (picked A+C) → CC (built) · **Status:** **A + C SHIPPED** (telegram-webhook v11, 2026-06-12); **B (live brief-text re-render) deferred** — only build if the text-vs-buttons split keeps confusing.
+
+**Shipped (A+C, webhook v11):** (A) supplement toggle toast now names the item + the slot's running
+count (`✅ Magnesium · Morning 5/5` / `↩ …`); the `slot:` drill-in answers with a hint
+("Tap a pill to mark it taken") so it no longer feels like a no-op. (C) `toggleSupplement` pins the
+inserted `taken_at` to **noon UTC of the menu's date** (`${dateIso}T12:00:00Z`) so the GENERATED
+`taken_on` lands on the menu's day and the just-tapped pill flips even in the 00:00–07:00 ICT window
+(noon-UTC also sits inside the brief's Asia/Bangkok local-day window, so brief + menu agree).
+**Still deferred (B):** the brief MESSAGE TEXT still doesn't re-render on toggle (only the keyboard does).
+
+**Where it bites:** PC taps the supplement menu and it feels like nothing happened — "doesn't instantly
+update supplements OR give a confirmation."
+
+**Diagnosis (telegram-webhook `callback_query` router):**
+1. **The brief MESSAGE TEXT never changes on a toggle.** Every callback re-renders only the inline
+   *keyboard* via `editMessageReplyMarkup` ("the DB write is the source of truth, not the button face").
+   But the brief text above the buttons shows the supplement checklist + slot counts (`☐ NAC`,
+   `Morning:` …) frozen at compose time. The user reads the *text* and sees stale checkboxes → "didn't
+   update," even though the DB write + the pill button face did flip.
+2. **Top-menu slot buttons (`💊 Morning 4/5`) drill in SILENTLY** — `slot:` answers the callback with
+   empty text (no toast) and just swaps to the pill submenu. Tapping one expecting it to mark the slot
+   done feels like a no-op.
+3. **Toggle confirmation is a transient, generic toast** — `answerCallback(cb.id, "✅ logged")` (no
+   supplement name, not a modal); easy to miss.
+4. **Latent date-edge:** the menu's "taken today" reads `taken_on` (GENERATED **UTC** date) while the
+   menu's `dateIso` is the brief's **local** (Asia/Bangkok) day. During 00:00–07:00 ICT a fresh
+   `toggleSupplement` insert lands on UTC-yesterday's `taken_on`, so the just-toggled pill won't flip —
+   same root as the documented brief/menu tz caveat. Not the midday case PC hit, but it WILL bite in
+   that window.
+
+**Fix options (design fork — PC to pick):**
+- **(A) Light:** name + count in the toast (`"✅ Magnesium · Morning 5/5"`), `show_alert:false`; make
+  `slot:` answer with a hint toast; re-render the **top** menu after a supp toggle so the slot count
+  moves immediately. No brief-text change. ~1 webhook deploy.
+- **(B) Full:** also `editMessageText` the brief body on every toggle so the text checklist + counts
+  reflect reality — requires re-composing the brief in the webhook (Deno) or calling back into the
+  Python brief; heavier, and the brief composer is Python-only today.
+- **(C) Fix the tz-edge** regardless: `toggleSupplement` should compute `taken_on` against the menu's
+  local day (pass the intended date / set `taken_at` to local-noon), not raw UTC `now`.
+
+**Recommendation:** A + C now (safe, high-value); B only if the text-vs-buttons split keeps confusing.

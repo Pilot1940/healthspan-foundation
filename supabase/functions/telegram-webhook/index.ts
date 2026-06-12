@@ -1,3 +1,5 @@
+// deploy: 2026-06-12 v11 — supp menu UX (#26): named toast + slot count, slot-drill hint, taken_on→local-day (noon-UTC)
+// deploy: 2026-06-12 v10 — adherence ticks via sprint_set_adherence RPC (atomic, no goals clobber; mig 066)
 // deploy: 2026-06-11 v9 — two-level "📝 Update today" menu (training ticks + supplement slots/pills) + /whoop reconnect
 // deploy: 2026-06-11 v8 — sprint adherence ticks: callback_query → goals.adherence_log (additive)
 // deploy: 2026-06-09 ce91936 — supersede-on-reply (logged food) + retire review row on clarify
@@ -114,28 +116,21 @@ async function editKeyboard(chatId: number, messageId: number, replyMarkup: unkn
 }
 
 // Persist one adherence tick into sprints.goals.adherence_log[date][activity] = true.
-// service_role bypasses RLS, so ownership is enforced explicitly (sprint.profile_id ===
-// the caller's identity). Returns the day's done-map for the keyboard refresh, or null on
-// a rejected/failed tick. Idempotent (set true).
+// Routes through the sprint_set_adherence RPC (mig 066): an ATOMIC, subtree-scoped jsonb_set
+// so a concurrent daily_overrides write from the planning skill can't clobber the tick (the
+// 2026-06-12 lost-update — the old full-object update here was one side of that race). The RPC
+// pins ownership to p_profile_id server-side; service_role is trusted for the merge. Returns
+// the day's done-map for the keyboard refresh, or null on a rejected/failed tick.
 async function applyTick(
   db: SupabaseClient, sprintId: string, dateIso: string, activity: string, profileId: string,
 ): Promise<Record<string, boolean> | null> {
   if (!TICK_ACTIVITIES.includes(activity)) return null;
-  const { data: sprint } = await db
-    .from("sprints").select("id, profile_id, goals").eq("id", sprintId).maybeSingle();
-  if (!sprint || sprint.profile_id !== profileId) return null;  // ownership check
-
-  // Normalize like lib/sprints.normalize_goals: legacy flat array → {block_goals: [...]}.
-  const goals: any = Array.isArray(sprint.goals)
-    ? { block_goals: sprint.goals }
-    : (sprint.goals && typeof sprint.goals === "object" ? sprint.goals : {});
-  const log = (goals.adherence_log && typeof goals.adherence_log === "object") ? goals.adherence_log : {};
-  const day = { ...(log[dateIso] ?? {}), [activity]: true };
-  const newGoals = { ...goals, adherence_log: { ...log, [dateIso]: day } };
-
-  const { error } = await db.from("sprints").update({ goals: newGoals }).eq("id", sprintId);
-  if (error) return null;
-  return day;
+  const { data, error } = await db.rpc("sprint_set_adherence", {
+    p_sprint_id: sprintId, p_date: dateIso, p_activity: activity,
+    p_value: true, p_profile_id: profileId,
+  });
+  if (error) return null;  // RPC raises on ownership/validation failure
+  return (data ?? {}) as Record<string, boolean>;
 }
 
 // ── Two-level "📝 Update today" menu: training toggles + supplement slots (option C) ─────
@@ -232,8 +227,13 @@ async function toggleSupplement(db: SupabaseClient, profileId: string, suppId: s
     await db.from("supplement_intake_logs").update({ voided_at: null, void_reason: null }).eq("id", voided[0].id);
     return true;
   }
+  // taken_at is pinned to NOON UTC of the menu's date so the GENERATED `taken_on`
+  // (= taken_at::date at UTC) lands on the menu's day — NOT the wall-clock UTC date, which
+  // would be yesterday during 00:00–07:00 ICT and make the just-tapped pill fail to flip
+  // (menu reads "taken today" by taken_on = dateIso). Noon-UTC also falls inside the brief's
+  // local-day window (Asia/Bangkok), so the brief and menu agree. BACKLOG #26.
   await db.from("supplement_intake_logs")
-    .insert({ profile_id: profileId, supplement_id: suppId, taken_at: new Date().toISOString(), source: "telegram" });
+    .insert({ profile_id: profileId, supplement_id: suppId, taken_at: `${dateIso}T12:00:00Z`, source: "telegram" });
   return true;
 }
 
@@ -409,17 +409,23 @@ Deno.serve(async (req) => {
       await refresh({ inline_keyboard: [[{ text: "📝 Update today", callback_data: `menu:${m[1]}` }]] });
     } else if ((m = /^slot:(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data))) {
       const { slots } = await getMenuData(db, pid, m[1]);
-      await answerCallback(cb.id, "");
+      // Hint so the drill-in doesn't feel like a no-op (the slot button only opens the pills).
+      await answerCallback(cb.id, "Tap a pill to mark it taken");
       await refresh(slotMenu(m[1], m[2], slots[m[2]] ?? []));
     } else if ((m = /^supp:(\d{4}-\d{2}-\d{2}):([0-9a-f-]{36})$/.exec(data))) {
-      // Toggle the supplement, then re-render its slot drill-in with fresh state.
+      // Toggle the supplement, then re-render its slot drill-in with fresh state. The toast
+      // names the supplement + the slot's running count so the change is unmistakable even
+      // though only the keyboard (not the brief text) re-renders. BACKLOG #26.
       const dateIso = m[1], suppId = m[2];
       const nowTaken = await toggleSupplement(db, pid, suppId, dateIso);
       const { slots } = await getMenuData(db, pid, dateIso);
-      // find which slot this supplement is in (for the re-render)
+      // find which slot this supplement is in (for the re-render + count)
       const slot = SLOT_ORDER.find((s) => (slots[s] ?? []).some((i) => i.id === suppId)) ?? "anytime";
-      await answerCallback(cb.id, nowTaken ? "✅ logged" : "↩ unlogged");
-      await refresh(slotMenu(dateIso, slot, slots[slot] ?? []));
+      const items = slots[slot] ?? [];
+      const name = items.find((i) => i.id === suppId)?.name ?? "supplement";
+      const done = items.filter((i) => i.taken).length;
+      await answerCallback(cb.id, `${nowTaken ? "✅" : "↩"} ${name} · ${cap(slot)} ${done}/${items.length}`);
+      await refresh(slotMenu(dateIso, slot, items));
     } else if ((m = /^tick:([^:]+):(\d{4}-\d{2}-\d{2}):([a-z]+)$/.exec(data))) {
       // Training adherence tick (inside the menu) → re-render the FULL top menu.
       const [, sprintId, dateIso, activity] = m;

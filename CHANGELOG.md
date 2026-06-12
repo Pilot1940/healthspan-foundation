@@ -1,5 +1,32 @@
 # HealthSpan Skill — Changelog
 
+## v3.19.2 — sprint goals atomic writers: no more lost adherence ticks (2026-06-12)
+
+- **Bug:** PC's 'beach' adherence tick on 2026-06-12 silently reverted. Root cause = a
+  lost-update race on `sprints.goals`. TWO surfaces write that one jsonb on the SAME row —
+  TRACKING (Telegram ticks → `goals.adherence_log`) and PLANNING (the claude.ai skill →
+  `goals.daily_overrides`) — and BOTH did a full-object read-modify-write. A tick landing
+  between the planner's read and its write was overwritten by the planner's stale snapshot.
+- **Fix (mig 066):** two field-scoped, atomic, ownership-gated RPCs —
+  `sprint_set_adherence(sprint, date, activity, value, profile)` and
+  `sprint_set_override(sprint, date, override, profile)` — each a single `jsonb_set` that
+  merges ONLY its own subtree server-side, so the two surfaces can no longer clobber each
+  other and two writes to the same subtree serialize on the row lock. SECURITY DEFINER,
+  gated: authenticated callers need `has_profile_access`, service_role is trusted but the
+  sprint is still pinned to the passed `profile_id` (defense in depth).
+- **All three writers repointed:** `lib/sprints.mark_done` → `sprint_set_adherence`,
+  `lib/sprints.set_override` (new helper for the skill) → `sprint_set_override`, and the
+  Telegram webhook's `applyTick` → `sprint_set_adherence` (**telegram-webhook v10**).
+  Verified end-to-end on live data (rolled back): a tick survives a concurrent override write;
+  ownership gate rejects a wrong profile (both authenticated + service_role paths). Suite 319/0/9.
+- **Supplement-menu UX (BACKLOG #26, telegram-webhook v11):** the "📝 Update today" supplement
+  toggles felt dead — only the keyboard re-rendered (never the brief text) and the toast was a
+  generic "✅ logged". Fixed (A+C of the agreed options): (A) toggle toast now names the item +
+  the slot's running count (`✅ Magnesium · Morning 5/5`), and the slot drill-in shows a "Tap a
+  pill to mark it taken" hint; (C) `toggleSupplement` pins the inserted `taken_at` to noon-UTC of
+  the menu's date so the GENERATED `taken_on` lands on the menu's local day — the just-tapped pill
+  now flips even in the 00:00–07:00 ICT window. Brief-text live re-render (option B) deferred.
+
 ## v3.19.1 — sprint daily_overrides (date-specific plan) (2026-06-12)
 
 - `goals.daily_overrides` (optional): `{<YYYY-MM-DD>: {sessions[],intensity,hard?,recovery?}}`. The

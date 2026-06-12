@@ -183,26 +183,89 @@ def test_mark_done_rejects_unknown_activity():
         sprints.mark_done(MagicMock(), "sid", "2026-06-12", "yoga")
 
 
-def test_mark_done_rest_via_dbrest():
+def test_mark_done_rest_calls_adherence_rpc():
     db = MagicMock()
     db._base = "https://x"  # DbRest marker
-    db.select.return_value = [{"goals": GOALS_V2}]
+    db.select.return_value = [{"profile_id": "p-1"}]   # profile lookup
+    db.rpc.return_value = {"gym": True, "beach": False}
     day = sprints.mark_done(db, "sprint-1", "2026-06-13", "gym")
     assert day["gym"] is True
-    # wrote the whole goals object back, scoped by id
-    args, kwargs = db.update.call_args
-    assert args[0] == "sprints" and args[1] == {"id": "eq.sprint-1"}
-    assert args[2]["goals"]["adherence_log"]["2026-06-13"]["gym"] is True
+    fn, args = db.rpc.call_args[0]
+    assert fn == "sprint_set_adherence"
+    assert args == {"p_sprint_id": "sprint-1", "p_date": "2026-06-13",
+                    "p_activity": "gym", "p_value": True, "p_profile_id": "p-1"}
 
 
-def test_mark_done_psycopg2_uses_jsonb_set():
+def test_mark_done_psycopg2_calls_adherence_rpc():
     cur = MagicMock()
-    cur.fetchone.return_value = ({"gym": True},)
+    # 1st execute = profile lookup, 2nd = the RPC select
+    cur.fetchone.side_effect = [("p-9",), ({"gym": True},)]
     conn = MagicMock()
     conn.cursor.return_value = cur
     del conn._base  # force psycopg2 branch
     out = sprints.mark_done(conn, "sprint-1", "2026-06-13", "gym")
     assert out == {"gym": True}
-    sql = cur.execute.call_args[0][0]
-    assert "jsonb_set" in sql
+    sql, params = cur.execute.call_args[0]   # last call = the RPC
+    assert "sprint_set_adherence" in sql
+    assert params == ("sprint-1", "2026-06-13", "gym", True, "p-9")
     conn.commit.assert_called_once()
+
+
+def test_mark_done_value_false_unticks():
+    db = MagicMock(); db._base = "https://x"
+    db.select.return_value = [{"profile_id": "p-1"}]
+    db.rpc.return_value = {"gym": False}
+    sprints.mark_done(db, "s", "2026-06-13", "gym", False)
+    assert db.rpc.call_args[0][1]["p_value"] is False
+
+
+def test_mark_done_explicit_profile_skips_lookup():
+    db = MagicMock(); db._base = "https://x"
+    db.rpc.return_value = {"gym": True}
+    sprints.mark_done(db, "s", "2026-06-13", "gym", profile_id="given")
+    db.select.assert_not_called()  # no profile lookup when passed
+    assert db.rpc.call_args[0][1]["p_profile_id"] == "given"
+
+
+# ── set_override (planning-side, field-scoped via RPC) ──────────────────────────
+OVR = {"sessions": ["pool easy", "gym UPPER-BODY only"], "intensity": "moderate"}
+
+
+def test_set_override_rest_calls_override_rpc():
+    db = MagicMock(); db._base = "https://x"
+    db.select.return_value = [{"profile_id": "p-1"}]
+    db.rpc.return_value = OVR
+    out = sprints.set_override(db, "sprint-1", "2026-06-12", OVR)
+    assert out == OVR
+    fn, args = db.rpc.call_args[0]
+    assert fn == "sprint_set_override"
+    assert args == {"p_sprint_id": "sprint-1", "p_date": "2026-06-12",
+                    "p_override": OVR, "p_profile_id": "p-1"}
+
+
+def test_set_override_rest_clear_passes_null():
+    db = MagicMock(); db._base = "https://x"
+    db.select.return_value = [{"profile_id": "p-1"}]
+    db.rpc.return_value = None
+    out = sprints.set_override(db, "sprint-1", "2026-06-12", None)
+    assert out is None
+    assert db.rpc.call_args[0][1]["p_override"] is None  # None clears
+
+
+def test_set_override_psycopg2_calls_override_rpc():
+    cur = MagicMock()
+    cur.fetchone.side_effect = [("p-9",), (OVR,)]   # profile lookup, then RPC
+    conn = MagicMock(); conn.cursor.return_value = cur
+    del conn._base
+    out = sprints.set_override(conn, "sprint-1", "2026-06-12", OVR)
+    assert out == OVR
+    sql = cur.execute.call_args[0][0]
+    assert "sprint_set_override" in sql
+    conn.commit.assert_called_once()
+
+
+def test_set_override_rejects_non_dict():
+    import pytest
+    db = MagicMock(); db._base = "https://x"
+    with pytest.raises(TypeError):
+        sprints.set_override(db, "sid", "2026-06-12", ["not", "a", "dict"])

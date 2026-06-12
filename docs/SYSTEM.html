@@ -159,7 +159,7 @@ code{
     <div class="db-meta">
       <span class="db-label">LAST DEPLOY · 2026-06-12</span>
       <span class="db-date">telegram-webhook v9</span>
-      <span class="db-ver">skill v3.19.1 · mig 065 · full list ↗</span>
+      <span class="db-ver">skill v3.19.2 · mig 066 · full list ↗</span>
     </div>
   </a>
   <nav>
@@ -178,7 +178,7 @@ code{
 </aside>
 <main class="content">
   <div class="inner">
-<blockquote>The <strong>live Supabase DB is the source of truth for numbers</strong>; the per-person context MD is the source of truth for targets, norms, and coaching voice. Generated against repo state with migration 065 applied (2026-06-11), skill v3.19.1.</blockquote>
+<blockquote>The <strong>live Supabase DB is the source of truth for numbers</strong>; the per-person context MD is the source of truth for targets, norms, and coaching voice. Generated against repo state with migration 066 applied (2026-06-12), skill v3.19.2.</blockquote>
 </section>
 <section id="sec-1">
 <h2 class="section-header">1. SYSTEM OVERVIEW</h2>
@@ -275,9 +275,9 @@ code{
 <p>What's actually running, and when each piece was last shipped. <strong>Live source of truth:</strong> <code>supabase functions list</code> (edge <code>VERSION</code> = Supabase's deploy counter + <code>UPDATED_AT</code>), <code>CHANGELOG.md</code> (skill), <code>migrations/</code> (schema). Re-run those to refresh this table.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Component</th><th>Version</th><th>Last deployed (UTC)</th><th>What's live</th></tr></thead><tbody>
-<tr><td><strong>Skill</strong> (Python: drain / brief / ingest)</td><td><strong>v3.19.1</strong></td><td>on push to <code>main</code> (GH Actions — no edge deploy)</td><td><code>daily_overrides</code> + override marker</td></tr>
-<tr><td><strong>DB schema</strong></td><td><strong>mig 065</strong></td><td>2026-06-11</td><td><code>whoop_oauth_codes</code> (Telegram WHOOP reconnect)</td></tr>
-<tr style="background:#eef2ff"><td><strong>telegram-webhook</strong></td><td><strong>v9</strong> (Supabase #26)</td><td><strong>2026-06-12 01:12</strong></td><td>two-level "📝 Update today" menu (training ticks + supplement slots/pills) + <code>/whoop</code> reconnect; boot-fix redeploy 06-12</td></tr>
+<tr><td><strong>Skill</strong> (Python: drain / brief / ingest)</td><td><strong>v3.19.2</strong></td><td>on push to <code>main</code> (GH Actions — no edge deploy)</td><td>sprint goals atomic writers (<code>mark_done</code>/<code>set_override</code> → mig 066 RPCs)</td></tr>
+<tr><td><strong>DB schema</strong></td><td><strong>mig 066</strong></td><td>2026-06-12</td><td><code>sprint_set_adherence</code>/<code>sprint_set_override</code> atomic-writer RPCs (lost-tick fix)</td></tr>
+<tr style="background:#eef2ff"><td><strong>telegram-webhook</strong></td><td><strong>v11</strong></td><td><strong>2026-06-12</strong></td><td>supp-menu UX (#26): named toast + slot count, slot-drill hint, <code>taken_on</code>→local-day; adherence ticks via <code>sprint_set_adherence</code> RPC (atomic); two-level "📝 Update today" menu + <code>/whoop</code> reconnect</td></tr>
 <tr><td><strong>whoop-webhook</strong></td><td>recovery-v3 + reconnect-alert (Supabase #18)</td><td>2026-06-11 15:39</td><td><code>recovery.updated</code> fix + debounced dead-token reconnect prompt</td></tr>
 <tr><td><strong>whoop-oauth</strong></td><td>ticket-reconnect (Supabase #14)</td><td>2026-06-11 15:39</td><td><code>offline</code>-scope consent + one-time <code>?t=</code> ticket flow + token store + TG confirm</td></tr>
 <tr><td><strong>trigger-drain</strong></td><td>no-auth (mig 047) (Supabase #9)</td><td>2026-06-09 17:12</td><td>pg_net → GH <code>inbox-drain</code> dispatch</td></tr>
@@ -1219,6 +1219,16 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <td>Mig 052. Adds a user-named supplement to the catalog (dedups by normalised name; stamps <code>source=&#x27;learned&#x27;</code>, <code>verified=false</code>). Adults only — called by the drain&#x27;s learn-on-clarify path.</td>
 </tr>
 <tr>
+<td><code>sprint_set_adherence(sprint, date, activity, value, profile)</code></td>
+<td>DEFINER</td>
+<td>Mig 066. Atomic, subtree-scoped write of <code>goals.adherence_log[date][activity]</code> (single <code>jsonb_set</code>). The TRACKING-surface write contract — Telegram <code>applyTick</code> + <code>lib/sprints.mark_done</code>. Ownership-gated (authenticated needs <code>has_profile_access</code>; service_role trusted, sprint pinned to <code>profile</code>). Returns the day&#x27;s adherence map.</td>
+</tr>
+<tr>
+<td><code>sprint_set_override(sprint, date, override, profile)</code></td>
+<td>DEFINER</td>
+<td>Mig 066. Atomic, subtree-scoped write of <code>goals.daily_overrides[date]</code> (<code>NULL</code>/<code>{}</code> clears via minus-key). The PLANNING-surface write contract — the claude.ai skill + <code>lib/sprints.set_override</code>. Same ownership gate. Can&#x27;t clobber a concurrent adherence tick (different subtree, server-side merge).</td>
+</tr>
+<tr>
 <td><code>hs_close_sync_log(...)</code></td>
 <td>DEFINER</td>
 <td>Mig 030. Closes a <code>wearable_sync_log</code> row (status + counters) from the drain without a maintainer session.</td>
@@ -1549,6 +1559,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr><td>063</td><td>strength_logs</td><td><strong>Applied 2026-06-11.</strong> New <code>strength_logs</code> table (resistance sets: load/sets/reps/RIR + <code>performed_on</code> GENERATED UTC date). Soft-delete via <code>voided_at</code>/<code>void_reason</code> + <code>maintainer_void_strength()</code> (mirrors mig 060); RLS + grants copied from <code>food_logs</code> (FOR ALL on <code>has_profile_access</code>; authenticated S/I/U, no DELETE). Seed separate (<code>scripts/seed_strength_063.py</code>) — transportable schema. All 4 sets seeded (PC confirmed <code>machine_chest_press</code> = 140 lb 2026-06-11; recorded as 'plates'). Verified live.</td></tr>
 <tr><td>064</td><td>food_reference_common_items</td><td><strong>Applied 2026-06-11.</strong> BACKLOG #25: brand-accurate aliases for PC's frequent items (<code>food_reference</code> matches by EXACT lower(name)/alias). Sets <code>brand='Proten'</code> + <code>proten*</code> aliases on the Thai Tea row; adds the distinct <strong>Hooray Banana</strong> shake (220 kcal/31P). Idempotent. PC's personal "TWT" (The Whole Truth) morning shake seeded separately (<code>scripts/seed_food_ref_personal_064.py</code>) — profile-scoped, not in the migration. All three resolve via <code>lookup_food_reference</code> (verified).</td></tr>
 <tr><td>065</td><td>whoop_oauth_codes</td><td><strong>Applied 2026-06-11.</strong> Self-serve WHOOP reconnect from Telegram: <code>whoop_oauth_codes</code> one-time, expiring tickets carry the OAuth <code>state</code> (the ticket, not the raw <code>profile_id</code>, travels in the reconnect URL, so a shared link can't attach a stranger's WHOOP to a profile). RLS maintainer-only (edge functions use service_role). Seeds config <code>whoop.oauth_ticket_ttl_min</code> (30) + <code>whoop.reauth_alert_debounce_hours</code> (24). Consumed single-use by <code>whoop-oauth</code> on the WHOOP callback.</td></tr>
+<tr><td>066</td><td>sprint_goals_atomic_writers</td><td><strong>Applied 2026-06-12.</strong> Lost-update fix for <code>sprints.goals</code>: two field-scoped, ownership-gated SECURITY DEFINER RPCs — <code>sprint_set_adherence(sprint,date,activity,value,profile)</code> (TRACKING — Telegram ticks → <code>adherence_log</code>) and <code>sprint_set_override(sprint,date,override,profile)</code> (PLANNING — claude.ai skill → <code>daily_overrides</code>; NULL/<code>{}</code> clears). Each is a single <code>jsonb_set</code> merging ONLY its own subtree server-side, so the two write surfaces can no longer clobber each other (the 2026-06-12 'beach' tick revert) and same-subtree writes serialize on the row lock. Gate: authenticated needs <code>has_profile_access</code>; service_role trusted but the sprint is pinned to the passed <code>profile_id</code>. <code>lib/sprints.mark_done</code>/<code>set_override</code> + webhook <code>applyTick</code> (telegram-webhook v10) all repointed to these.</td></tr>
 </tbody></table></div>
 </section>
 <section id="sec-5">
@@ -2268,7 +2279,7 @@ tap-test for the Telegram interactivity layer — confirm F1–F4 (the Update-to
 <p>The <code>&lt;commit7&gt;</code> is the short SHA injected at build time from <code>GITHUB_SHA</code>, so any brief in a Telegram thread is traceable to the exact code that produced it. Two layers move independently:</p>
 <ul>
   <li><strong>Application code</strong> — Python skill + Edge functions, tracked by the commits below. The brief-footer SHA reflects this layer.</li>
-  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 065</strong> (2026-06-11). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
+  <li><strong>Database schema</strong> — forward-only numbered migrations (<code>migrations/NNN_*.sql</code>); the live DB state is the source of truth (there is no <code>schema_migrations</code> table). Latest applied: <strong>mig 066</strong> (2026-06-12, sprint goals atomic-writer RPCs — no new tables). The full DB-side history lives in <a href="#sec-4">§4 — Database schema</a> and <code>CLAUDE.md</code>.</li>
 </ul>
 
 <h3>Recent deploys</h3>
@@ -2276,6 +2287,8 @@ tap-test for the Telegram interactivity layer — confirm F1–F4 (the Update-to
 <div class="table-wrap"><table>
 <thead><tr><th>Commit</th><th>Date</th><th>Type</th><th>Change</th></tr></thead>
 <tbody>
+<tr><td>—</td><td>2026-06-12</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>Supplement-menu UX (BACKLOG #26 A+C, telegram-webhook v11):</strong> toggle toast now names the item + slot count (<code>✅ Magnesium · Morning 5/5</code>) and the slot drill-in shows a "Tap a pill" hint; <code>toggleSupplement</code> pins inserted <code>taken_at</code> to noon-UTC of the menu date so the GENERATED <code>taken_on</code> lands on the local day (pill flips even in the 00:00–07:00 ICT window). Brief-text live re-render (option B) deferred.</td></tr>
+<tr><td>—</td><td>2026-06-12</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>Sprint goals atomic writers (v3.19.2, mig 066, telegram-webhook v10):</strong> field-scoped <code>sprint_set_adherence</code>/<code>sprint_set_override</code> RPCs end the lost-update race where the PLANNING surface's full-object <code>daily_overrides</code> write reverted a TRACKING surface adherence tick (the 2026-06-12 'beach' revert). <code>lib/sprints.mark_done</code>/<code>set_override</code> + webhook <code>applyTick</code> all repointed. Ownership-gated; verified live (rolled back).</td></tr>
 <tr><td><code>ea0e8b0</code></td><td>2026-06-12</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Sprint <code>daily_overrides</code> + override marker (v3.19.1):</strong> <code>goals.daily_overrides[today]</code> SUPERSEDES <code>weekly_plan[weekday]</code> for one date (<code>lib/sprints.todays_plan</code>; <code>normalize_goals</code> carries the key; legacy rows unaffected); the brief labels it <strong>"Today (&lt;weekday&gt;, override): …"</strong>. Also documented the dual-surface PLAN/TRACK model (claude.ai skill = planning, Telegram = tracking, one RLS-scoped DB) in §1. Python-only, live on push.</td></tr>
 <tr><td><code>c9e091f</code></td><td>2026-06-12</td><td><span style="color:#dc2626;font-weight:600;">fix</span></td><td><strong>telegram-webhook BOOT_ERROR incident:</strong> a duplicate <code>alertMaintainer</code> block (redeclared <code>const profile</code>) bundled cleanly but crashed the isolate → HTTP <strong>503</strong> for ~17h, every inbound update silently dropped. Fixed in <code>c9e091f</code>. <strong>New guard (SYSTEM.md §7.4):</strong> <code>deno check</code> + a 401-not-503 boot smoke-test are now REQUIRED before any edge deploy.</td></tr>
 <tr><td><code>e2a7f2f</code></td><td>2026-06-11</td><td><span style="color:#16a34a;font-weight:600;">feat</span></td><td><strong>Two-level "📝 Update today" menu (v3.19.0, telegram-webhook v9):</strong> the brief carries ONE <code>📝 Update today</code> button (<code>lib/sprints.update_button</code>); the <code>callback_query</code> handler is a router — <code>menu:</code> → training toggles + supplement slot buttons (<code>💊 Morning 4/5</code>…), <code>slot:</code> → that slot's individual pills, <code>supp:</code> → toggle the supplement for today (append-only un-void/void), <code>back:</code>/<code>close:</code> → up/collapse. All rendered server-side per tap, scoped to the tapping chat's profile. Needs <code>allowed_updates</code> ⊇ <code>callback_query</code>.</td></tr>

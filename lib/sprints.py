@@ -6,14 +6,20 @@
                                                   "hard"?: bool, "recovery"?: bool } },
       "rules":         [str],
       "adherence_log": { "<YYYY-MM-DD>": { "gym": bool, "beach": bool, "pool": bool,
-                                           "hike": bool, "massage": bool } } }
+                                           "hike": bool, "massage": bool } },
+      "daily_overrides": { "<YYYY-MM-DD>": { "sessions": [str], "intensity": str,
+                                             "hard"?: bool, "recovery"?: bool } } }
 
 LEGACY: `goals` used to be a flat `[str]`. `normalize_goals()` maps that to
-`{block_goals: [...], weekly_plan:{}, rules:[], adherence_log:{}}` so both shapes read safely
-(historical sprint rows are still arrays).
+`{block_goals: [...], weekly_plan:{}, rules:[], adherence_log:{}, daily_overrides:{}}` so both
+shapes read safely (historical sprint rows are still arrays).
 
-Pure logic — no DB. The brief (`monitor/brief.py`) supplies the active sprint row + WHOOP
-recovery; `mark_done()` is the only DB-touching helper (read-modify-write on the jsonb).
+TWO write surfaces touch this one jsonb: TRACKING (Telegram ticks → `adherence_log`) and
+PLANNING (the claude.ai skill → `daily_overrides`). To stop one surface's full-object write
+from reverting the other's (the 2026-06-12 lost-update that dropped a 'beach' tick), BOTH
+DB-touching helpers route through the field-scoped atomic RPCs in mig 066:
+`mark_done()` → `sprint_set_adherence`, `set_override()` → `sprint_set_override`. Everything
+else here is pure logic — the brief (`monitor/brief.py`) supplies the active sprint row + WHOOP.
 """
 from __future__ import annotations
 
@@ -186,45 +192,82 @@ def adherence_keyboard(sprint_id: str, today_iso: str, done_map: dict | None = N
                                [btn(a) for a in ACTIVITIES[3:]]]}
 
 
-def mark_done(db, sprint_id: str, date_iso: str, activity: str, *, current_goals=None) -> dict:
-    """Persist a Telegram tick: set goals.adherence_log[date_iso][activity] = true.
+def _sprint_profile_id(db, sprint_id: str):
+    """Resolve a sprint's owning profile_id for the atomic-writer RPCs (driver-agnostic)."""
+    if hasattr(db, "cursor") and not hasattr(db, "_base"):
+        cur = db.cursor()
+        cur.execute("SELECT profile_id FROM public.sprints WHERE id = %s", (sprint_id,))
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+    rows = db.select("sprints", select="profile_id", filters={"id": f"eq.{sprint_id}"}, limit=1)
+    return (rows[0].get("profile_id") if rows else None)
 
-    Read-modify-write on the jsonb (no DDL; sprints has UPDATE + has_profile_access RLS, so
-    a user only writes their own sprint). Driver-agnostic: DbRest (`.update`/`.select`) or a
-    psycopg2 connection (`jsonb_set`). Returns the updated adherence entry for the day.
+
+def mark_done(db, sprint_id: str, date_iso: str, activity: str, value: bool = True,
+              *, profile_id: str | None = None, current_goals=None) -> dict:
+    """Persist a Telegram tick: set goals.adherence_log[date_iso][activity] = `value`.
+
+    Routes through the `sprint_set_adherence` RPC (mig 066) — an atomic, subtree-scoped
+    jsonb_set so a concurrent `daily_overrides` write from the PLANNING surface can't clobber
+    the tick (the 2026-06-12 lost-update). Driver-agnostic: DbRest (`.rpc`) or psycopg2
+    (`SELECT`). `profile_id` is the RPC's ownership pin; resolved from the sprint when omitted.
+    `current_goals` is accepted for back-compat but no longer needed (the merge is server-side).
+    Returns the day's adherence map.
     """
     if activity not in ACTIVITIES:
         raise ValueError(f"activity must be one of {ACTIVITIES}, got {activity!r}")
+    pid = profile_id or _sprint_profile_id(db, sprint_id)
 
-    # psycopg2 — atomic jsonb_set (preferred when available).
     if hasattr(db, "cursor") and not hasattr(db, "_base"):
         cur = db.cursor()
-        cur.execute(
-            """UPDATE public.sprints
-               SET goals = jsonb_set(
-                     goals, %s,
-                     COALESCE(goals #> %s, '{}'::jsonb) || jsonb_build_object(%s, true), true)
-               WHERE id = %s
-               RETURNING goals #> %s""",
-            ([f"adherence_log", date_iso], ["adherence_log", date_iso], activity,
-             sprint_id, ["adherence_log", date_iso]),
-        )
+        cur.execute("SELECT public.sprint_set_adherence(%s, %s, %s, %s, %s)",
+                    (sprint_id, date_iso, activity, value, pid))
         row = cur.fetchone()
         db.commit()
         return (row[0] if row else {}) or {}
 
-    # DbRest / REST — read-modify-write.
-    if hasattr(db, "update") and hasattr(db, "_base"):
-        goals = current_goals
-        if goals is None:
-            rows = db.select("sprints", select="goals", filters={"id": f"eq.{sprint_id}"}, limit=1)
-            goals = (rows[0].get("goals") if rows else None)
-        norm = normalize_goals(goals)
-        day = dict(norm["adherence_log"].get(date_iso) or {})
-        day[activity] = True
-        norm["adherence_log"][date_iso] = day
-        # Preserve the full object (write back the normalized goals so legacy arrays upgrade).
-        db.update("sprints", {"id": f"eq.{sprint_id}"}, {"goals": norm})
-        return day
+    if hasattr(db, "rpc") and hasattr(db, "_base"):
+        return db.rpc("sprint_set_adherence", {
+            "p_sprint_id": sprint_id, "p_date": date_iso, "p_activity": activity,
+            "p_value": value, "p_profile_id": pid,
+        }) or {}
 
     raise TypeError(f"mark_done: unsupported db handle {type(db)!r}")
+
+
+def set_override(db, sprint_id: str, date_iso: str, override: dict | None,
+                 *, profile_id: str | None = None) -> dict | None:
+    """Set (or clear) `goals.daily_overrides[date_iso]` WITHOUT touching the rest of `goals`.
+
+    This is the PLANNING-side writer (the claude.ai skill). It routes through the
+    `sprint_set_override` RPC (mig 066): an atomic, subtree-scoped jsonb_set so a Telegram
+    adherence tick (TRACKING surface, writes `goals.adherence_log` on the SAME row) landing
+    between this write's read and commit cannot be clobbered — that lost-update is exactly
+    what dropped a 'beach' tick on 2026-06-12.
+
+    `override=None` (or {}) CLEARS the date's override (deletes the key). `profile_id` is the
+    RPC's ownership pin; resolved from the sprint when omitted. Driver-agnostic: DbRest
+    (`.rpc`) or psycopg2 (`SELECT`). Returns the stored override dict (or None when cleared).
+    """
+    if override is not None and not isinstance(override, dict):
+        raise TypeError(f"override must be a dict or None, got {type(override)!r}")
+    pid = profile_id or _sprint_profile_id(db, sprint_id)
+    payload = None if not override else override  # None and {} both clear
+
+    if hasattr(db, "cursor") and not hasattr(db, "_base"):
+        import json
+        cur = db.cursor()
+        cur.execute("SELECT public.sprint_set_override(%s, %s, %s::jsonb, %s)",
+                    (sprint_id, date_iso,
+                     None if payload is None else json.dumps(payload), pid))
+        row = cur.fetchone()
+        db.commit()
+        return (row[0] if row else None)
+
+    if hasattr(db, "rpc") and hasattr(db, "_base"):
+        return db.rpc("sprint_set_override", {
+            "p_sprint_id": sprint_id, "p_date": date_iso,
+            "p_override": payload, "p_profile_id": pid,
+        })
+
+    raise TypeError(f"set_override: unsupported db handle {type(db)!r}")

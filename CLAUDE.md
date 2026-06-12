@@ -45,6 +45,24 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-12)
 
+- **Sprint goals atomic writers — lost-tick race FIXED (v3.19.2, mig 066, telegram-webhook v10,
+  2026-06-12).** A 'beach' adherence tick reverted because TWO surfaces full-object read-modify-write
+  the SAME `sprints.goals` jsonb: TRACKING (Telegram ticks → `adherence_log`) and PLANNING (claude.ai
+  skill → `daily_overrides`). A tick landing between the planner's read and write was clobbered by the
+  stale snapshot. **mig 066** adds field-scoped atomic RPCs `sprint_set_adherence(sprint,date,activity,
+  value,profile)` + `sprint_set_override(sprint,date,override,profile)` — each a single `jsonb_set`
+  merging ONLY its subtree server-side (the two surfaces can't clobber each other; same-subtree writes
+  serialize on the row lock). SECURITY DEFINER, ownership-gated (authenticated needs
+  `has_profile_access`; service_role trusted but sprint pinned to passed `profile_id`). All three
+  writers repointed: `lib/sprints.mark_done` + new `lib/sprints.set_override` (the skill's override
+  writer) + webhook `applyTick`. Verified live (rolled back): tick survives concurrent override write;
+  wrong-profile rejected both paths. Suite 319/0/9.
+- **Supplement-menu UX fix (BACKLOG #26 A+C, telegram-webhook v11, 2026-06-12).** Toggles felt dead
+  (only the keyboard re-rendered, generic toast). **A:** toggle toast now names the item + slot count
+  (`✅ Magnesium · Morning 5/5`); slot drill-in shows a "Tap a pill" hint. **C:** `toggleSupplement`
+  pins inserted `taken_at` to noon-UTC of the menu's date so the GENERATED `taken_on` lands on the
+  menu's local day — pill flips even in the 00:00–07:00 ICT window. ⚠️ **Still deferred (B):** the
+  brief MESSAGE TEXT doesn't re-render on toggle (only the keyboard does) — build only if still confusing.
 - **Sprint `daily_overrides` + dual-surface doc (v3.19.1, 2026-06-12).** `goals.daily_overrides`
   (`{<YYYY-MM-DD>:{sessions[],intensity,hard?,recovery?}}`) supersedes `weekly_plan[weekday]` for one
   date; brief labels it "Today (Friday, override)". `lib/sprints.todays_plan(goals, weekday, today_iso)`.
