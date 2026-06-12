@@ -245,13 +245,6 @@ async function alertMaintainer(db: SupabaseClient, unknownChatId: number, previe
     .eq("is_maintainer", true)
     .single();
   if (!profile) return;
-  // Find the maintainer's active Telegram chat (best-effort; may not exist at bootstrap).
-  const { data: profile } = await db
-    .from("profiles")
-    .select("id")
-    .eq("is_maintainer", true)
-    .single();
-  if (!profile) return;
 
   const { data: identity } = await db
     .from("telegram_identities")
