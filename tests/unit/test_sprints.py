@@ -31,7 +31,8 @@ def test_normalize_legacy_array():
 
 def test_normalize_none():
     n = sprints.normalize_goals(None)
-    assert n == {"block_goals": [], "weekly_plan": {}, "rules": [], "adherence_log": {}}
+    assert n == {"block_goals": [], "weekly_plan": {}, "rules": [],
+                 "adherence_log": {}, "daily_overrides": {}}
 
 
 def test_weekday_name():
@@ -49,6 +50,35 @@ def test_autoreg_bands():
 
 def test_autoreg_custom_thresholds():
     assert sprints.autoreg(60, green_min=55, yellow_min=30)[0] == "green"
+
+
+def test_daily_override_supersedes_weekday_template():
+    goals = {
+        "weekly_plan": {"monday": {"sessions": ["gym hard"], "intensity": "hard", "hard": True}},
+        "daily_overrides": {"2026-06-15": {"sessions": ["rest — travel"], "intensity": "easy", "recovery": True}},
+    }
+    n = sprints.normalize_goals(goals)
+    # 2026-06-15 is a Monday; the override wins for that date only
+    assert sprints.todays_plan(n, "monday", "2026-06-15")["sessions"] == ["rest — travel"]
+    # a Monday WITHOUT an override falls back to the weekly template
+    assert sprints.todays_plan(n, "monday", "2026-06-22")["sessions"] == ["gym hard"]
+    # no today_iso → template (backward-compatible)
+    assert sprints.todays_plan(n, "monday")["sessions"] == ["gym hard"]
+
+
+def test_render_uses_daily_override():
+    goals = {
+        "weekly_plan": {"monday": {"sessions": ["gym hard"], "intensity": "hard", "hard": True}},
+        "daily_overrides": {"2026-06-15": {"sessions": ["pool only"], "intensity": "easy", "recovery": True}},
+    }
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-15", 80)
+    assert "pool only" in out and "gym hard" not in out
+    assert "recovery day" in out  # override's recovery flag honored
+
+
+def test_normalize_includes_daily_overrides_key():
+    assert sprints.normalize_goals(None)["daily_overrides"] == {}
+    assert sprints.normalize_goals(["fat loss"])["daily_overrides"] == {}
 
 
 def test_parse_directives_from_rule():

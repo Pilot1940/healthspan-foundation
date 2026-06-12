@@ -61,17 +61,23 @@ def parse_autoreg_directives(rules) -> dict:
 
 
 def normalize_goals(goals) -> dict:
-    """Return goals as the v2 object with all four keys present, from either shape."""
+    """Return goals as the v2 object with all keys present, from either shape.
+
+    `daily_overrides` (optional): {<YYYY-MM-DD>: {sessions[],intensity,hard?,recovery?}} —
+    a date-specific plan that SUPERSEDES weekly_plan[weekday] for that one date.
+    """
+    base = {"block_goals": [], "weekly_plan": {}, "rules": [], "adherence_log": {}, "daily_overrides": {}}
     if isinstance(goals, dict):
         return {
-            "block_goals":   goals.get("block_goals") or [],
-            "weekly_plan":   goals.get("weekly_plan") or {},
-            "rules":         goals.get("rules") or [],
-            "adherence_log": goals.get("adherence_log") or {},
+            "block_goals":     goals.get("block_goals") or [],
+            "weekly_plan":     goals.get("weekly_plan") or {},
+            "rules":           goals.get("rules") or [],
+            "adherence_log":   goals.get("adherence_log") or {},
+            "daily_overrides": goals.get("daily_overrides") or {},
         }
     if isinstance(goals, list):  # legacy flat array of goal strings
-        return {"block_goals": goals, "weekly_plan": {}, "rules": [], "adherence_log": {}}
-    return {"block_goals": [], "weekly_plan": {}, "rules": [], "adherence_log": {}}
+        return {**base, "block_goals": goals}
+    return base
 
 
 def weekday_name(today_iso: str) -> str:
@@ -79,8 +85,13 @@ def weekday_name(today_iso: str) -> str:
     return date.fromisoformat(today_iso).strftime("%A").lower()
 
 
-def todays_plan(goals_norm: dict, weekday: str) -> dict:
-    """The weekly_plan entry for `weekday` ({} if none / rest day)."""
+def todays_plan(goals_norm: dict, weekday: str, today_iso: str | None = None) -> dict:
+    """Today's plan: a `daily_overrides[today_iso]` SUPERSEDES the `weekly_plan[weekday]`
+    template for that one date; otherwise the weekday template ({} if none / rest day)."""
+    if today_iso:
+        override = goals_norm.get("daily_overrides", {}).get(today_iso)
+        if override:
+            return override
     return goals_norm.get("weekly_plan", {}).get(weekday) or {}
 
 
@@ -125,7 +136,7 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
         return ""
     goals = normalize_goals(sprint.get("goals"))
     weekday = weekday_name(today_iso)
-    plan = todays_plan(goals, weekday)
+    plan = todays_plan(goals, weekday, today_iso)   # daily_overrides supersede the weekday template
     name = (sprint.get("name") or "Training").strip()
     wd_title = weekday.capitalize()
 

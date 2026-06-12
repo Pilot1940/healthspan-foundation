@@ -1,5 +1,12 @@
 # HealthSpan Skill — Changelog
 
+## v3.19.1 — sprint daily_overrides (date-specific plan) (2026-06-12)
+
+- `goals.daily_overrides` (optional): `{<YYYY-MM-DD>: {sessions[],intensity,hard?,recovery?}}`. The
+  brief's training plan now uses `daily_overrides[today] or weekly_plan[weekday]` — a date override
+  supersedes the weekday template for that one date only (`lib/sprints.todays_plan(goals, weekday,
+  today_iso)`; `normalize_goals` carries the new key; legacy rows unaffected). Python-only, live on push.
+
 ## v3.19.0 — two-level "📝 Update today" menu: training + supplements as buttons (2026-06-11)
 
 **The brief stays one tidy button; tap it to tick training AND supplements from Telegram.**
