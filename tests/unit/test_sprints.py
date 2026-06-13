@@ -3,7 +3,24 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from lib import sprints
+
+
+class _FakeRest:
+    """A DbRest-shaped handle (has .rpc + ._base, NO .cursor) → mark_done REST branch."""
+    _base = "https://x"
+
+    def __init__(self):
+        self.calls = []
+
+    def rpc(self, name, args):
+        self.calls.append((name, args))
+        return {args["p_activity"]: args["p_value"]}
+
+    def select(self, *a, **k):
+        return [{"profile_id": "pid-1"}]
 
 GOALS_V2 = {
     "block_goals": ["VO2 base", "stay injury-free"],
@@ -32,7 +49,7 @@ def test_normalize_legacy_array():
 def test_normalize_none():
     n = sprints.normalize_goals(None)
     assert n == {"block_goals": [], "weekly_plan": {}, "rules": [],
-                 "adherence_log": {}, "daily_overrides": {}}
+                 "adherence_log": {}, "daily_overrides": {}, "food_checkin": []}
 
 
 def test_weekday_name():
@@ -269,3 +286,66 @@ def test_set_override_rejects_non_dict():
     db = MagicMock(); db._base = "https://x"
     with pytest.raises(TypeError):
         sprints.set_override(db, "sid", "2026-06-12", ["not", "a", "dict"])
+
+
+# ── food micronutrient check-in (mig 068 + lib/sprints) ───────────────────────
+
+def test_food_checkin_renders_default_unticked():
+    goals = {"weekly_plan": {}, "adherence_log": {}}
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-13", 70)
+    assert "🥗 Food check-in:" in out
+    assert "⬜ iron" in out and "⬜ calcium" in out and "⬜ vitamin D" in out
+
+
+def test_food_checkin_renders_tick():
+    goals = {"weekly_plan": {}, "adherence_log": {"2026-06-13": {"iron": True}}}
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-13", 70)
+    assert "✅ iron" in out and "⬜ calcium" in out and "⬜ vitamin D" in out
+
+
+def test_food_checkin_not_rendered_without_sprint():
+    assert sprints.render_training_section(None, "2026-06-13", 70) == ""
+
+
+def test_food_checkin_custom_subset_via_goals():
+    goals = {"weekly_plan": {}, "adherence_log": {}, "food_checkin": ["iron"]}
+    out = sprints.render_training_section({"name": "S", "goals": goals}, "2026-06-13", 70)
+    food = out.split("Food check-in")[1]
+    assert "iron" in food and "calcium" not in food and "vitamin D" not in food
+
+
+def test_mark_done_accepts_nutrition_key_over_rest():
+    db = _FakeRest()
+    res = sprints.mark_done(db, "sid", "2026-06-13", "iron", profile_id="pid-1")
+    assert res == {"iron": True}
+    assert db.calls[0][0] == "sprint_set_adherence"
+    assert db.calls[0][1]["p_activity"] == "iron"
+
+
+def test_mark_done_still_accepts_workout_activity():
+    db = _FakeRest()
+    assert sprints.mark_done(db, "sid", "2026-06-13", "hike", profile_id="pid-1") == {"hike": True}
+
+
+def test_mark_done_rejects_unknown_key():
+    db = _FakeRest()
+    with pytest.raises(ValueError):
+        sprints.mark_done(db, "sid", "2026-06-13", "protein", profile_id="pid-1")
+
+
+def test_new_sprint_goals_includes_food_checkin():
+    g = sprints.new_sprint_goals()
+    assert g["food_checkin"] == sprints.NUTRITION
+    assert g["adherence_log"] == {} and g["daily_overrides"] == {}
+
+
+def test_new_sprint_goals_can_opt_out():
+    assert sprints.new_sprint_goals(food_checkin=[])["food_checkin"] == []
+
+
+def test_normalize_includes_food_checkin_key():
+    assert "food_checkin" in sprints.normalize_goals({})
+
+
+def test_nutrition_keys_separate_from_activities():
+    assert not set(sprints.NUTRITION) & set(sprints.ACTIVITIES)

@@ -26,8 +26,15 @@ from __future__ import annotations
 import re
 from datetime import date
 
-# The five adherence activities tracked per day (order = display order).
+# The five WORKOUT adherence activities tracked per day (order = display order).
 ACTIVITIES = ["gym", "beach", "pool", "hike", "massage"]
+
+# FOOD-based daily micronutrient check-in keys (kept SEPARATE from the workout ACTIVITIES).
+# Tracked via FOOD, never pills — minor-safe (no supplement_regimens / pill semantics). These
+# share goals.adherence_log[date] with the workout keys but render on their own brief line.
+NUTRITION = ["iron", "calcium", "vitamin_d"]
+# Display labels for the food check-in (key → human label).
+_NUTRITION_LABEL = {"iron": "iron", "calcium": "calcium", "vitamin_d": "vitamin D"}
 
 # WHOOP-standard recovery bands (defaults; overridable from system_config so no hardcoded
 # threshold lives in logic — see CLAUDE.md rule #1).
@@ -72,7 +79,8 @@ def normalize_goals(goals) -> dict:
     `daily_overrides` (optional): {<YYYY-MM-DD>: {sessions[],intensity,hard?,recovery?}} —
     a date-specific plan that SUPERSEDES weekly_plan[weekday] for that one date.
     """
-    base = {"block_goals": [], "weekly_plan": {}, "rules": [], "adherence_log": {}, "daily_overrides": {}}
+    base = {"block_goals": [], "weekly_plan": {}, "rules": [], "adherence_log": {},
+            "daily_overrides": {}, "food_checkin": []}
     if isinstance(goals, dict):
         return {
             "block_goals":     goals.get("block_goals") or [],
@@ -80,10 +88,30 @@ def normalize_goals(goals) -> dict:
             "rules":           goals.get("rules") or [],
             "adherence_log":   goals.get("adherence_log") or {},
             "daily_overrides": goals.get("daily_overrides") or {},
+            # which micronutrients to render in the food check-in; [] → the NUTRITION default
+            "food_checkin":    goals.get("food_checkin") or [],
         }
     if isinstance(goals, list):  # legacy flat array of goal strings
         return {**base, "block_goals": goals}
     return base
+
+
+def new_sprint_goals(*, block_goals=None, weekly_plan=None, rules=None,
+                     food_checkin=None) -> dict:
+    """Build a fresh `sprints.goals` object that INCLUDES the food micronutrient check-in
+    by default, so it persists into the next block (e.g. the school-term sprint).
+
+    `food_checkin` defaults to NUTRITION (iron/calcium/vitamin_d). Pass [] to opt a sprint
+    out, or a custom subset. adherence_log/daily_overrides start empty.
+    """
+    return {
+        "block_goals":     list(block_goals or []),
+        "weekly_plan":     dict(weekly_plan or {}),
+        "rules":           list(rules or []),
+        "adherence_log":   {},
+        "daily_overrides": {},
+        "food_checkin":    list(NUTRITION if food_checkin is None else food_checkin),
+    }
 
 
 def weekday_name(today_iso: str) -> str:
@@ -129,6 +157,21 @@ def _adherence_line(goals_norm: dict, today_iso: str) -> str:
     return "Done today: " + " ".join(marks)
 
 
+def _food_checkin_line(goals_norm: dict, today_iso: str) -> str:
+    """FOOD micronutrient check-in for today: ✅/⬜ per key (default ⬜ until ticked).
+
+    Minor-safe FUELLING framing (growth, never restriction). Which keys show comes from
+    `goals.food_checkin` (a per-sprint override) or the NUTRITION default. Reads the same
+    `adherence_log[today]` the workout ticks use; absent keys render ⬜.
+    """
+    keys = [k for k in (goals_norm.get("food_checkin") or NUTRITION) if k in _NUTRITION_LABEL]
+    if not keys:
+        return ""
+    log = goals_norm.get("adherence_log", {}).get(today_iso) or {}
+    marks = [f"{'✅' if log.get(k) else '⬜'} {_NUTRITION_LABEL[k]}" for k in keys]
+    return "🥗 Food check-in: " + "  ".join(marks)
+
+
 def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
                             *, green_min: float = DEFAULT_GREEN_MIN,
                             yellow_min: float = DEFAULT_YELLOW_MIN) -> str:
@@ -169,6 +212,12 @@ def render_training_section(sprint: dict | None, today_iso: str, recovery_pct,
     adherence = _adherence_line(goals, today_iso)
     if adherence:
         lines.append(adherence)
+
+    # FOOD micronutrient check-in — renders whenever a sprint is active (independent of the
+    # day's training plan). Food-based, minor-safe; ticked over REST via mark_done(nutrition key).
+    food = _food_checkin_line(goals, today_iso)
+    if food:
+        lines.append(food)
     return "\n".join(lines)
 
 
@@ -214,8 +263,9 @@ def mark_done(db, sprint_id: str, date_iso: str, activity: str, value: bool = Tr
     `current_goals` is accepted for back-compat but no longer needed (the merge is server-side).
     Returns the day's adherence map.
     """
-    if activity not in ACTIVITIES:
-        raise ValueError(f"activity must be one of {ACTIVITIES}, got {activity!r}")
+    if activity not in ACTIVITIES and activity not in NUTRITION:
+        raise ValueError(
+            f"activity must be one of {ACTIVITIES + NUTRITION}, got {activity!r}")
     pid = profile_id or _sprint_profile_id(db, sprint_id)
 
     if hasattr(db, "cursor") and not hasattr(db, "_base"):

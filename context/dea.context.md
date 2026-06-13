@@ -41,6 +41,17 @@ loss, restriction, or adult performance protocols.
 - weekly_zone2_sessions: 2      # swimming or easy running at 120-145 bpm — ADDING
 - biomarker_priorities: hemoglobin, ferritin, vitamin_d   # growth/iron, not cardio-risk panel
 
+## Daily micronutrients (via food)
+Tracked through FOOD, never pills (minor-safe). Renders as the brief's 🥗 Food check-in (iron, calcium, vitamin D) and is tickable.
+- iron_target: ~15 mg/day — ALWAYS pair with vitamin C (citrus / tomato / capsicum) to boost absorption.
+  Sources: eggs, chicken, fish, dal/lentils, leafy greens.
+  ⚠️ iron_status: UNKNOWN — no bloodwork on file. Low HRV (~50) + high RHR (~68) COULD partly be low
+  ferritin, not just training load. SURFACE this gently until labs (hemoglobin + ferritin) exist.
+- calcium_target: 1300 mg/day — peak bone-building years. Sources: dairy, paneer, yoghurt, cheese (~3 servings/day).
+- vitamin_d_target: 600 IU/day — sunshine + oily fish / eggs.
+- also_cover (lower priority, via a varied diet): B12, omega-3, zinc, magnesium, iodine.
+- daily_checkin: iron (+ vitamin C), calcium, vitamin D — tracked via food, never pills.
+
 ## Training recommendations (for PC to implement)
 - Distinguish STRENGTH (heavy, 3-5 reps, 2-3 min rest, HR <150) from CIRCUITS (continuous, HR 160+)
 - Cap high-intensity sessions (>185 bpm) at 2x/week max
