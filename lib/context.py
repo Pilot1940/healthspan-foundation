@@ -198,6 +198,18 @@ def get_context(config: dict, base_dir: str | None = None) -> dict:
 
 
 def get_target(ctx: dict, key: str):
-    """Return a target/norm value or None. None means 'not specified' → the skill
-    must ASK, never substitute a default."""
-    return ctx.get("targets", {}).get(key)
+    """Return a target/norm/coaching value or None. None means 'not specified' →
+    the skill must ASK, never substitute a default.
+
+    Searches `targets` first, then `coaching` (voice/tone/etc.), then the `safety`
+    block — so e.g. get_target(ctx, "voice") and get_target(ctx, "safety") resolve
+    from where they actually live in the context MD rather than always returning None."""
+    targets = ctx.get("targets", {})
+    if key in targets:
+        return targets[key]
+    coaching = ctx.get("coaching", {})
+    if key in coaching:
+        return coaching[key]
+    if key == "safety":
+        return ctx.get("safety") or None
+    return None

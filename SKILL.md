@@ -47,8 +47,12 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
 2. **Open the scoped connection** — `conn, mode = lib.db.get_app_connection(config)`. **It returns an
    ALREADY-AUTHENTICATED handle — the caller does nothing extra (no separate sign-in).**
    - A2 (`direct_role`): psycopg2 as `healthspan_app`, already `SET ROLE authenticated` + JWT claim →
-     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (psycopg2 is imported
-     lazily — only this path needs it; the App path runs without psycopg2 installed.)
+     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (`direct_role` is the
+     only mode that *connects* via psycopg2, but several engine modules — `monitor/trend_monitor.py`,
+     `analysis/supplement_summary.py`, `lib/views.py`, `ingest/food.py`, `monitor/ingest_health.py`,
+     `export/*` — `import psycopg2.extras` at module top level, and the App path imports some of them
+     (e.g. step 6 runs `trend_monitor.check` for everyone). So **psycopg2-binary must be installed in
+     EVERY path**, App included — it is in the cold-start line below.)
      **Exception — `direct_role.privileged=true` (unrestricted bundle only):** keeps the `postgres`
      role (no `SET ROLE`), so RLS is BYPASSED and DELETE/DDL across all profiles is allowed. Only the
      maintainer's own unrestricted bundle sets this; that bundle carries a louder warning at its top.
@@ -57,10 +61,13 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
      person's JWT → RLS scopes automatically. Missing `auth_password` → a clear error; it **never** falls
      through to an anon client (RLS would deny every read, 42501). **Never** the admin/service connection.
    - **App cold-start install (one line):**
-     `pip install --break-system-packages --ignore-installed PyJWT "httpx<0.28" supabase`
+     `pip install --break-system-packages --ignore-installed PyJWT "httpx<0.28" supabase psycopg2-binary`
      — `--ignore-installed` clears the OS-managed **PyJWT 2.7.0 RECORD conflict** (a plain reinstall
      fails on its dist-info RECORD); `httpx<0.28` because supabase 2.10 passes the `proxies` kwarg 0.28
-     removed. The App path needs **no psycopg2**.
+     removed. **`psycopg2-binary` is required even in the App path** — not for connecting (the App path
+     connects via `supabase_client`/HTTPS), but because engine modules import `psycopg2.extras` at module
+     load time and would otherwise crash on import. This matches `requirements.txt`, which pins it
+     unconditionally for the same reason.
 3. **Load the CONTEXT MD** — `lib.context.get_context(config)` → `{targets, coaching, safety, is_minor,…}`.
    It cross-checks the file's profile_id against the config (wrong file = hard error). **Take every
    target/norm from here** (`lib.context.get_target(ctx, "daily_calories")`); a missing entry returns

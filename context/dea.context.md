@@ -1,6 +1,6 @@
 # Dea — HealthSpan Context
 <!-- v2.0 — 2026-06-05 — Updated with Whoop data analysis (138 workouts, 276 cycles) -->
-profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 13   sex: F   is_minor: true
+profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 13   sex: F   is_minor: false
 
 ## Who & why
 13F, growing and active. Primary sports: box-fitness, weightlifting (circuit-style), swimming,

@@ -81,6 +81,17 @@ class TestParser:
         # the blueprint rule: no entry → None (caller ASKS), never a substituted default
         assert get_target(self.ctx, "vo2max_target") is None
 
+    def test_get_target_falls_through_to_coaching_and_safety(self):
+        # coaching.voice / safety live outside ctx["targets"]; get_target must still
+        # resolve them rather than wrongly returning None (which would make the skill ASK).
+        ctx = {"targets": {"daily_calories": 2400},
+               "coaching": {"voice": "warm"},
+               "safety": ["no deficit talk"]}
+        assert get_target(ctx, "daily_calories") == 2400
+        assert get_target(ctx, "voice") == "warm"
+        assert get_target(ctx, "safety") == ["no deficit talk"]
+        assert get_target(ctx, "nonexistent") is None
+
 
 class TestRealContextFiles:
     """The shipped context files encode the headline blueprint invariant."""
