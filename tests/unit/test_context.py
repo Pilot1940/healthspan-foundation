@@ -105,11 +105,12 @@ class TestRealContextFiles:
         assert get_target(ctx, "maintenance_kcal") == 2514    # TDEE, reference only
         assert ctx["is_minor"] is False
 
-    def test_dea_calorie_target_is_2400_and_minor(self):
+    def test_dea_calorie_target_is_2400_and_safety_present(self):
         ctx = load_context("dea")
         assert get_target(ctx, "daily_calories") == 2400
-        assert ctx["is_minor"] is True
-        # minor-safety must be present and forbid restriction framing
+        # is_minor was flipped to false 2026-06-13 (PC-authorized adult framing); the
+        # protective safety constraints are kept regardless of the minor flag.
+        assert ctx["is_minor"] is False
         assert ctx["safety"], "Dea's context must carry safety constraints"
         assert any("restriction" in s.lower() or "deficit" in s.lower()
                    for s in ctx["safety"])

@@ -263,6 +263,13 @@ def run_view(conn, name: str, profile_id: str, **params) -> dict:
 
     Profile-scoped (RLS-respecting). Extra **params override the view's defaults.
     """
+    if not hasattr(conn, "cursor"):
+        raise RuntimeError(
+            "run_view requires a direct_role (psycopg2) connection — the analytics catalog "
+            "runs raw SQL that supabase_client/PostgREST mode cannot execute. Run from Claude "
+            "Code/local (direct_role) for views; App mode supports the REST-backed brief + "
+            "self-write paths instead."
+        )
     spec = VIEWS.get(name)
     if spec is None:
         raise KeyError(f"unknown view {name!r}. Known: {', '.join(VIEWS)}")

@@ -229,11 +229,14 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
 
 ## 5. THE DATA (what's in the DB)
 
-- **whoop_cycles** — keyed on `whoop_id`; webhook keeps fresh. Columns include: `score_state`
-  (PENDING_SCORE / SCORED / UNSCORABLE), `recovery_score_state`, `recovery_user_calibrating` (bool —
-  show "(calibrating)" when true), `sleep_cycle_count`, `disturbance_count`, `no_data_min`,
-  `whoop_updated_at`, `whoop_created_at`. Always check `score_state` before displaying recovery — ⏳ if
-  PENDING_SCORE, ❌ if UNSCORABLE.
+- **whoop_cycles** — keyed on `whoop_id`; webhook keeps fresh. **Core metric columns (use these EXACT
+  names in any SQL):** `recovery_score_pct` (NOT `recovery_score`), `hrv_ms` (NOT `hrv_rmssd_milli`),
+  `resting_hr_bpm` (NOT `resting_heart_rate`), `day_strain`, `energy_burned_cal`, `avg_hr_bpm`,
+  `max_hr_bpm`, `skin_temp_celsius`, `blood_oxygen_pct`, `respiratory_rate_rpm`, `cycle_start`,
+  `cycle_end`. State/meta: `score_state` (PENDING_SCORE / SCORED / UNSCORABLE), `recovery_score_state`,
+  `recovery_user_calibrating` (bool — show "(calibrating)" when true), `sleep_cycle_count`,
+  `disturbance_count`, `no_data_min`, `whoop_updated_at`, `whoop_created_at`. Always check `score_state`
+  before displaying recovery — ⏳ if PENDING_SCORE, ❌ if UNSCORABLE.
 - **whoop_sleeps** — `whoop_id`, `score_state`, `no_data_min`, `sleep_cycle_count`, `disturbance_count`,
   `whoop_cycle_id`, `whoop_updated_at`, `whoop_created_at`.
 - **whoop_workouts** — `whoop_id`, `score_state`, `sport_id`, `percent_recorded`, `distance_m`,
@@ -242,7 +245,9 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
   `synced_date`, `height_m`, `weight_kg`, `max_heart_rate`.
 - **biomarkers** — all lab + DEXA scalar values (canonical home). `qualifier` for below-detection;
   `metric_definitions` carries CLINICAL `min/max` (flag) AND PHYSIOLOGICAL `plausible_min/max` (gate).
-- **food_logs** — meals (macros, verdict, flags). **food_reference** — shared macro library; global rows
+- **food_logs** — meals. Macro columns: `calories` (NOT `kcal`), `protein_g`, `carbs_g`, `fat_g`,
+  `fiber_g`; plus `meal_type`, `description`, `log_date`, `verdict`, `flags`, `is_day_summary`.
+  **food_reference** — shared macro library; global rows
   have `profile_id IS NULL`, personal rows scoped to a user. RPCs: `lookup_food_reference(p_description,
   p_profile_id)` (returns macro library match + confidence), `lookup_viome_verdicts(p_ingredient_names[],
   p_profile_id)` (per-ingredient Viome verdict), `promote_food_to_reference(p_food_log_id)` (promote a
