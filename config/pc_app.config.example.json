@@ -1,0 +1,23 @@
+{
+  "_comment": "PC App bundle (supabase_client / HTTPS-443) — for environments that CANNOT egress 5432 (the claude.ai chat sandbox). NOT privileged: signs in as PC's A1 user over PostgREST, so RLS applies (scoped to PC's profile). For DELETE/DDL/cross-profile 'god mode' use the direct_role pc_unrestricted bundle from Cowork/your Mac, where 5432 is reachable. Build: python scripts/package_skill.py <ver> --person config/pc_app.config.example.json --out healthspan-PC-APP-<ver>.skill",
+  "_secret_note": "auth_email / auth_password / supabase_anon_key are read AT BUILD TIME from config/pc_app.secret.txt (gitignored), one per line as `auth_email=…`, `auth_password=…`, `supabase_anon_key=…`. VERIFIED working values: auth_email=pc.skill@chitalkar.com (the A1 user in config/pc_skill.secret.txt, RLS-scoped to PC), auth_password = the Password line of config/pc_skill.secret.txt, supabase_anon_key = SUPABASE_ANON_KEY from .env (the legacy eyJ… JWT — both tested HTTP 200).",
+
+  "profile_id": "21f69003-46f8-4e1c-a928-b1f694ce4aff",
+  "display_name": "PC",
+  "is_owner": true,
+  "is_minor": false,
+
+  "connection": {
+    "mode": "supabase_client",
+    "supabase_client": {
+      "supabase_url": "https://dsnydskkjwziynwmzfkh.supabase.co",
+      "supabase_anon_key": "@secret:config/pc_app.secret.txt#supabase_anon_key",
+      "auth_email": "@secret:config/pc_app.secret.txt#auth_email",
+      "auth_password": "@secret:config/pc_app.secret.txt#auth_password"
+    }
+  },
+  "whoop": {
+    "client_id": "c8725210-5051-435a-8835-2e717e95181a",
+    "client_secret": "452af286f262828dccda4f83276e9df8113a05d7745c45f3cb6fae5c50bc4984"
+  }
+}

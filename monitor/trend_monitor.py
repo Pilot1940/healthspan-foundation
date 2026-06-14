@@ -137,6 +137,11 @@ def _already_open(cur, profile_id, alert_type, title):
 def check(conn, profile_id, *, persist=False) -> list[dict]:
     """Run all monitors; return findings sorted by severity. If ``persist``, insert NEW
     findings into trend_alerts (skipping any identical unread alert already open)."""
+    # The monitors run raw SQL via psycopg2; in supabase_client (App) mode `conn` is a
+    # Supabase Client with no .cursor(). Trend check is a best-effort session-start step —
+    # degrade silently rather than crash the session. (Full analytics need direct_role.)
+    if not hasattr(conn, "cursor"):
+        return []
     findings = []
     for fn in (recovery_hrv_shifts, strap_compliance, abnormal_biomarkers, goal_findings):
         try:

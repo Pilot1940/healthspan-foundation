@@ -1,6 +1,6 @@
 # Dea — HealthSpan Context
-<!-- v2.0 — 2026-06-05 — Updated with Whoop data analysis (138 workouts, 276 cycles) -->
-profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 13   sex: F   is_minor: true
+<!-- v2.1 — 2026-06-13 — HR zones updated to %HRmax (max 206), Whoop settings + 2026 program added -->
+profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 14   sex: F   is_minor: false
 
 ## Who & why
 13F, growing and active. Primary sports: box-fitness, weightlifting (circuit-style), swimming,
@@ -10,15 +10,15 @@ loss, restriction, or adult performance protocols.
 ## Measured baselines (from Whoop data, Dec 2024 – Jun 2026)
 
 ### Recovery & cardiovascular
-- avg_recovery_pct: 63.2       # moderate — should be 70-80 for her age
-- avg_resting_hr: 68.1 bpm     # high for a fit teen — target 55-65
-- avg_hrv_ms: 50.4             # low for age — healthy teen should be 60-80+
+- avg_recovery_pct: 63.3       # moderate — should be 70-80 for her age (283 scored cycles)
+- avg_resting_hr: 68.0 bpm     # high for a fit teen — target 55-65
+- avg_hrv_ms: 50.5             # low for age — healthy teen should be 60-80+
 - hrv_range: 9.1–81.8 ms
 - rhr_range: 57–104 bpm        # 104 spike Dec 2024 (illness episode)
 - spo2_avg: ~96-97%            # normal, healthy
 
-### Training load (138 workouts)
-- sessions_above_185bpm: 56/138 (41%)   # TOO HIGH — redlining in nearly half of sessions
+### Training load (146 workouts)
+- sessions_above_185bpm: 57/146 (39%)   # TOO HIGH — redlining in ~2 of every 5 sessions
 - avg_max_hr_boxfitness: 178 (peak 200)
 - avg_max_hr_weightlifting: 187 (peak 201)  # HIGHER than cardio — circuit style, not true strength
 - avg_max_hr_swimming: 169 (peak 188)       # most controlled modality
@@ -41,6 +41,17 @@ loss, restriction, or adult performance protocols.
 - weekly_zone2_sessions: 2      # swimming or easy running at 120-145 bpm — ADDING
 - biomarker_priorities: hemoglobin, ferritin, vitamin_d   # growth/iron, not cardio-risk panel
 
+## Daily micronutrients (via food)
+Tracked through FOOD, never pills (minor-safe). Renders as the brief's 🥗 Food check-in (iron, calcium, vitamin D) and is tickable.
+- iron_target: ~15 mg/day — ALWAYS pair with vitamin C (citrus / tomato / capsicum) to boost absorption.
+  Sources: eggs, chicken, fish, dal/lentils, leafy greens.
+  ⚠️ iron_status: UNKNOWN — no bloodwork on file. Low HRV (~50) + high RHR (~68) COULD partly be low
+  ferritin, not just training load. SURFACE this gently until labs (hemoglobin + ferritin) exist.
+- calcium_target: 1300 mg/day — peak bone-building years. Sources: dairy, paneer, yoghurt, cheese (~3 servings/day).
+- vitamin_d_target: 600 IU/day — sunshine + oily fish / eggs.
+- also_cover (lower priority, via a varied diet): B12, omega-3, zinc, magnesium, iodine.
+- daily_checkin: iron (+ vitamin C), calcium, vitamin D — tracked via food, never pills.
+
 ## Training recommendations (for PC to implement)
 - Distinguish STRENGTH (heavy, 3-5 reps, 2-3 min rest, HR <150) from CIRCUITS (continuous, HR 160+)
 - Cap high-intensity sessions (>185 bpm) at 2x/week max
@@ -50,14 +61,23 @@ loss, restriction, or adult performance protocols.
 - Never train hard on two consecutive days with recovery <50%
 - The "weightlifting" sessions need restructuring: actual rest between sets (2-3 min), not continuous circuits
 
-## HR zones (estimated from data — no lab test yet)
-  # Based on observed max HR 202 and age 13
-- zone1: <120 bpm (recovery, easy movement)
-- zone2: 120-145 bpm (aerobic base — where she SHOULD spend more time)
-- zone3: 145-165 bpm (tempo — moderate, fine for box-fitness)
-- zone4: 165-185 bpm (high intensity — cap at 2 sessions/week)
-- zone5: >185 bpm (max — should be rare, currently too frequent)
-- note: these are estimates. Consider a uVida test if available for her age group.
+## HR zones (%HRmax method — observed max HR 206, Jun 2026)
+  # Method: % of max HR (NOT Whoop's default HRR — HRR runs too hot for a teen base)
+- zone1: <125 bpm (recovery, easy movement, warm-up, beach walks)
+- zone2: 125-150 bpm (aerobic base — THE money zone, where she SHOULD spend more time)
+- zone3: 150-170 bpm (tempo — moderate, box-fitness, moderate swims)
+- zone4: 170-188 bpm (threshold/high intensity — cap at 2 sessions/week)
+- zone5: 188-206 bpm (max — sprint finishers only, currently too frequent)
+- note: estimates from wrist HR. A field threshold test or uVida test would sharpen them.
+
+## Whoop app settings (set Jun 2026 to match the plan)
+- max_hr: 206  # set first — drives strain & calorie accuracy
+- zone_method: MANUAL %HRmax (override Whoop's default HRR, which puts her easy base into tempo)
+- manual_zones: Z1 <125 / Z2 125-150 / Z3 150-170 / Z4 170-188 / Z5 188-206
+- sleep_goal: "Perform" / 9 h
+- strain: use daily recovery-based Strain Target (green push / yellow ease / red Z1-2 or rest)
+- weekly_plan: time-in-zone goals weighted to Zones 1-2
+- maintenance: manual zones don't auto-adjust — re-check max HR + bands once a term
 
 ## Coaching framing
 - voice: supportive teen-athlete coach — encouraging, age-appropriate, no jargon

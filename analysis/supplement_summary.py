@@ -31,6 +31,12 @@ def summary(conn, profile_id, *, days: int = 14) -> dict:
     Adherence is only meaningful for daily regimens; for cyclical ones we report the
     raw logged-days and leave pct None (the on/off pattern, not a flat %, is the truth).
     """
+    if not hasattr(conn, "cursor"):
+        raise RuntimeError(
+            "supplement_summary requires a direct_role (psycopg2) connection — it runs raw "
+            "SQL that supabase_client/PostgREST mode cannot execute. Run from Claude Code/local "
+            "(direct_role); App mode supports the REST-backed brief instead."
+        )
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """SELECT r.id, r.supplement_id, s.display_name AS supplement,

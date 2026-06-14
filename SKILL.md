@@ -47,8 +47,12 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
 2. **Open the scoped connection** — `conn, mode = lib.db.get_app_connection(config)`. **It returns an
    ALREADY-AUTHENTICATED handle — the caller does nothing extra (no separate sign-in).**
    - A2 (`direct_role`): psycopg2 as `healthspan_app`, already `SET ROLE authenticated` + JWT claim →
-     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (psycopg2 is imported
-     lazily — only this path needs it; the App path runs without psycopg2 installed.)
+     every query auto-scoped to this profile. Cannot cross-profile, DELETE, or DDL. (`direct_role` is the
+     only mode that *connects* via psycopg2, but several engine modules — `monitor/trend_monitor.py`,
+     `analysis/supplement_summary.py`, `lib/views.py`, `ingest/food.py`, `monitor/ingest_health.py`,
+     `export/*` — `import psycopg2.extras` at module top level, and the App path imports some of them
+     (e.g. step 6 runs `trend_monitor.check` for everyone). So **psycopg2-binary must be installed in
+     EVERY path**, App included — it is in the cold-start line below.)
      **Exception — `direct_role.privileged=true` (unrestricted bundle only):** keeps the `postgres`
      role (no `SET ROLE`), so RLS is BYPASSED and DELETE/DDL across all profiles is allowed. Only the
      maintainer's own unrestricted bundle sets this; that bundle carries a louder warning at its top.
@@ -57,10 +61,13 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
      person's JWT → RLS scopes automatically. Missing `auth_password` → a clear error; it **never** falls
      through to an anon client (RLS would deny every read, 42501). **Never** the admin/service connection.
    - **App cold-start install (one line):**
-     `pip install --break-system-packages --ignore-installed PyJWT "httpx<0.28" supabase`
+     `pip install --break-system-packages --ignore-installed PyJWT "httpx<0.28" supabase psycopg2-binary`
      — `--ignore-installed` clears the OS-managed **PyJWT 2.7.0 RECORD conflict** (a plain reinstall
      fails on its dist-info RECORD); `httpx<0.28` because supabase 2.10 passes the `proxies` kwarg 0.28
-     removed. The App path needs **no psycopg2**.
+     removed. **`psycopg2-binary` is required even in the App path** — not for connecting (the App path
+     connects via `supabase_client`/HTTPS), but because engine modules import `psycopg2.extras` at module
+     load time and would otherwise crash on import. This matches `requirements.txt`, which pins it
+     unconditionally for the same reason.
 3. **Load the CONTEXT MD** — `lib.context.get_context(config)` → `{targets, coaching, safety, is_minor,…}`.
    It cross-checks the file's profile_id against the config (wrong file = hard error). **Take every
    target/norm from here** (`lib.context.get_target(ctx, "daily_calories")`); a missing entry returns
@@ -93,12 +100,13 @@ numbers). Prune to stay short.
 | **Conversational diet log** / "how many calories left today?" | `analysis/food_chat.py`: `preview_meal` → confirm → `log_meal`; `daily_total(…, calorie_target=get_target(ctx,'daily_calories'))` | running total vs the CONTEXT-MD target |
 | **Log food/supplement/biomarker** by text | `ingest/food.py` · `ingest/supplement.py` · `ingest/biomarker.py` (`method="manual"`) | each via `lib.contract` |
 | "how's my **recovery / sleep / HRV / workouts / India-vs-travel**" | `lib/views.py` via `run_view()`; narratives via `analysis/trends.py` (`sleep_trend`, `workout_trend`) | NULL-recovery aware |
-| **Supplement summary / adherence** | `analysis/supplement_summary.py` | active regimens + on/off + adherence% |
+| **Supplement summary / adherence** | `analysis/supplement_summary.py` | active regimens + on/off + adherence% (direct_role only) |
+| **Food micronutrient check-in tick** — "had my iron foods / ate iron / had dairy / calcium / got my vitamin D / logged my food supplement" | `lib/sprints.py`: `mark_done(db, <active sprint id>, <today ISO>, <key>, profile_id=…)`, key ∈ `iron`/`calcium`/`vitamin_d` ("vitamin D"→`vitamin_d`) | FOOD-based, never pills. Works over REST (supabase_client) via the `sprint_set_adherence` RPC — no psycopg2. Reflects on the brief's 🥗 Food check-in line. Minor-safe fuelling framing. |
 | **Interval / workout coaching** ("how was my 4×4?") | `analysis/interval_report.py` | zone + interval enrichment |
 | "**am I on track / my goals / progress**" | `plan/goals.py`: `track_goals(conn, profile_id)` | MULTIPLE concurrent goals; direction-aware % |
 | "**set a goal**" | `plan/goals.py`: `create_goal(…)` | target/unit from context or the user, never invented |
 | "**build me a plan for <event>**" | `plan/training_plan.py`: `create_training_plan(…)` / `get_training_plan` | phases carry the prescription in `weekly_template` |
-| "**give me my day / status / summary / how am I doing / daily brief**" | Produce the structured brief inline (or call `monitor.brief.compose_brief()` directly): **Food** (kcal/protein/carbs/fat vs context targets, remaining; WHOOP burn + net deficit/surplus if available and not stale) · **Supplements** (active regimen from `supplement_regimens` WHERE status='active', grouped by timing slot morning/lunch/dinner/bedtime/anytime, ✅/⬜ per taken today from `supplement_intake_logs`, slot marker ← for current slot) · **WHOOP** (Recovery% with ⏳ if PENDING_SCORE / ❌ if UNSCORABLE / "(calibrating)" if `recovery_user_calibrating=true` · HRV ms · RHR bpm · Sleep Xh Xm · sleep_cycle_count · disturbance_count; ⚠️ stale only if cycle_start is >30h old — elapsed-time, tz-safe, NOT a UTC-date compare) · **Training** (active sprint via `lib/sprints.py`: today's `weekly_plan[weekday]` sessions + intensity, hard/recovery flag, WHOOP-autoregulated directive — green ≥67 proceed / yellow 34–66 downgrade hard→moderate / red <34 pool+beach+massage; today's adherence ticks from `goals.adherence_log`) · **Viome** (today's food_logs with non-null/non-clean verdict — ⚠️ AVOID / ⚠️ Minimize / ✅ Superfoods; skip for minors) · **Rest-of-day actions** (2–4 concrete Claude haiku suggestions). For Dea: growth/performance framing ONLY, no deficit/restriction language. | do NOT call for plain WHOOP/trend queries; only on "day/brief/how am I doing" phrasing |
+| "**give me my day / status / summary / how am I doing / daily brief**" | Produce the structured brief inline (or call `monitor.brief.compose_brief()` directly): **Food** (kcal/protein/carbs/fat vs context targets, remaining; WHOOP burn + net deficit/surplus if available and not stale) · **Supplements** (active regimen from `supplement_regimens` WHERE status='active', grouped by timing slot morning/lunch/dinner/bedtime/anytime, ✅/⬜ per taken today from `supplement_intake_logs`, slot marker ← for current slot) · **WHOOP** (Recovery% with ⏳ if PENDING_SCORE / ❌ if UNSCORABLE / "(calibrating)" if `recovery_user_calibrating=true` · HRV ms · RHR bpm · Sleep Xh Xm · sleep_cycle_count · disturbance_count; ⚠️ stale only if cycle_start is >30h old — elapsed-time, tz-safe, NOT a UTC-date compare) · **Training** (active sprint via `lib/sprints.py`: today's `weekly_plan[weekday]` sessions + intensity, hard/recovery flag, WHOOP-autoregulated directive — green ≥67 proceed / yellow 34–66 downgrade hard→moderate / red <34 pool+beach+massage; today's adherence ticks from `goals.adherence_log`; plus a **🥗 Food check-in** line — ✅/⬜ for `iron`/`calcium`/`vitamin_d` from `goals.adherence_log[today]`, rendered for ALL profiles whenever a sprint is active. These are FOOD-based micronutrients (never pills) — for minors, growth/fuelling framing only) · **Viome** (today's food_logs with non-null/non-clean verdict — ⚠️ AVOID / ⚠️ Minimize / ✅ Superfoods; skip for minors) · **Rest-of-day actions** (2–4 concrete Claude haiku suggestions). For Dea: growth/performance framing ONLY, no deficit/restriction language. | do NOT call for plain WHOOP/trend queries; only on "day/brief/how am I doing" phrasing |
 | "**what changed / brief me**" | `monitor/trend_monitor.py` + `analysis/trends.py` + `plan/goals.track_goals` | trend-delta findings, on demand — distinct from the daily structured brief above |
 | "**what's abnormal**" | `run_view(conn, "abnormal_labs", profile_id)` | DB reference ranges; surface DATE |
 | **Novel question** not in the catalog | ad-hoc read-only SQL via **`lib.sql_guard.run_adhoc_audited(conn, profile_id, sql, intent=…)`** | quality-checked + logged to `query_audit` |
@@ -222,11 +230,14 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
 
 ## 5. THE DATA (what's in the DB)
 
-- **whoop_cycles** — keyed on `whoop_id`; webhook keeps fresh. Columns include: `score_state`
-  (PENDING_SCORE / SCORED / UNSCORABLE), `recovery_score_state`, `recovery_user_calibrating` (bool —
-  show "(calibrating)" when true), `sleep_cycle_count`, `disturbance_count`, `no_data_min`,
-  `whoop_updated_at`, `whoop_created_at`. Always check `score_state` before displaying recovery — ⏳ if
-  PENDING_SCORE, ❌ if UNSCORABLE.
+- **whoop_cycles** — keyed on `whoop_id`; webhook keeps fresh. **Core metric columns (use these EXACT
+  names in any SQL):** `recovery_score_pct` (NOT `recovery_score`), `hrv_ms` (NOT `hrv_rmssd_milli`),
+  `resting_hr_bpm` (NOT `resting_heart_rate`), `day_strain`, `energy_burned_cal`, `avg_hr_bpm`,
+  `max_hr_bpm`, `skin_temp_celsius`, `blood_oxygen_pct`, `respiratory_rate_rpm`, `cycle_start`,
+  `cycle_end`. State/meta: `score_state` (PENDING_SCORE / SCORED / UNSCORABLE), `recovery_score_state`,
+  `recovery_user_calibrating` (bool — show "(calibrating)" when true), `sleep_cycle_count`,
+  `disturbance_count`, `no_data_min`, `whoop_updated_at`, `whoop_created_at`. Always check `score_state`
+  before displaying recovery — ⏳ if PENDING_SCORE, ❌ if UNSCORABLE.
 - **whoop_sleeps** — `whoop_id`, `score_state`, `no_data_min`, `sleep_cycle_count`, `disturbance_count`,
   `whoop_cycle_id`, `whoop_updated_at`, `whoop_created_at`.
 - **whoop_workouts** — `whoop_id`, `score_state`, `sport_id`, `percent_recorded`, `distance_m`,
@@ -235,7 +246,9 @@ auth user, flagged — NOT the service-role, which is never the skill's connecti
   `synced_date`, `height_m`, `weight_kg`, `max_heart_rate`.
 - **biomarkers** — all lab + DEXA scalar values (canonical home). `qualifier` for below-detection;
   `metric_definitions` carries CLINICAL `min/max` (flag) AND PHYSIOLOGICAL `plausible_min/max` (gate).
-- **food_logs** — meals (macros, verdict, flags). **food_reference** — shared macro library; global rows
+- **food_logs** — meals. Macro columns: `calories` (NOT `kcal`), `protein_g`, `carbs_g`, `fat_g`,
+  `fiber_g`; plus `meal_type`, `description`, `log_date`, `verdict`, `flags`, `is_day_summary`.
+  **food_reference** — shared macro library; global rows
   have `profile_id IS NULL`, personal rows scoped to a user. RPCs: `lookup_food_reference(p_description,
   p_profile_id)` (returns macro library match + confidence), `lookup_viome_verdicts(p_ingredient_names[],
   p_profile_id)` (per-ingredient Viome verdict), `promote_food_to_reference(p_food_log_id)` (promote a

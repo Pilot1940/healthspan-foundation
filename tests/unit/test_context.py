@@ -81,6 +81,17 @@ class TestParser:
         # the blueprint rule: no entry → None (caller ASKS), never a substituted default
         assert get_target(self.ctx, "vo2max_target") is None
 
+    def test_get_target_falls_through_to_coaching_and_safety(self):
+        # coaching.voice / safety live outside ctx["targets"]; get_target must still
+        # resolve them rather than wrongly returning None (which would make the skill ASK).
+        ctx = {"targets": {"daily_calories": 2400},
+               "coaching": {"voice": "warm"},
+               "safety": ["no deficit talk"]}
+        assert get_target(ctx, "daily_calories") == 2400
+        assert get_target(ctx, "voice") == "warm"
+        assert get_target(ctx, "safety") == ["no deficit talk"]
+        assert get_target(ctx, "nonexistent") is None
+
 
 class TestRealContextFiles:
     """The shipped context files encode the headline blueprint invariant."""
@@ -94,11 +105,12 @@ class TestRealContextFiles:
         assert get_target(ctx, "maintenance_kcal") == 2514    # TDEE, reference only
         assert ctx["is_minor"] is False
 
-    def test_dea_calorie_target_is_2400_and_minor(self):
+    def test_dea_calorie_target_is_2400_and_safety_present(self):
         ctx = load_context("dea")
         assert get_target(ctx, "daily_calories") == 2400
-        assert ctx["is_minor"] is True
-        # minor-safety must be present and forbid restriction framing
+        # is_minor was flipped to false 2026-06-13 (PC-authorized adult framing); the
+        # protective safety constraints are kept regardless of the minor flag.
+        assert ctx["is_minor"] is False
         assert ctx["safety"], "Dea's context must carry safety constraints"
         assert any("restriction" in s.lower() or "deficit" in s.lower()
                    for s in ctx["safety"])

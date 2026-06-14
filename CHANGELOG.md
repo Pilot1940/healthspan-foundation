@@ -1,5 +1,28 @@
 # HealthSpan Skill — Changelog
 
+## v3.20.0 — food-based daily micronutrient check-in (iron/calcium/vitamin D) (2026-06-13)
+
+- **What:** a FOOD-based daily micronutrient check-in (iron, calcium, vitamin D) that renders
+  in the daily brief with ✅/⬜ and is tickable over REST (supabase_client) — for Dea (minor,
+  App bundle) who tracks these via FOOD, no pills. No `supplement_regimens` (pill-semantic,
+  maintainer-locked catalog, supplement analytics don't run in App/REST mode).
+- **Mechanism:** reuses the sprint adherence store (already REST-read/written + brief-rendered).
+  `lib/sprints.py` gains `NUTRITION = [iron, calcium, vitamin_d]` (kept separate from the workout
+  `ACTIVITIES`), a `🥗 Food check-in` line in `render_training_section` (renders for any active
+  sprint; minor-safe fuelling framing), `mark_done()` now accepts the nutrition keys (already
+  REST-capable via the `sprint_set_adherence` RPC — no psycopg2), and `new_sprint_goals()` seeds
+  `food_checkin` so it persists into the next block.
+- **mig 068:** `sprint_set_adherence` allowlist widened to also accept `iron|calcium|vitamin_d`
+  (mig 066 hard-rejected non-workout keys). Function-definition change only; ownership gate and
+  atomic subtree `jsonb_set` unchanged. Nutrition keys share `goals.adherence_log[date]` with
+  workout keys but render on their own line.
+- **SKILL.md:** dispatcher routes "had my iron foods / had dairy / got my vitamin D / logged my
+  food supplement" → `mark_done(<key>)`; brief spec documents the food check-in (all profiles,
+  FOOD not pills). **context/dea.context.md:** new "Daily micronutrients (via food)" section +
+  an iron-status UNKNOWN flag (low HRV/high RHR could be low ferritin — surface until labs exist).
+- Verified live in App/supabase_client mode under Dea's JWT: brief renders the line, an "iron"
+  tick lands over REST and flips ⬜→✅, workout adherence still works, zero AttributeError. Suite 331/0/9.
+
 ## v3.19.2 — sprint goals atomic writers: no more lost adherence ticks (2026-06-12)
 
 - **Bug:** PC's 'beach' adherence tick on 2026-06-12 silently reverted. Root cause = a

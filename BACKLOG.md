@@ -686,3 +686,23 @@ update supplements OR give a confirmation."
   local day (pass the intended date / set `taken_at` to local-noon), not raw UTC `now`.
 
 **Recommendation:** A + C now (safe, high-value); B only if the text-vs-buttons split keeps confusing.
+
+---
+
+## #27 — Food→supplement bridge: supplements named inside a food log now also log as intakes — **SHIPPED 2026-06-14**
+
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED (migration 069, goes live on push — CI runs `monitor/` directly, no edge deploy).
+
+**Where it bit:** food and supplements are separate tables/write paths, and the drain classifies a message as exactly ONE kind. PC's "morning shake with creatine and glutamine" logged as `kind=food` (one `food_logs` row); "creatine" was just text — it never wrote a `supplement_intake_logs` row, so the creatine supplement never "checked off" in the brief/menu. PC was separately tapping the 📝 menu / texting "took creatine" to compensate.
+
+**Shipped (`monitor/inbox_drain.py`, after a food row inserts):**
+- `bridge_food_supplements()` scans the food's text (description + `foods[].name` + raw caption) for the user's **OWN ACTIVE regimen** supplements only — never the whole catalog, never learns new rows (so glutamine, not in the regimen, is correctly ignored; creatine is logged). Narrower than the interactive supplement branch by design — do not "fix" it by widening to the catalog.
+- `match_regimen_supplements_in_text()` — whole-PHRASE, whole-token match (normalize → space-pad). A bare "magnesium" matches NEITHER Magnesium Citrate nor Bisglycinate (the differentiator must be present); "nac" never matches inside "snack". Triggers = display name + parenthetical-stripped display ("Vitamin K2 (MK-7)" → "vitamin k2") + snake `name`.
+- **Idempotent:** skips any supplement already logged (non-voided) that day, and pins `taken_at` to **noon-UTC of the day** so the existing `UNIQUE (profile_id, supplement_id, taken_on, source='telegram')` ON CONFLICT collapses bridge + 📝-menu + "took creatine" text into ONE row (the menu uses the same noon-UTC pin).
+- Confirmation appends `💊 Also logged: Creatine Monohydrate` (neutral wording — minor-safe; bridge runs for adults and minors since it's regimen-scoped, no learning).
+- **Failure-isolated:** runs strictly after the food committed, wrapped in try/except (errors → `summary["errors"]`, never breaks the food write/confirmation).
+- Feature flag `food_supplement_bridge.enabled` (mig 069, default true) — Rule #1, no hardcoded toggle.
+
+**Live-validated** the matcher against PC's real active regimen: shake→Creatine, "magnesium citrate"→Magnesium Citrate, bare "magnesium"→none, "snack"→none, chicken legs→none, "omega 3 fish oil"→Omega-3. 8 unit tests; suite 339/0/9.
+
+**Known limitation (accepted):** not correlated to the reply-supersede loop — if PC reply-corrects the food ("no creatine after all"), the bridged intake persists (same limitation supplements already have, mig 054). Low harm for a daily regimen item.

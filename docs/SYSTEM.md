@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 066 applied (2026-06-12), skill v3.19.2.
+> state with migration 069 applied (2026-06-14), skill v3.20.0.
 
 ---
 
@@ -94,8 +94,8 @@ What's actually running, and when each piece was last shipped. **Live source of 
 
 | Component | Version | Last deployed (UTC) | What's live |
 |---|---|---|---|
-| **Skill** (Python: drain / brief / ingest) | **v3.19.2** | on push to `main` (GH Actions — no edge deploy) | sprint goals atomic writers (`mark_done`/`set_override` → mig 066 RPCs) |
-| **DB schema** | **mig 066** | 2026-06-12 | `sprint_set_adherence`/`sprint_set_override` atomic-writer RPCs (lost-tick fix) |
+| **Skill** (Python: drain / brief / ingest) | **v3.20.0** | on push to `main` (GH Actions — no edge deploy) | food→supplement bridge (regimen supplements named in a food log auto-log as intakes → mig 069); food micronutrient check-in |
+| **DB schema** | **mig 069** | 2026-06-14 | `food_supplement_bridge.enabled` flag (#27); + mig 067 view RLS leak fix, 068 nutrition adherence keys |
 | **telegram-webhook** | **v11** | **2026-06-12** | supp-menu UX (#26): named toast + slot count, slot-drill hint, `taken_on`→local-day; adherence ticks via `sprint_set_adherence` RPC (atomic); two-level "📝 Update today" menu + `/whoop` reconnect |
 | **whoop-webhook** | recovery-v3 + reconnect-alert (Supabase #18) | 2026-06-11 15:39 | `recovery.updated` fix + debounced dead-token reconnect prompt |
 | **whoop-oauth** | ticket-reconnect (Supabase #14) | 2026-06-11 15:39 | `offline`-scope consent + one-time `?t=` ticket flow + token store + TG confirm |
@@ -539,6 +539,21 @@ single dict). The completeness predicate (`food_is_complete` / `supplement_is_co
 190 kcal/35P per 350 ml) — no label re-read. (Reference override isn't portion-scaled yet
 — backlog #10.)
 
+**Food→supplement bridge (mig 069, BACKLOG #27).** Food and supplements are separate
+tables/write paths and the drain classifies a message as ONE kind, so a supplement named
+inside a food log ("shake with creatine") never logged as an intake. After a food row
+inserts, `bridge_food_supplements()` scans the food text (description + `foods[].name` +
+caption) for the user's **own active regimen** supplements only (never the catalog, never
+learns — glutamine isn't in the regimen → ignored; creatine → logged). Matching
+(`match_regimen_supplements_in_text`) is whole-PHRASE/whole-token: a bare "magnesium"
+matches NEITHER magnesium variant; "nac" ≠ "snack". It's idempotent — skips items already
+logged that day and pins `taken_at` to **noon-UTC** so the `UNIQUE (profile_id,
+supplement_id, taken_on, source='telegram')` ON CONFLICT collapses bridge + 📝-menu +
+"took creatine" text into one row. The confirmation appends `💊 Also logged: …` (minor-safe,
+runs for all). Failure-isolated (after the food commits, try/except → `summary["errors"]`).
+Gated by `food_supplement_bridge.enabled` (default true). NOT wired to the reply-supersede
+loop (same limitation supplements have generally — mig 054).
+
 All thresholds driving these predicates (kcal plausibility, biomarker `plausible_min/max`,
 confidence floor) come from `system_config` / `metric_definitions` — never hardcoded.
 
@@ -881,7 +896,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–066)
+### 4.4 Migration History (001–069)
 
 | # | File | Summary |
 |---|---|---|
@@ -958,6 +973,9 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 064 | food_reference_common_items | **Applied 2026-06-11.** BACKLOG #25: brand-accurate aliases for PC's frequent items (`food_reference` matches by EXACT lower(name)/alias). Sets `brand='Proten'` + `proten*` aliases on the Thai Tea row (brand is "Proten", not "protein"); adds the distinct **Hooray Banana** shake (220 kcal/31P, vs Strawberry's 250/different carbs). Idempotent (works on fresh + live). PC's personal "TWT" (The Whole Truth) morning whey+creatine+glutamine shake seeded separately (`scripts/seed_food_ref_personal_064.py`) — profile-scoped, not in the migration. All three resolve via `lookup_food_reference` (verified). |
 | 065 | whoop_oauth_codes | **Applied 2026-06-11.** Self-serve WHOOP reconnect from Telegram: `whoop_oauth_codes` one-time, expiring tickets carry the OAuth `state` (the ticket, not the raw `profile_id`, travels in the reconnect URL, so a shared link can't attach a stranger's WHOOP to a profile). RLS maintainer-only (edge functions use service_role). Seeds config `whoop.oauth_ticket_ttl_min` (30) + `whoop.reauth_alert_debounce_hours` (24). Consumed single-use by `whoop-oauth` on the WHOOP callback. |
 | 066 | sprint_goals_atomic_writers | **Applied 2026-06-12.** Lost-update fix for `sprints.goals`: two field-scoped, ownership-gated SECURITY DEFINER RPCs — `sprint_set_adherence(sprint,date,activity,value,profile)` (TRACKING — Telegram ticks → `adherence_log`) and `sprint_set_override(sprint,date,override,profile)` (PLANNING — claude.ai skill → `daily_overrides`; NULL/`{}` clears). Each is a single `jsonb_set` merging ONLY its own subtree server-side, so the two write surfaces can no longer clobber each other (the 2026-06-12 'beach' tick revert) and same-subtree writes serialize on the row lock. Gate: authenticated needs `has_profile_access`; service_role trusted but the sprint is pinned to the passed `profile_id`. `lib/sprints.mark_done`/`set_override` + webhook `applyTick` (telegram-webhook v10) all repointed to these. |
+| 067 | view_security_invoker_rls_leak | **Applied 2026-06-12.** SECURITY FIX — a Postgres view runs with the VIEW OWNER's privileges and BYPASSES base-table RLS unless `security_invoker=true` (PG15+). `daily_health_summary` (recreated in mig 060 without it) leaked EVERY profile's rows to any authenticated caller (Dea saw PC). Recreated with `security_invoker=true`. Rule: any view over a profile-scoped table MUST set it, and `CREATE OR REPLACE` can silently drop it. |
+| 068 | sprint_adherence_nutrition_keys | **Applied 2026-06-12.** Food micronutrient check-in: Dea tracks IRON/CALCIUM/VITAMIN D via FOOD (no pills/regimens over REST), reusing the sprint `adherence_log`. CREATE OR REPLACEs mig 066's `sprint_set_adherence` to also accept `'iron'`/`'calcium'`/`'vitamin_d'` (was hard-validated to the 5 workout activities); everything else byte-for-byte identical. Function-definition change only; brief renders a separate "🥗 Food check-in" line. |
+| 069 | food_supplement_bridge_config | **Applied 2026-06-14.** BACKLOG #27: seeds `food_supplement_bridge.enabled` (default true) — the flag for the food→supplement bridge (regimen supplements named inside a food log now also log as intakes; see §3.1 / `monitor/inbox_drain.py:bridge_food_supplements`). Config-only (Rule #1, no hardcoded toggle); idempotent ON CONFLICT upsert. |
 
 ---
 

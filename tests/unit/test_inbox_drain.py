@@ -2150,3 +2150,109 @@ def test_sweep_orphan_supplement_candidate_matches():
         assert sweep_staged_orphans(db, "key", "model", _SWEEP_CFG, {}) == 1
     tables = [c.args[0] for c in db.update.call_args_list]
     assert "stg_food_log_review" not in tables  # no review ids on this orphan
+
+
+# ── food→supplement bridge ─────────────────────────────────────────────────────
+
+from monitor.inbox_drain import (  # noqa: E402
+    bridge_food_supplements,
+    match_regimen_supplements_in_text,
+)
+
+_BRIDGE_REGIMEN = [
+    {"supplement_id": "cre", "name": "creatine", "display_name": "Creatine Monohydrate"},
+    {"supplement_id": "mbg", "name": "magnesium_bisglycinate", "display_name": "Magnesium Bisglycinate"},
+    {"supplement_id": "mct", "name": "magnesium_citrate", "display_name": "Magnesium Citrate"},
+    {"supplement_id": "nac", "name": "nac", "display_name": "NAC"},
+    {"supplement_id": "k2", "name": "vitamin_k2_mk7", "display_name": "Vitamin K2 (MK-7)"},
+]
+
+
+def test_match_creatine_in_shake_glutamine_ignored():
+    """Creatine (in regimen) matches; glutamine (NOT in regimen) is never invented."""
+    m = match_regimen_supplements_in_text(
+        "TWT strawberry protein shake with creatine and glutamine", _BRIDGE_REGIMEN)
+    assert {x["supplement_id"] for x in m} == {"cre"}
+
+
+def test_match_bare_magnesium_is_ambiguous_no_match():
+    """A bare 'magnesium' matches NEITHER citrate nor bisglycinate (full phrase needed)."""
+    assert match_regimen_supplements_in_text("took some magnesium tonight", _BRIDGE_REGIMEN) == []
+
+
+def test_match_explicit_magnesium_citrate():
+    """The explicit differentiator resolves to exactly that variant."""
+    m = match_regimen_supplements_in_text("magnesium citrate 200mg", _BRIDGE_REGIMEN)
+    assert {x["supplement_id"] for x in m} == {"mct"}
+
+
+def test_match_nac_not_substring_of_snack():
+    """Whole-token match: 'nac' must not fire inside 'snack'."""
+    assert match_regimen_supplements_in_text("had a snack and a smoothie", _BRIDGE_REGIMEN) == []
+
+
+def test_match_vitamin_k2_via_paren_stripped_display():
+    """Parenthetical-stripped display name lets 'vitamin k2' trigger 'Vitamin K2 (MK-7)'."""
+    m = match_regimen_supplements_in_text("vitamin k2 in the morning", _BRIDGE_REGIMEN)
+    assert {x["supplement_id"] for x in m} == {"k2"}
+
+
+def test_bridge_logs_new_and_skips_already_logged():
+    """Bridge writes only matches not already logged today; pins noon-UTC; source telegram."""
+    db = MagicMock()
+    db.select.side_effect = [
+        # fetch_active_regimen_supplements → regimens, then supplements
+        [{"supplement_id": "cre", "dose_amount": 5, "dose_unit": "g"},
+         {"supplement_id": "mct", "dose_amount": 200, "dose_unit": "mg"}],
+        [{"id": "cre", "name": "creatine", "display_name": "Creatine Monohydrate"},
+         {"id": "mct", "name": "magnesium_citrate", "display_name": "Magnesium Citrate"}],
+        # existing intakes today: magnesium already logged (e.g. via 📝 menu)
+        [{"supplement_id": "mct"}],
+    ]
+    db.rpc.return_value = {"status": "inserted", "id": "x"}
+    out = bridge_food_supplements(
+        db, _PC_PROFILE_ID, "2026-06-14",
+        "protein shake with creatine and magnesium citrate")
+    assert out == ["Creatine Monohydrate"]              # mct skipped — already logged
+    assert db.rpc.call_count == 1
+    args = db.rpc.call_args[0][1]
+    assert args["p_supplement_id"] == "cre"
+    assert args["p_taken_at"] == "2026-06-14T12:00:00Z"  # menu-matching noon-UTC pin
+    assert args["p_source"] == "telegram"
+    assert args["p_force_stage"] is False
+    assert args["p_dose_amount"] == 5 and args["p_dose_unit"] == "g"
+
+
+def test_bridge_no_regimen_returns_empty():
+    """No active regimen → nothing matched, no writes."""
+    db = MagicMock()
+    db.select.side_effect = [[]]                          # empty regimen
+    assert bridge_food_supplements(db, _PC_PROFILE_ID, "2026-06-14", "shake with creatine") == []
+    db.rpc.assert_not_called()
+
+
+def test_process_cluster_appends_bridge_confirmation():
+    """A food write with a bridged supplement appends the 'Also logged' line to the confirmation."""
+    db, _captured = _db_capture([(200, {"id": "f1", "status": "inserted"}), (200, [])])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="protein shake with creatine")]
+    sent: dict = {}
+
+    def _send(token, chat, msg, **kw):
+        sent["msg"] = msg
+        return 4242
+
+    with patch("monitor.inbox_drain.vision_extract",
+               return_value={"description": "protein shake", "calories": 320,
+                             "protein_g": 40, "confidence": 0.9}), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_past_food_macros", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.bridge_food_supplements",
+               return_value=["Creatine Monohydrate"]), \
+         patch("monitor.inbox_drain.telegram_send", side_effect=_send):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary,
+                         today="2026-06-14")
+
+    assert "💊 Also logged: Creatine Monohydrate" in sent["msg"]
