@@ -43,6 +43,22 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
+## Current State (2026-06-15)
+
+- **Deep-scan deferred follow-ups closed (2026-06-15).** (1) **mig-068 nutrition-key integration
+  test SHIPPED** (`tests/integration/...TestSprintAdherenceRPC`, commit `435f46b`) — exercises
+  `sprint_set_adherence` with iron/calcium/vitamin_d + a workout key, asserts accumulate+persist,
+  rejects unknown activity; sentinel-date + self-cleanup; verified live in a rolled-back txn (skips
+  locally w/o drain creds, runs in CI). (2) **BACKLOG #29 found** writing that test:
+  `sprint_set_adherence` RAISEs on legacy flat-ARRAY `goals` (assumes object). **LATENT, not live** —
+  only PC's two ended Apr/May sprints are arrays; both ACTIVE sprints are object-form, so live
+  ticks/check-ins are fine. Logged with fix options; the test fixture now targets an object-goals
+  sprint. (3) **Macro-sum data triage (deep-scan F8):** Bucket B FIXED — 2× 7-Eleven chicken rows
+  (`d99a11dd`,`9a611944`) had `fat_g=5` vs label's 1.5g in their own description → corrected
+  `fat 5→1.5g` (reconcile 90=90). Bucket A (4 protein shakes, kcal<macros) and Bucket C (2 Dea
+  `is_day_summary` imports, excluded from analysis) LEFT — see BACKLOG #28. **Still open for PC:**
+  F5 Dea `is_minor=false` schema-override record; F15 interval_report CLI thresholds; #29 fix.
+
 ## Current State (2026-06-14)
 
 - **Deep-scan remediation SHIPPED (migs 070/071, whoop-oauth redeploy, 2026-06-14).** A read-only

@@ -709,9 +709,11 @@ update supplements OR give a confirmation."
 
 ---
 
-## #28 — Deep-scan remediation batch (2026-06-14) — **SHIPPED + 4 deferred**
+## #28 — Deep-scan remediation batch (2026-06-14/15) — **SHIPPED (+ follow-ups in #29 / below)**
 
-**Severity:** mixed · **Owner:** CC · **Status:** code fixes SHIPPED (migs 070/071, whoop-oauth redeployed + live-verified); 4 items deferred (below).
+**Severity:** mixed · **Owner:** CC · **Status:** all CRITICAL/HIGH code fixes SHIPPED (migs 070/071, whoop-oauth redeployed + live-verified); deferred items resolved or carried below.
+
+> Note: the deferred items below reference the **deep-scan report's own finding numbers (F-prefixed)**, NOT repo-backlog IDs (the audit produced findings 1–18; only the real ones are tracked here).
 
 A read-only 12-dimension deep audit (55-agent workflow) + personal re-verification. **Shipped:**
 - 🔴 **CRITICAL — whoop-oauth cross-profile token injection CLOSED.** `?profile_id=` + legacy raw `state` (function `--no-verify-jwt`) let any unauthenticated caller bind their WHOOP tokens to anyone's profile via the service_role callback. Removed; consent is now signed one-time ticket (`?t=`) ONLY. Redeployed; verified live (boots 200, `?profile_id=` no longer 302s, `state=p.<uuid>` → 400).
@@ -723,11 +725,15 @@ A read-only 12-dimension deep audit (55-agent workflow) + personal re-verificati
 - New `tests/unit/test_db_rest.py` (Rule #4). Suite 359/0/9.
 - **False positive caught & excluded:** "low-confidence food bypasses staging" — the drain force-stages on `conf < threshold`.
 
-**Deferred (decisions / data / lower-priority — NOT auto-changed):**
-1. **#5 (governance) — Dea(14) `is_minor=false`.** PC's authorized parent override (commit `eb40c06`); docs reconciled. **Open decision for PC:** record the override explicitly in schema (e.g. `profiles.is_minor_override` + note) so intent is machine-evident, vs leaving it as commit-only provenance. Behaviour intentionally unchanged.
-2. **#8 (data) — 8 `food_logs` rows with macro-sum > calories (22–36% over).** Mixed sources (food_photo_processor, telegram, manual_import). No pre-commit macro-vs-calorie sanity in the ingest RPCs. Needs (a) a non-blocking plausibility flag design (must NOT reject real logs) + (b) PC review of the 2 manual-import rows. Left for a deliberate pass — auto-editing historical macros risks corrupting the ledger.
-3. **#13 (test) — mig-068 nutrition-key RPC has no live-DB contract test.** `sprint_set_adherence('iron'/'calcium'/'vitamin_d', …)` is covered only by a mocked unit test. A real integration test needs the JWT-claims auth harness (cf. `test_supplement_biomarker_rpc.py`) + a rollback so it doesn't touch prod sprint data.
-4. **#15 (Rule #1, low) — `analysis/interval_report.py` Z3 transition thresholds (120/240s) hardcoded** in CLI coaching narrative (the prose references the numbers). Convert to config only alongside templating the narrative text — low value, CLI-only.
+**Deferred follow-ups (decisions / data / lower-priority):**
+1. **Finding F5 (governance) — Dea(14) `is_minor=false`.** PC's authorized parent override (commit `eb40c06`); docs reconciled (SYSTEM.md/.html now say "14F; is_minor=false — PC-authorized override"). **STILL OPEN decision for PC:** record the override explicitly in schema (e.g. `profiles.is_minor_override` + note) so intent is machine-evident, vs leaving it as commit-only provenance. Behaviour intentionally unchanged.
+2. **Finding F8 (data) — 8 `food_logs` rows with macro-sum > calories (22–36% over).** Triaged into 3 buckets (2026-06-15):
+   - **Bucket B — clear error → FIXED 2026-06-15:** 2× 7-Eleven chicken breast rows (`d99a11dd`, `9a611944`) had `fat_g=5` but the label text in their own description says 1.5g; corrected `fat 5→1.5g` (both now reconcile 90=90 kcal), note appended. Direct value edit (data, not voided/re-logged).
+   - **Bucket A — LEFT (low impact):** 4 protein-shake rows where declared kcal < macro-derived kcal (`alley`/`Morning whey`/`WT coffee`/`Spa` shakes). Snack-sized; protein is the reliable macro. Bumping declared calories by inference is the ledger-rewrite risk we avoid; leave unless PC wants them bumped to macro-derived kcal.
+   - **Bucket C — LEFT (no impact):** 2× Dea `manual_import` "Daily nutrition total" rows — confirmed `is_day_summary=true` (excluded from brief + per-meal analysis); the inconsistency is in her source tracker's export, not our extraction.
+   - The optional pre-commit macro-vs-calorie plausibility *flag* (non-blocking) remains unscoped — build only if PC wants it.
+3. **Finding F13 (test) — mig-068 nutrition-key integration test → DONE 2026-06-15** (commit `435f46b`, `TestSprintAdherenceRPC`). Surfaced **#29** (legacy-array goals gap) in the process.
+4. **Finding F15 (Rule #1, low) — `analysis/interval_report.py` Z3 transition thresholds (120/240s) hardcoded** in CLI coaching narrative (the prose references the numbers). Convert to config only alongside templating the narrative text — low value, CLI-only. STILL OPEN.
 
 ---
 

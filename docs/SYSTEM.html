@@ -1222,7 +1222,7 @@ dispatch from the webhook any more; <code>guessKind</code> survives only as a ph
 <tr>
 <td><code>sprint_set_adherence(sprint, date, activity, value, profile)</code></td>
 <td>DEFINER</td>
-<td>Mig 066. Atomic, subtree-scoped write of <code>goals.adherence_log[date][activity]</code> (single <code>jsonb_set</code>). The TRACKING-surface write contract — Telegram <code>applyTick</code> + <code>lib/sprints.mark_done</code>. Ownership-gated (authenticated needs <code>has_profile_access</code>; service_role trusted, sprint pinned to <code>profile</code>). Returns the day&#x27;s adherence map.</td>
+<td>Mig 066; mig 068 widened <code>activity</code> to <code>gym|beach|pool|hike|massage|iron|calcium|vitamin_d</code> (nutrition keys). Atomic, subtree-scoped write of <code>goals.adherence_log[date][activity]</code> (single <code>jsonb_set</code>). The TRACKING-surface write contract — Telegram <code>applyTick</code> + <code>lib/sprints.mark_done</code>. Ownership-gated (authenticated needs <code>has_profile_access</code>; service_role trusted, sprint pinned to <code>profile</code>). Returns the day&#x27;s adherence map. ⚠️ Assumes <strong>object</strong> <code>goals</code> — RAISEs on a legacy flat-ARRAY <code>goals</code> row (pre-v3.17); only inactive old sprints are arrays, so live ticks are unaffected (BACKLOG #29).</td>
 </tr>
 <tr>
 <td><code>sprint_set_override(sprint, date, override, profile)</code></td>
