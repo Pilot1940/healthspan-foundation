@@ -53,10 +53,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   `sprint_set_adherence` RAISEs on legacy flat-ARRAY `goals` (assumes object). **LATENT, not live** —
   only PC's two ended Apr/May sprints are arrays; both ACTIVE sprints are object-form, so live
   ticks/check-ins are fine. Logged with fix options; the test fixture now targets an object-goals
-  sprint. (3) **Macro-sum data triage (deep-scan F8):** Bucket B FIXED — 2× 7-Eleven chicken rows
-  (`d99a11dd`,`9a611944`) had `fat_g=5` vs label's 1.5g in their own description → corrected
-  `fat 5→1.5g` (reconcile 90=90). Bucket A (4 protein shakes, kcal<macros) and Bucket C (2 Dea
-  `is_day_summary` imports, excluded from analysis) LEFT — see BACKLOG #28.
+  sprint. (3) **Full read-only DB consistency audit (2026-06-15):** 30+ checks (referential — FKs enforce
+  it; value sanity, enums, dups, generated-column drift, identity/governance, WHOOP, config) —
+  **all clean** except known/intentional items. Fixed: deep-scan F8 macro-sum rows — **5 of 8
+  corrected** by an objective "calories below the protein+carb floor = physically impossible" rule
+  (2× chicken `fat 5→1.5g`; `alley`/`Morning whey`/`WT coffee` calories →244/155/159, macros trusted).
+  **Left (intentional):** Spa shake (`d570c8a1` — user explicitly typed "280 kcal", above floor), 2
+  Dea `is_day_summary` imports (excluded from analysis), 2 back-dated `manual_import` day-totals
+  (`log_date`=real diary date is correct), legacy-array sprint goals (#29). Also **cleared the review
+  queue** (retired 1 unclassifiable "Around 2:30 p.m." stg_food_log_review row). All known items in BACKLOG #28/#29.
 - **Dea `is_minor=false` made permanent + machine-evident (mig 072, F5 RESOLVED, PC consent
   2026-06-15).** Added `profiles.is_minor_override` + `is_minor_override_note` (provenance); set for
   Dea (father/PC authorized, permanent). Guard test
