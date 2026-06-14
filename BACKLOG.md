@@ -728,3 +728,17 @@ A read-only 12-dimension deep audit (55-agent workflow) + personal re-verificati
 2. **#8 (data) — 8 `food_logs` rows with macro-sum > calories (22–36% over).** Mixed sources (food_photo_processor, telegram, manual_import). No pre-commit macro-vs-calorie sanity in the ingest RPCs. Needs (a) a non-blocking plausibility flag design (must NOT reject real logs) + (b) PC review of the 2 manual-import rows. Left for a deliberate pass — auto-editing historical macros risks corrupting the ledger.
 3. **#13 (test) — mig-068 nutrition-key RPC has no live-DB contract test.** `sprint_set_adherence('iron'/'calcium'/'vitamin_d', …)` is covered only by a mocked unit test. A real integration test needs the JWT-claims auth harness (cf. `test_supplement_biomarker_rpc.py`) + a rollback so it doesn't touch prod sprint data.
 4. **#15 (Rule #1, low) — `analysis/interval_report.py` Z3 transition thresholds (120/240s) hardcoded** in CLI coaching narrative (the prose references the numbers). Convert to config only alongside templating the narrative text — low value, CLI-only.
+
+---
+
+## #29 — `sprint_set_adherence` RAISEs on legacy flat-ARRAY `goals` — **LATENT (not live), found 2026-06-15**
+
+**Severity:** LOW (latent) · **Owner:** PC (decide) → CC · **Status:** OPEN — surfaced while writing the #13 mig-068 integration test (the deep scan missed it).
+
+**Where it bites:** `sprint_set_adherence` (migs 066/068) does `jsonb_set(goals, '{adherence_log,…}')`, which assumes `goals` is an OBJECT. On a pre-v3.17 **flat-array** `goals` row it throws `path element at position 1 is not an integer: "adherence_log"` (Postgres array-index error) → the Telegram adherence tick / food micronutrient check-in 500s for that sprint.
+
+**Why it's NOT a live bug:** production only ever ticks the **active** sprint, and both active sprints (PC's "Phuket Sprint 2", Dea's "Phuket Summer 2026") are object-goals. The only array-goals rows are PC's two **ended/inactive** April+May sprints (`39c31bb4`, `e0d1740f`), which never receive ticks. `lib/sprints.normalize_goals` already array→object-normalizes on the READ path; only the WRITE RPC is array-naive.
+
+**Fix options (PC to pick — touches a live SECURITY DEFINER fn, so gate it):** (a) one-time backfill the 2 legacy rows to object form; or (b) harden the RPC to COALESCE a non-object `goals` to `{}` (or normalize array→object) before the `jsonb_set`, so it can never raise. (a) is the smaller, safer change. Either way, add the legacy-array case to the integration test.
+
+**Note:** the #13 integration test fixture now selects an **object-goals** sprint specifically (`jsonb_typeof(goals)='object'`, most-recent) so it mirrors what production actually ticks and doesn't trip over this.

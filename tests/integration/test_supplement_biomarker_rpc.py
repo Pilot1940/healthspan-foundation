@@ -519,3 +519,75 @@ class TestFoodRPC:
         finally:
             if row_id:
                 _db_delete("DELETE FROM stg_food_log_review WHERE id = %s", (row_id,))
+
+
+# ── sprint_set_adherence RPC (mig 066 workout keys + mig 068 nutrition keys) ────
+
+class TestSprintAdherenceRPC:
+    """sprint_set_adherence — verifies mig 068 widened the activity allow-list to include
+    the food micronutrient keys (iron/calcium/vitamin_d) alongside the mig-066 workout keys,
+    and still rejects anything else. Writes under a sentinel far-past date and cleans up, so
+    no real adherence data is touched."""
+
+    _SENTINEL_DATE = "2020-01-01"  # no real adherence_log entry exists this far back
+
+    @pytest.fixture(scope="class")
+    def pc_sprint_id(self) -> str:
+        # MUST be an object-goals sprint: sprint_set_adherence does jsonb_set on
+        # goals.adherence_log, which RAISES on a legacy FLAT-ARRAY goals row (the pre-v3.17
+        # shape). Production only ever ticks the ACTIVE sprint (object form), so pick the most
+        # recent object-goals sprint — never the oldest, which may be a legacy array.
+        rows = _db_read(
+            "SELECT id FROM sprints WHERE profile_id = %s AND jsonb_typeof(goals) = 'object' "
+            "ORDER BY start_date DESC LIMIT 1",
+            (_PC_PROFILE_ID,),
+        )
+        if not rows:
+            pytest.skip("no object-goals sprint owned by PC to exercise sprint_set_adherence")
+        return str(rows[0][0])
+
+    def _cleanup(self, sprint_id: str) -> None:
+        # Remove the whole sentinel-date object so the test leaves no trace.
+        _db_delete(
+            "UPDATE sprints SET goals = goals #- %s WHERE id = %s",
+            ("{adherence_log,%s}" % self._SENTINEL_DATE, sprint_id),
+        )
+
+    def test_mig068_accepts_nutrition_and_workout_keys(self, jwt: str, pc_sprint_id: str) -> None:
+        """iron/calcium/vitamin_d (mig 068) + a workout key (mig 066) all write into the same
+        adherence_log[date] object and read back true."""
+        try:
+            day = {}
+            for activity in ("iron", "calcium", "vitamin_d", "gym"):
+                day = _rpc(jwt, "sprint_set_adherence", {
+                    "p_sprint_id":  pc_sprint_id,
+                    "p_date":       self._SENTINEL_DATE,
+                    "p_activity":   activity,
+                    "p_value":      True,
+                    "p_profile_id": _PC_PROFILE_ID,
+                })
+            # The RPC returns goals.adherence_log[date]; all four keys must be present + true.
+            assert day.get("iron") is True, f"iron not accepted (mig 068): {day!r}"
+            assert day.get("calcium") is True, f"calcium not accepted (mig 068): {day!r}"
+            assert day.get("vitamin_d") is True, f"vitamin_d not accepted (mig 068): {day!r}"
+            assert day.get("gym") is True, f"workout key regressed (mig 066): {day!r}"
+
+            # Confirm it actually persisted on the row (not just the RETURNING value).
+            rows = _db_read(
+                "SELECT goals #> %s FROM sprints WHERE id = %s",
+                ("{adherence_log,%s}" % self._SENTINEL_DATE, pc_sprint_id),
+            )
+            assert rows and rows[0][0] and rows[0][0].get("iron") is True
+        finally:
+            self._cleanup(pc_sprint_id)
+
+    def test_mig068_rejects_unknown_activity(self, jwt: str, pc_sprint_id: str) -> None:
+        """An activity outside the allow-list still RAISEs (the validation wasn't just removed)."""
+        with pytest.raises(httpx.HTTPStatusError):
+            _rpc(jwt, "sprint_set_adherence", {
+                "p_sprint_id":  pc_sprint_id,
+                "p_date":       self._SENTINEL_DATE,
+                "p_activity":   "banana",
+                "p_value":      True,
+                "p_profile_id": _PC_PROFILE_ID,
+            })
