@@ -21,6 +21,12 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
+      - name: Guard — main only
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::This workflow may only run from main (got ${{ github.ref }}). Dispatch from main."
+            exit 1
+          fi
       - uses: actions/checkout@v4.2.2
 
       - uses: actions/setup-python@v5.6.0

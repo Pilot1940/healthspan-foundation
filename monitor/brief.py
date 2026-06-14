@@ -221,7 +221,8 @@ def _fetch_today_viome_flags(db, profile_id: str, day_start: str, day_end: str) 
 # ── formatting ────────────────────────────────────────────────────────────────
 
 def _food_section(totals: dict, targets: dict, is_minor: bool,
-                  energy_burned: int | None = None, is_stale: bool = False) -> str:
+                  energy_burned: int | None = None, is_stale: bool = False,
+                  intake_floor_pct: float = 0.6) -> str:
     if not totals:
         return "Food: no data yet"
     kcal  = totals.get("kcal", 0)
@@ -239,7 +240,7 @@ def _food_section(totals: dict, targets: dict, is_minor: bool,
     if is_minor:
         line = f"Food ({meals} entries): {kcal} kcal · {prot}g protein · {carbs}g carbs · {fat}g fat"
         t_cal = targets.get("daily_calories")
-        if t_cal and kcal < 0.6 * float(t_cal):
+        if t_cal and kcal < intake_floor_pct * float(t_cal):
             line += " — keep fuelling 💪"
         return line
 
@@ -268,17 +269,20 @@ def _food_section(totals: dict, targets: dict, is_minor: bool,
     return "\n".join(lines)
 
 
-def _supps_section(supps: list[dict]) -> str:
+def _supps_section(supps: list[dict], slot_bounds: tuple[int, int, int, int] = (5, 11, 15, 20)) -> str:
     if not supps:
         return "Supplements: no active regimen"
 
+    # Slot boundaries are UTC hours (morning/lunch/dinner start, + bedtime start), overridable
+    # via system_config (brief.supp_slot_*_utc). Defaults: 05/11/15/20 UTC.
+    m_start, l_start, d_start, b_start = slot_bounds
     try:
         now_h = datetime.now(timezone.utc).hour
-        if 5 <= now_h < 11:
+        if m_start <= now_h < l_start:
             current_slot = "morning"
-        elif 11 <= now_h < 15:
+        elif l_start <= now_h < d_start:
             current_slot = "lunch"
-        elif 15 <= now_h < 20:
+        elif d_start <= now_h < b_start:
             current_slot = "dinner"
         else:
             current_slot = "bedtime"
@@ -478,10 +482,18 @@ def compose_brief(
     viome_flags = [] if is_minor else _fetch_today_viome_flags(db, profile_id, day_start, day_end)
 
     model      = str(cfg.get("brief.model", _BRIEF_MODEL)).strip('"')
+    intake_floor = float(str(cfg.get("brief.food_intake_threshold_pct", 0.6)).strip('"'))
     food_txt   = _food_section(food, targets, is_minor,
                                energy_burned=whoop.get("energy_burned_cal"),
-                               is_stale=whoop.get("stale", False))
-    supps_txt  = _supps_section(supps)
+                               is_stale=whoop.get("stale", False),
+                               intake_floor_pct=intake_floor)
+    _sb = (
+        int(float(str(cfg.get("brief.supp_slot_morning_utc", 5)).strip('"'))),
+        int(float(str(cfg.get("brief.supp_slot_lunch_utc", 11)).strip('"'))),
+        int(float(str(cfg.get("brief.supp_slot_dinner_utc", 15)).strip('"'))),
+        int(float(str(cfg.get("brief.supp_slot_bedtime_utc", 20)).strip('"'))),
+    )
+    supps_txt  = _supps_section(supps, _sb)
     whoop_txt  = _whoop_section(whoop, is_minor)
     # Training plan + adherence from the active sprint's goals jsonb, autoregulated by WHOOP
     # recovery. Recovery bands overridable via system_config (defaults = WHOOP-standard 67/34).

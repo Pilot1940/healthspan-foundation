@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 069 applied (2026-06-14), skill v3.20.0.
+> state with migration 071 applied (2026-06-14), skill v3.20.0.
 
 ---
 
@@ -15,7 +15,8 @@
 
 A transportable, multi-tenant, DB-backed **personal health intelligence platform** for
 the Chitalkar household — currently **PC** (Parikshit Chitalkar, owner/maintainer) and
-**Dea** (minor, 13F), with **Nanki** (PC's wife, 45F adult) ready to onboard when she is, and a
+**Dea** (14F; `is_minor=false` — adult coaching framing, an explicit PC-authorized parent override
+of the age default, commit `eb40c06`), with **Nanki** (PC's wife, 45F adult) ready to onboard when she is, and a
 dormant profile slot for Dev. The system behaves as a
 longevity physician, exercise physiologist, nutrition coach, and mental-performance
 advisor, giving guidance grounded in each person's actual longitudinal data (WHOOP, labs,
@@ -95,10 +96,10 @@ What's actually running, and when each piece was last shipped. **Live source of 
 | Component | Version | Last deployed (UTC) | What's live |
 |---|---|---|---|
 | **Skill** (Python: drain / brief / ingest) | **v3.20.0** | on push to `main` (GH Actions — no edge deploy) | food→supplement bridge (regimen supplements named in a food log auto-log as intakes → mig 069); food micronutrient check-in |
-| **DB schema** | **mig 069** | 2026-06-14 | `food_supplement_bridge.enabled` flag (#27); + mig 067 view RLS leak fix, 068 nutrition adherence keys |
+| **DB schema** | **mig 071** | 2026-06-14 | deep-scan cleanup: 070 threshold config keys (Rule #1), 071 Proten Thai Tea aliases; + 069 bridge flag, 067 view RLS leak fix, 068 nutrition keys |
 | **telegram-webhook** | **v11** | **2026-06-12** | supp-menu UX (#26): named toast + slot count, slot-drill hint, `taken_on`→local-day; adherence ticks via `sprint_set_adherence` RPC (atomic); two-level "📝 Update today" menu + `/whoop` reconnect |
 | **whoop-webhook** | recovery-v3 + reconnect-alert (Supabase #18) | 2026-06-11 15:39 | `recovery.updated` fix + debounced dead-token reconnect prompt |
-| **whoop-oauth** | ticket-reconnect (Supabase #14) | 2026-06-11 15:39 | `offline`-scope consent + one-time `?t=` ticket flow + token store + TG confirm |
+| **whoop-oauth** | ticket-ONLY reconnect (Supabase #15) | 2026-06-14 | SECURITY: removed the unauthenticated `?profile_id=` consent path + legacy raw `state` (cross-profile token injection); consent now requires the signed one-time `?t=` ticket ONLY. `offline`-scope consent + token store + TG confirm |
 | **trigger-drain** | no-auth (mig 047) (Supabase #9) | 2026-06-09 17:12 | pg_net → GH `inbox-drain` dispatch |
 
 > Edge `VERSION` is Supabase's deploy counter (increments every deploy); the **v9 / recovery-v3 /
@@ -212,13 +213,17 @@ the per-function "additional secrets" lists below).
   push. Before the fix: 110 failed recovery webhooks/week, zero recovery pushes ever.
 
 #### `whoop-oauth`
-- **verify_jwt:** `false`. No inbound auth — opened by a human in a browser. The `state`
-  parameter carries the profile UUID to prevent CSRF.
+- **verify_jwt:** `false`. No inbound JWT — opened by a human in a browser. **Authorisation is the
+  signed one-time ticket itself** (the `state` is `t.<ticket>`, validated/consumed server-side).
+- **SECURITY (2026-06-14):** the old manual `GET ?profile_id=<uuid>` consent path and the legacy raw
+  `state` callback were REMOVED. They had no auth, so any unauthenticated caller could consent with
+  THEIR WHOOP account against ANYONE's `profile_id` and the callback's `storeTokens()` (service_role,
+  RLS-bypassing) would bind the attacker's tokens to the victim. **Consent now starts ONLY from a
+  `?t=<ticket>` link minted by an authenticated Telegram `/whoop` tap** (mig 065 `whoop_oauth_codes`,
+  one-time + expiring). Callback accepts ONLY `state=t.<ticket>`; anything else → 400.
 - **Purpose:** OAuth 2.0 consent (offline scope → refresh token), exchange, and token store.
-  Two entry points: `GET ?profile_id=<uuid>` (manual/admin) and **`GET ?t=<ticket>`** (the
-  Telegram self-serve reconnect, v3.18.0 — a one-time `whoop_oauth_codes` ticket, mig 065).
-  Both redirect to the WHOOP consent page with a prefixed `state` (`p.<profile>` or `t.<ticket>`).
-  Callback `GET ?code=...&state=...` resolves the profile (consuming the ticket **single-use**),
+  Entry `GET ?t=<ticket>` → validate ticket (peek, not consume) → redirect to WHOOP consent with
+  `state=t.<ticket>`. Callback `GET ?code=...&state=t.<ticket>` consumes the ticket **single-use**,
   exchanges the code, fetches the WHOOP `user_id` from `/v2/user/profile/basic`, upserts into
   `whoop_tokens`, sends a **"✅ WHOOP reconnected" Telegram confirm**, and returns an HTML success page.
 - **Reconnect UX (v3.18.0):** `whoop-webhook` DMs a debounced "⚠️ reconnect" button when the refresh
@@ -896,7 +901,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–069)
+### 4.4 Migration History (001–071)
 
 | # | File | Summary |
 |---|---|---|
@@ -976,6 +981,8 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 067 | view_security_invoker_rls_leak | **Applied 2026-06-12.** SECURITY FIX — a Postgres view runs with the VIEW OWNER's privileges and BYPASSES base-table RLS unless `security_invoker=true` (PG15+). `daily_health_summary` (recreated in mig 060 without it) leaked EVERY profile's rows to any authenticated caller (Dea saw PC). Recreated with `security_invoker=true`. Rule: any view over a profile-scoped table MUST set it, and `CREATE OR REPLACE` can silently drop it. |
 | 068 | sprint_adherence_nutrition_keys | **Applied 2026-06-12.** Food micronutrient check-in: Dea tracks IRON/CALCIUM/VITAMIN D via FOOD (no pills/regimens over REST), reusing the sprint `adherence_log`. CREATE OR REPLACEs mig 066's `sprint_set_adherence` to also accept `'iron'`/`'calcium'`/`'vitamin_d'` (was hard-validated to the 5 workout activities); everything else byte-for-byte identical. Function-definition change only; brief renders a separate "🥗 Food check-in" line. |
 | 069 | food_supplement_bridge_config | **Applied 2026-06-14.** BACKLOG #27: seeds `food_supplement_bridge.enabled` (default true) — the flag for the food→supplement bridge (regimen supplements named inside a food log now also log as intakes; see §3.1 / `monitor/inbox_drain.py:bridge_food_supplements`). Config-only (Rule #1, no hardcoded toggle); idempotent ON CONFLICT upsert. |
+| 070 | threshold_config_keys | **Applied 2026-06-14.** Deep-scan Rule-#1 cleanup: seeds `brief.food_intake_threshold_pct` (0.6, the minor "keep fuelling" floor used by brief.py + inbox_drain.py), `brief.supp_slot_{morning,lunch,dinner,bedtime}_utc` (5/11/15/20, brief supplement-slot hour boundaries), and `supplement.adherence_threshold_pct` (70, supplement_summary low-adherence cutoff). Code reads each with an equal code-side fallback, so behaviour is unchanged at defaults. Config-only, idempotent. |
+| 071 | proten_thai_tea_aliases | **Applied 2026-06-14.** Appends missing aliases (`proten thai tea protein shake` + the `protien` misspelling, etc.) to the global "Protein Thai Tea Shake" (Proten, 190 kcal/35g) `food_reference` row so PC's phrasing auto-resolves instead of asking for calories. `lookup_food_reference` matches aliases exactly; DISTINCT-merge keeps it idempotent. (Deeper fix = fuzzy match — BACKLOG #25.) |
 
 ---
 
@@ -1013,7 +1020,7 @@ One paragraph per module: what it does, key public functions, and when to reach 
 
 **supplement.py** — supplement intake logging with alias resolution and regimen auto-attachment. `ingest_supplement_row` resolves via `supplement_aliases` (score 1.0) or `supplements.name` (0.9), auto-looks-up the active regimen, gates and validates, then upserts on `(profile_id, supplement_id, taken_on, source)`; helpers `find_active_regimen`, `list_active_regimens`, `close_regimen`, and `run_interactive` (CLI menu). Valid sources `{manual, journal, skill, csv, photo}` are checked early; `taken_on` is GENERATED — an ON CONFLICT target but excluded from INSERT.
 
-**self_write.py** (v3.16.0) — direct self-write path for a NON-maintainer (whose `maintainer_ingest_*` call would 401) and the ONLY write path for `strength_logs`. `log_food`/`log_supplement`/`log_biomarker`/`log_strength(handle, profile_id, …)` insert the caller's OWN rows; RLS `has_profile_access` scopes the insert to self (a maintainer may also target a family profile). Driver-agnostic — duck-types `lib.db_rest.DbRest` (`.insert`, the App path), a psycopg2 connection (parameterised INSERT … RETURNING + commit), or a supabase Client. GENERATED columns (`food_logs.log_date`, `supplement_intake_logs.taken_on`, `strength_logs.performed_on`) are never sent. The REST handle comes from `lib.db.get_app_db_rest(config)` (supabase_client mode). Maintainer food/supp/bio logging keeps the staging RPC path.
+**self_write.py** (v3.16.0) — direct self-write path for a NON-maintainer (whose `maintainer_ingest_*` call would 401) and the ONLY write path for `strength_logs`. `log_food`/`log_supplement`/`log_biomarker`/`log_strength(handle, profile_id, …)` insert the caller's OWN rows; RLS `has_profile_access` scopes the insert to self (a maintainer may also target a family profile). Driver-agnostic — duck-types `lib.db_rest.DbRest` (`.insert`, the App path), a psycopg2 connection (parameterised INSERT … RETURNING + commit), or a supabase Client. Truly GENERATED columns (`supplement_intake_logs.taken_on`, `strength_logs.performed_on`) are never sent. **`food_logs.log_date` is NOT generated** (no default, `is_generated=NEVER`) — `log_food()` sets it to the UTC date of `logged_at` (mirrors `maintainer_ingest_food`); omitting it inserts NULL and the row drops out of every `log_date = today` query (fixed 2026-06-14). The REST handle comes from `lib.db.get_app_db_rest(config)` (supabase_client mode). Maintainer food/supp/bio logging keeps the staging RPC path.
 
 **whoop_sync.py** — pulls WHOOP API data (workouts, cycles/recovery, sleeps, body measurements) and upserts into `whoop_*` tables; uses stdlib `urllib` only (no httpx/requests). `sync_profile(conn, profile_id, since_iso, to_iso, env)` runs all four per-table syncs (each under a `wearable_sync_log` run with SAVEPOINT isolation); `refresh_recent(conn, hours, profiles, env)` is the mini-sync the morning brief calls (and exists specifically because WHOOP emits no cycle.updated webhook, so final `day_strain` must be re-pulled); `_map_cycle/_map_sleep/_map_workout` carry the migration-045 fields; `_resolve_access_token` prefers DB `whoop_tokens` then falls back to the `.env` refresh token. CLI `--backfill` pulls from 2020-01-01. All conflict keys use `(profile_id, whoop_id)`; zone fields are written only when `total>0` so screenshot-sourced zones aren't overwritten with zeroes.
 

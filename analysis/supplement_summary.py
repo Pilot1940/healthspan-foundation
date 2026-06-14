@@ -25,11 +25,29 @@ def _adherence(conn, profile_id, *, days: int):
     return {str(r[0]): r[1] for r in cur.fetchall()}
 
 
-def summary(conn, profile_id, *, days: int = 14) -> dict:
+def _adherence_threshold(conn, override: float | None) -> float:
+    """Low-adherence cutoff (%). Caller override wins; else system_config
+    supplement.adherence_threshold_pct; else 70 (Rule #1 — no bare literal)."""
+    if override is not None:
+        return float(override)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM system_config WHERE key='supplement.adherence_threshold_pct' AND is_active")
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            return float(str(row[0]).strip('"'))
+    except Exception:
+        pass
+    return 70.0
+
+
+def summary(conn, profile_id, *, days: int = 14, adherence_threshold_pct: float | None = None) -> dict:
     """Active regimens with on/off status + adherence% over the window.
 
     Adherence is only meaningful for daily regimens; for cyclical ones we report the
     raw logged-days and leave pct None (the on/off pattern, not a flat %, is the truth).
+    The low-adherence cutoff comes from system_config (supplement.adherence_threshold_pct,
+    default 70), overridable via the keyword arg.
     """
     if not hasattr(conn, "cursor"):
         raise RuntimeError(
@@ -63,9 +81,10 @@ def summary(conn, profile_id, *, days: int = 14) -> dict:
             "days_logged": days_logged, "window_days": days, "adherence_pct": pct,
         })
 
-    n_low = sum(1 for i in items if i["adherence_pct"] is not None and i["adherence_pct"] < 70)
+    threshold = _adherence_threshold(conn, adherence_threshold_pct)
+    n_low = sum(1 for i in items if i["adherence_pct"] is not None and i["adherence_pct"] < threshold)
     narrative = (f"{len(items)} active regimen(s) over the last {days}d"
-                 + (f"; {n_low} below 70% adherence." if n_low else
+                 + (f"; {n_low} below {int(threshold)}% adherence." if n_low else
                     "; adherence on track where measurable." if items else "."))
     return {"window_days": days, "regimens": items, "low_adherence_count": n_low,
             "narrative": narrative}

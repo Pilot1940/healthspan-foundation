@@ -4,11 +4,16 @@
 // Register redirect URI in WHOOP dashboard:
 //   https://dsnydskkjwziynwmzfkh.supabase.co/functions/v1/whoop-oauth
 //
-// Entry (two ways to start):
+// Entry (ONE way to start — security: see below):
 //   GET /whoop-oauth?t=<ticket>        → Telegram reconnect: one-time ticket (mig 065) → consent
-//   GET /whoop-oauth?profile_id=<uuid> → manual/admin                            → consent
 // Callback:
-//   GET /whoop-oauth?code=...&state=<t.ticket|p.profile> → exchange, store, Telegram confirm
+//   GET /whoop-oauth?code=...&state=t.<ticket> → exchange, store, Telegram confirm
+//
+// SECURITY: consent can ONLY be started with a signed one-time ticket. The old manual
+// ?profile_id=<uuid> path (and the legacy raw-profile_id callback state) were REMOVED — they
+// had no auth, so any unauthenticated caller could consent with THEIR WHOOP account against
+// ANYONE's profile_id and storeTokens() (service_role, RLS-bypassing) would bind the attacker's
+// tokens to the victim. Tickets are minted only by an authenticated Telegram /whoop tap.
 import {
   WHOOP_AUTH_URL, SCOPES, exchangeCode, storeTokens, whoopGet, svc,
   peekTicket, consumeTicket, activeChatId, tgSend,
@@ -43,40 +48,36 @@ Deno.serve(async (req) => {
 
   if (err) return html(`<h2>WHOOP authorisation failed</h2><p>${esc(err)}: ${esc(url.searchParams.get("error_description") ?? "")}</p>`, 400);
 
-  // --- Step 1: start consent ---
+  // --- Step 1: start consent (signed one-time ticket ONLY) ---
   if (!code) {
     const db = svc();
     const ticket = url.searchParams.get("t");
-    if (ticket) {
-      // Telegram reconnect: validate the one-time ticket (don't consume yet — that
-      // happens on the callback so a single tap = a single store).
-      const profileId = await peekTicket(db, ticket);
-      if (!profileId) {
-        return html(`<h2>Link expired</h2><p>This reconnect link is no longer valid. Send <code>/whoop</code> to the bot for a fresh one.</p>`, 400);
-      }
-      return consentRedirect(`t.${ticket}`);
-    }
-    const profileId = url.searchParams.get("profile_id");
-    if (!profileId) {
+    if (!ticket) {
+      // No unauthenticated entry point: the ?profile_id= admin path was removed (it allowed
+      // cross-profile token injection). The only way in is a /whoop-minted one-time ticket.
       return html(`<h2>HealthSpan — Connect WHOOP</h2>
-        <p>To reconnect, send <code>/whoop</code> to the Telegram bot and tap the button.</p>
-        <p>(Admin: <code>${SELF}?profile_id=YOUR_PROFILE_UUID</code>.)</p>`);
+        <p>To (re)connect WHOOP, send <code>/whoop</code> to the Telegram bot and tap the button —
+        that issues a secure, single-use link.</p>`);
     }
-    return consentRedirect(`p.${profileId}`);
+    // Validate the one-time ticket (don't consume yet — that happens on the callback so a
+    // single tap = a single store).
+    const profileId = await peekTicket(db, ticket);
+    if (!profileId) {
+      return html(`<h2>Link expired</h2><p>This reconnect link is no longer valid. Send <code>/whoop</code> to the bot for a fresh one.</p>`, 400);
+    }
+    return consentRedirect(`t.${ticket}`);
   }
 
   // --- Step 2: callback — resolve profile, exchange, store, confirm ---
   if (!state) return html("<h2>Missing state</h2>", 400);
   const db = svc();
-  let profileId: string | null;
-  if (state.startsWith("t.")) {
-    profileId = await consumeTicket(db, state.slice(2));   // single-use
-    if (!profileId) return html(`<h2>Link already used or expired</h2><p>Send <code>/whoop</code> to the bot for a fresh link.</p>`, 400);
-  } else if (state.startsWith("p.")) {
-    profileId = state.slice(2);
-  } else {
-    profileId = state;   // legacy raw-profile_id state
+  // SECURITY: ONLY the signed one-time ticket state (t.<ticket>) is accepted. The legacy
+  // p.<profile_id> and raw-profile_id states were removed (unauthenticated token injection).
+  if (!state.startsWith("t.")) {
+    return html(`<h2>Invalid link</h2><p>Send <code>/whoop</code> to the bot for a fresh reconnect link.</p>`, 400);
   }
+  const profileId = await consumeTicket(db, state.slice(2));   // single-use
+  if (!profileId) return html(`<h2>Link already used or expired</h2><p>Send <code>/whoop</code> to the bot for a fresh link.</p>`, 400);
 
   try {
     const tokens = await exchangeCode(code, SELF);

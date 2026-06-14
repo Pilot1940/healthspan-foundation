@@ -11,9 +11,12 @@ maintainer RPC path (staging, plausibility gates). This module is also the ONLY 
 for `strength_logs` (mig 063 added no ingest RPC) — used by everyone.
 
 GENERATED columns are NEVER sent (the DB computes them):
-  * food_logs.log_date            (from logged_at)
   * supplement_intake_logs.taken_on  (from taken_at)
   * strength_logs.performed_on    (from performed_at)
+NOTE: food_logs.log_date is NOT generated (no default, is_generated=NEVER). log_food()
+sets it explicitly to the UTC date of logged_at — mirroring maintainer_ingest_food. Omitting
+it (as this module previously did) inserts NULL log_date, which silently drops the row from
+every `log_date = today` query (daily totals, orphan sweeps).
 
 Driver-agnostic: accepts whatever handle the skill holds —
   * lib.db_rest.DbRest      → .insert()           (App / PostgREST; the primary path)
@@ -22,12 +25,30 @@ Driver-agnostic: accepts whatever handle the skill holds —
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 
 def _clean(row: dict) -> dict:
     """Drop None values so DB defaults / nullable columns aren't overwritten with NULL."""
     return {k: v for k, v in row.items() if v is not None}
+
+
+def _utc_date(ts: Any) -> str:
+    """UTC calendar date (YYYY-MM-DD) of a timestamp — str/ISO or datetime; None → today UTC.
+    Mirrors maintainer_ingest_food's `(logged_at AT TIME ZONE 'UTC')::date` so both write paths
+    agree on food_logs.log_date (which is NOT a generated column)."""
+    if ts is None:
+        return datetime.now(timezone.utc).date().isoformat()
+    dt = ts if isinstance(ts, datetime) else None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.now(timezone.utc).date().isoformat()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).date().isoformat()
 
 
 def _insert(handle: Any, table: str, row: dict) -> str | None:
@@ -62,11 +83,13 @@ def log_food(handle, profile_id, *, description, meal_type, calories=None,
              logged_at=None, meal_time=None, location=None, notes=None,
              source="skill") -> str | None:
     """Insert one food_logs row for `profile_id`. meal_type must be one of
-    breakfast|lunch|dinner|snack|drink|supplement (DB CHECK). log_date is GENERATED."""
+    breakfast|lunch|dinner|snack|drink|supplement (DB CHECK). log_date is NOT generated —
+    set here to the UTC date of logged_at (mirrors maintainer_ingest_food)."""
     return _insert(handle, "food_logs", {
         "profile_id": profile_id, "description": description, "meal_type": meal_type,
         "calories": calories, "protein_g": protein_g, "carbs_g": carbs_g,
         "fat_g": fat_g, "fiber_g": fiber_g, "foods": foods, "logged_at": logged_at,
+        "log_date": _utc_date(logged_at),
         "meal_time": meal_time, "location": location, "notes": notes, "source": source,
     })
 

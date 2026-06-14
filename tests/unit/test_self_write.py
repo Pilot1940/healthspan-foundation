@@ -52,12 +52,22 @@ def test_strength_routes_through_dbrest_and_omits_generated():
 def test_food_self_write_sets_profile_and_drops_none():
     db = _FakeDbRest()
     self_write.log_food(db, PROFILE, description="2 eggs", meal_type="breakfast",
-                        calories=140, protein_g=12)
+                        calories=140, protein_g=12, logged_at="2026-06-11T08:00:00Z")
     table, row = db.calls[0]
     assert table == "food_logs"
     assert row["profile_id"] == PROFILE and row["meal_type"] == "breakfast"
-    assert "log_date" not in row          # GENERATED
+    # log_date is NOT a generated column — log_food sets it to the UTC date of logged_at
+    # (omitting it inserts NULL and the row drops out of `log_date = today` queries).
+    assert row["log_date"] == "2026-06-11"
     assert "carbs_g" not in row           # None dropped
+
+
+def test_food_self_write_log_date_defaults_to_today_when_no_timestamp():
+    db = _FakeDbRest()
+    self_write.log_food(db, PROFILE, description="snack", meal_type="snack", calories=50)
+    _, row = db.calls[0]
+    # No logged_at supplied → log_date is today's UTC date (10 chars, ISO).
+    assert len(row["log_date"]) == 10 and row["log_date"].count("-") == 2
 
 
 def test_supplement_self_write_shape():

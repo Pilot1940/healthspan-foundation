@@ -706,3 +706,25 @@ update supplements OR give a confirmation."
 **Live-validated** the matcher against PC's real active regimen: shake→Creatine, "magnesium citrate"→Magnesium Citrate, bare "magnesium"→none, "snack"→none, chicken legs→none, "omega 3 fish oil"→Omega-3. 8 unit tests; suite 339/0/9.
 
 **Known limitation (accepted):** not correlated to the reply-supersede loop — if PC reply-corrects the food ("no creatine after all"), the bridged intake persists (same limitation supplements already have, mig 054). Low harm for a daily regimen item.
+
+---
+
+## #28 — Deep-scan remediation batch (2026-06-14) — **SHIPPED + 4 deferred**
+
+**Severity:** mixed · **Owner:** CC · **Status:** code fixes SHIPPED (migs 070/071, whoop-oauth redeployed + live-verified); 4 items deferred (below).
+
+A read-only 12-dimension deep audit (55-agent workflow) + personal re-verification. **Shipped:**
+- 🔴 **CRITICAL — whoop-oauth cross-profile token injection CLOSED.** `?profile_id=` + legacy raw `state` (function `--no-verify-jwt`) let any unauthenticated caller bind their WHOOP tokens to anyone's profile via the service_role callback. Removed; consent is now signed one-time ticket (`?t=`) ONLY. Redeployed; verified live (boots 200, `?profile_id=` no longer 302s, `state=p.<uuid>` → 400).
+- 🟠 **`food_logs.log_date` not generated** — `self_write.log_food` now sets it (UTC date of `logged_at`); fixed wrong "GENERATED" comments + SYSTEM.md. Latent (0 NULL rows; App self-write bundle not live yet).
+- 🟠 **Partial-write rollback** — multi-item food where one item fails now voids the inserted siblings (`maintainer_void_food`) before marking failed (no orphan rows). Tests added.
+- 🟠 **Rule #1** — hardcoded `0.6` intake floor + supplement-slot UTC hours + supplement adherence cutoff → `system_config` (mig 070, 6 keys, defaults = old behaviour); 5 inline drain fallbacks promoted to constants.
+- 🟡 **Workflows** — `inbox-drain`/`send-brief`/`media-retention` hard-guard `github.ref == main`.
+- 🟢 **Proten Thai Tea** aliases (mig 071) so PC's phrasing auto-resolves to 190/35.
+- New `tests/unit/test_db_rest.py` (Rule #4). Suite 359/0/9.
+- **False positive caught & excluded:** "low-confidence food bypasses staging" — the drain force-stages on `conf < threshold`.
+
+**Deferred (decisions / data / lower-priority — NOT auto-changed):**
+1. **#5 (governance) — Dea(14) `is_minor=false`.** PC's authorized parent override (commit `eb40c06`); docs reconciled. **Open decision for PC:** record the override explicitly in schema (e.g. `profiles.is_minor_override` + note) so intent is machine-evident, vs leaving it as commit-only provenance. Behaviour intentionally unchanged.
+2. **#8 (data) — 8 `food_logs` rows with macro-sum > calories (22–36% over).** Mixed sources (food_photo_processor, telegram, manual_import). No pre-commit macro-vs-calorie sanity in the ingest RPCs. Needs (a) a non-blocking plausibility flag design (must NOT reject real logs) + (b) PC review of the 2 manual-import rows. Left for a deliberate pass — auto-editing historical macros risks corrupting the ledger.
+3. **#13 (test) — mig-068 nutrition-key RPC has no live-DB contract test.** `sprint_set_adherence('iron'/'calcium'/'vitamin_d', …)` is covered only by a mocked unit test. A real integration test needs the JWT-claims auth harness (cf. `test_supplement_biomarker_rpc.py`) + a rollback so it doesn't touch prod sprint data.
+4. **#15 (Rule #1, low) — `analysis/interval_report.py` Z3 transition thresholds (120/240s) hardcoded** in CLI coaching narrative (the prose references the numbers). Convert to config only alongside templating the narrative text — low value, CLI-only.

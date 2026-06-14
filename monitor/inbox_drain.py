@@ -33,6 +33,14 @@ _SETTLE_SEC_FALLBACK = 90
 _CONFIDENCE_FALLBACK = 0.3  # items with EXPLICIT confidence below this stage → clarify
                             # (identity uncertain). Low by design: estimates shouldn't stage.
 _VISION_MODEL_FALLBACK = models.SONNET    # ONE model everywhere (drain.vision_model)
+# Code-side fallbacks for system_config keys (the config row is authoritative; these only
+# apply if the key is missing — keeping them as named constants, not inline literals).
+_LEARN_MIN_LOGS_FALLBACK = 2              # food_reference.learn_min_logs
+_CLARIFY_WINDOW_SEC_FALLBACK = 900        # clarify.match_window_sec
+_CLARIFY_MIN_CONF_FALLBACK = 0.7          # clarify.match_min_conf
+_ORPHAN_SUPERSEDE_SEC_FALLBACK = 1800     # clarify.orphan_supersede_window_sec
+_BRIEF_DEDUP_SEC_FALLBACK = 600           # brief.dedup_sec
+_INTAKE_FLOOR_PCT_FALLBACK = 0.6          # brief.food_intake_threshold_pct (minor "keep fuelling")
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 
@@ -1156,8 +1164,8 @@ def sweep_staged_orphans(db: DbRest, api_key: str, model: str, cfg: dict,
     staged row, gather prod rows logged within clarify.orphan_supersede_window_sec of
     the clarify being asked, LLM-judge whether one IS the staged item, and on a
     confident match retire the orphan (result_ref → the prod row). Returns count."""
-    window = int(float(cfg.get("clarify.orphan_supersede_window_sec", 1800)))
-    min_conf = float(cfg.get("clarify.match_min_conf", 0.7))
+    window = int(float(cfg.get("clarify.orphan_supersede_window_sec", _ORPHAN_SUPERSEDE_SEC_FALLBACK)))
+    min_conf = float(cfg.get("clarify.match_min_conf", _CLARIFY_MIN_CONF_FALLBACK))
     retired = 0
     staged = db.select("media_inbox", filters={"status": "eq.staged"}, order="created_at")
     for s in staged or []:
@@ -1306,6 +1314,7 @@ def _totals_line(
     target_cal,
     target_protein_g,
     is_minor: bool,
+    intake_floor_pct: float = _INTAKE_FLOOR_PCT_FALLBACK,
 ) -> str:
     """One-line running-total appended to the Telegram confirmation after a food write.
 
@@ -1320,7 +1329,7 @@ def _totals_line(
     if is_minor:
         line = f"Today: {kcal} kcal · {protein}g protein"
         # Flag low intake with growth/performance framing only — never "not enough"
-        if target_cal and kcal < 0.6 * float(target_cal):
+        if target_cal and kcal < intake_floor_pct * float(target_cal):
             line += " — keep fuelling to stay strong 💪"
         return line
 
@@ -1361,6 +1370,7 @@ def _process_cluster(
     learn_min_logs: int = 2,
     brief_profiles: set | None = None,
     supp_bridge_enabled: bool = True,
+    intake_floor_pct: float = _INTAKE_FLOOR_PCT_FALLBACK,
 ) -> None:
     """Extract, write, and confirm one cluster. Updates summary in place.
 
@@ -1538,6 +1548,18 @@ def _process_cluster(
                 if n_ok > 0
                 else None
             )
+            # Optimistic+undo: a multi-item message reported as 'failed' must leave NO orphan in
+            # food_logs. Rows that DID insert never get a written_food_ids link (set only on full
+            # success below), so the reply-to-correct loop can't supersede them → they'd persist
+            # in totals/brief uncorrectable. Void them (soft-delete, mig 060) before marking failed.
+            for _fid in inserted_ids:
+                try:
+                    db.rpc("maintainer_void_food", {
+                        "p_id": _fid,
+                        "p_reason": "partial-write rollback: a sibling item in the same message failed",
+                    })
+                except Exception as exc:
+                    log.error("partial-write rollback void failed for %s: %s", _fid, exc)
             mark_rows(db, _ids(cluster), "failed", stage_reason=partial_reason)
         elif "staged" in statuses:
             rpc_status = "staged"
@@ -1784,7 +1806,7 @@ def _process_cluster(
         target_prot = (ctx.get("targets") or {}).get("protein_g")
         totals = fetch_today_food_totals(db, str(profile_id), today)
         supp = {} if is_minor else fetch_today_supplement_counts(db, str(profile_id), today)
-        tline = _totals_line(totals, supp, target_cal, target_prot, is_minor)
+        tline = _totals_line(totals, supp, target_cal, target_prot, is_minor, intake_floor_pct)
         if tline:
             msg = f"{msg}\n{tline}"
     mid = telegram_send(token, chat_id, msg)
@@ -1815,11 +1837,12 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     settle_sec = settle_sec_override if settle_sec_override is not None else int(cfg.get("push.inbox_settle_sec", _SETTLE_SEC_FALLBACK))
     conf_threshold = float(cfg.get("ingest.confidence_threshold", _CONFIDENCE_FALLBACK))
     model = str(cfg.get("drain.vision_model", _VISION_MODEL_FALLBACK)).strip('"')
-    learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
-    clarify_window = int(float(cfg.get("clarify.match_window_sec", 900)))
-    clarify_min_conf = float(cfg.get("clarify.match_min_conf", 0.7))
+    learn_min_logs = int(cfg.get("food_reference.learn_min_logs", _LEARN_MIN_LOGS_FALLBACK))
+    clarify_window = int(float(cfg.get("clarify.match_window_sec", _CLARIFY_WINDOW_SEC_FALLBACK)))
+    clarify_min_conf = float(cfg.get("clarify.match_min_conf", _CLARIFY_MIN_CONF_FALLBACK))
     _bridge = cfg.get("food_supplement_bridge.enabled", True)
     supp_bridge_enabled = _bridge if isinstance(_bridge, bool) else str(_bridge).strip().lower() in ("true", "1", "yes")
+    intake_floor_pct = float(cfg.get("brief.food_intake_threshold_pct", _INTAKE_FLOOR_PCT_FALLBACK))
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(timezone.utc).date().isoformat()
 
@@ -1894,6 +1917,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                 profile_ctx=profile_ctx, per_chat=per_chat, today=today_date,
                 learn_min_logs=learn_min_logs, brief_profiles=brief_profiles,
                 supp_bridge_enabled=supp_bridge_enabled,
+                intake_floor_pct=intake_floor_pct,
             )
         except Exception as exc:
             summary["failed"] += 1
@@ -1940,7 +1964,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
         # dedup entirely — it's a direct ask, not a burst side-effect. Only the auto post-log
         # nudge is deduped, else a user who logs food then asks for their brief gets silently
         # skipped (you got "On it…" but no brief).
-        brief_dedup_sec = int(float(cfg.get("brief.dedup_sec", 600)))
+        brief_dedup_sec = int(float(cfg.get("brief.dedup_sec", _BRIEF_DEDUP_SEC_FALLBACK)))
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=brief_dedup_sec)).isoformat()
         try:
             from monitor.brief import compose_brief

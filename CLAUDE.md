@@ -45,6 +45,38 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-14)
 
+- **Deep-scan remediation SHIPPED (migs 070/071, whoop-oauth redeploy, 2026-06-14).** A read-only
+  12-dimension audit (55 agents) + personal re-verification produced these fixes:
+  - 🔴 **CRITICAL — whoop-oauth cross-profile token injection CLOSED.** The manual
+    `?profile_id=<uuid>` consent path + legacy raw-`state` callback (function is `--no-verify-jwt`)
+    let ANY unauthenticated caller bind their WHOOP tokens to anyone's profile (callback stored via
+    service_role, bypassing RLS). Removed both; consent now requires the signed one-time ticket
+    (`?t=`, mig 065) ONLY. **Redeployed + verified live**: boots 200; `?profile_id=` no longer 302s to
+    WHOOP consent; legacy `state=p.<uuid>` → 400. The `?t=` flow is untouched.
+  - 🟠 **`food_logs.log_date` is NOT generated** (verified `is_generated=NEVER`) — `ingest/self_write.py`
+    omitted it (latent: 0 NULL rows today because the App self-write bundle isn't live; Dea's rows came
+    via the drain RPC which sets it). `log_food` now sets `log_date` = UTC date of `logged_at` (mirrors
+    `maintainer_ingest_food`); fixed the wrong "GENERATED" comments + SYSTEM.md.
+  - 🟠 **Partial-write rollback** (`monitor/inbox_drain.py`): a multi-item food message where one item
+    fails now VOIDs the already-inserted siblings (`maintainer_void_food`) before marking the cluster
+    failed — previously they orphaned in `food_logs` uncorrectable (`written_food_ids` only set on full
+    success). Tests added.
+  - 🟠 **Rule #1**: hardcoded `0.6` intake floor → `brief.food_intake_threshold_pct`; +supplement-slot
+    UTC hours (`brief.supp_slot_*_utc`) + `supplement.adherence_threshold_pct` → **mig 070** (6 keys,
+    defaults = old behaviour). Promoted 5 inline drain fallbacks to named `_*_FALLBACK` constants.
+  - 🟡 **Workflows**: `inbox-drain`/`send-brief`/`media-retention` now hard-guard `github.ref == main`
+    so a `workflow_dispatch` from a feature branch can't run that branch's code against prod.
+  - 🟢 **Proten Thai Tea** food_reference: added the missing exact aliases (**mig 071**) so
+    "Proten Thai Tea Protein Shake" (+ "Protien" misspelling) auto-resolves to 190 kcal/35g instead of
+    asking — verified via `lookup_food_reference`.
+  - Tests: new `tests/unit/test_db_rest.py` (Rule #4), partial-write + intake-floor cases. Suite **359/0/9**.
+  - **False positive caught**: the audit's "low-confidence food bypasses staging" is NOT real —
+    `inbox_drain.py` forces staging when `conf < threshold` (is_complete=False). Excluded.
+  - **Deferred (BACKLOG, decisions/data — NOT auto-changed):** Dea(14) `is_minor=false` is PC's
+    authorized override (governance — needs an explicit override record + the docs already reconciled
+    here); 8 food rows with macro-sum > kcal (data review); mig-068 nutrition-key integration test;
+    interval_report CLI narrative thresholds.
+
 - **Food→supplement bridge SHIPPED (BACKLOG #27, mig 069, 2026-06-14).** A supplement named
   INSIDE a food log ("morning shake with creatine and glutamine") used to never check off — food
   and supplements are separate tables/write paths and the drain classifies a message as ONE kind,

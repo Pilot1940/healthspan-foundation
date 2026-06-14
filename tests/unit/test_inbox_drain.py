@@ -2256,3 +2256,66 @@ def test_process_cluster_appends_bridge_confirmation():
                          today="2026-06-14")
 
     assert "💊 Also logged: Creatine Monohydrate" in sent["msg"]
+
+
+# ── partial-write rollback (deep-scan #3) ──────────────────────────────────────
+
+def test_food_list_partial_failure_voids_inserted_rows():
+    """Multi-item food where item 1 inserts but item 2 fails: the cluster is marked failed
+    AND the already-inserted row is voided (maintainer_void_food) so no orphan persists."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),  # item 1 → inserted
+        (200, {"status": "failed"}),                # item 2 → failed
+        (200, {}),                                  # maintainer_void_food(f1)
+        (200, []),                                  # mark_rows failed
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="shake and a bowl")]
+    food_list = [
+        {"description": "protein shake", "calories": 320, "protein_g": 40, "confidence": 0.9},
+        {"description": "mystery bowl", "calories": 200, "protein_g": 10, "confidence": 0.9},
+    ]
+    with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["failed"] == 1
+    void_calls = [c for c in captured if "maintainer_void_food" in c["url"]]
+    assert len(void_calls) == 1, "the inserted sibling must be voided on partial failure"
+    assert void_calls[0]["body"]["p_id"] == "f1"
+
+
+def test_food_list_all_success_does_not_void():
+    """All items insert → no rollback void is issued (regression guard for #3)."""
+    db, captured = _db_capture([
+        (200, {"id": "f1", "status": "inserted"}),
+        (200, {"id": "f2", "status": "inserted"}),
+        (200, []),
+    ])
+    from monitor.inbox_drain import _process_cluster
+    summary = {"fetched": 0, "clustered": 0, "written": 0, "staged": 0, "failed": 0, "errors": []}
+    cluster = [_item("r1", caption="two shakes")]
+    food_list = [
+        {"description": "shake A", "calories": 320, "protein_g": 40, "confidence": 0.9},
+        {"description": "shake B", "calories": 300, "protein_g": 35, "confidence": 0.9},
+    ]
+    with patch("monitor.inbox_drain.vision_extract", return_value=food_list), \
+         patch("monitor.inbox_drain.lookup_food_reference", return_value=None), \
+         patch("monitor.inbox_drain.lookup_viome_verdicts", return_value=[]), \
+         patch("monitor.inbox_drain.telegram_send", return_value=4242):
+        _process_cluster(db, cluster, "key", "model", "now", 0.7, {}, "tok", summary)
+
+    assert summary["written"] == 2
+    assert not [c for c in captured if "maintainer_void_food" in c["url"]]
+
+
+def test_totals_line_intake_floor_configurable():
+    """The minor 'keep fuelling' nudge fires off the passed intake_floor_pct, not a literal."""
+    totals = {"kcal": 900, "protein_g": 40, "meals": 2}
+    # 900 < 0.6*2000 (1200) → nudge at default
+    assert "keep fuelling" in _totals_line(totals, {}, 2000, None, True)
+    # 900 > 0.4*2000 (800) → no nudge when the floor is lowered to 0.4
+    assert "keep fuelling" not in _totals_line(totals, {}, 2000, None, True, 0.4)
