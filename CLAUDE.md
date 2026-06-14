@@ -43,6 +43,25 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 - **Cache**: Redis
 - **Language**: Python
 
+## Current State (2026-06-14)
+
+- **Food→supplement bridge SHIPPED (BACKLOG #27, mig 069, 2026-06-14).** A supplement named
+  INSIDE a food log ("morning shake with creatine and glutamine") used to never check off — food
+  and supplements are separate tables/write paths and the drain classifies a message as ONE kind,
+  so "creatine" was just text on the `food_logs` row. Now, after a food row inserts,
+  `monitor/inbox_drain.py:bridge_food_supplements` scans the food text (description + `foods[].name`
+  + caption) for the user's **OWN ACTIVE regimen** supplements only (never the catalog, never learns
+  — glutamine isn't in the regimen → ignored; creatine → logged). `match_regimen_supplements_in_text`
+  is whole-PHRASE/whole-token: bare "magnesium" matches NEITHER magnesium variant, "nac" ≠ "snack".
+  **Idempotent** — skips items already logged that day and pins `taken_at` to **noon-UTC** so the
+  existing `UNIQUE (profile_id,supplement_id,taken_on,source='telegram')` ON CONFLICT collapses
+  bridge + 📝-menu + "took creatine" text into one row (menu uses the same pin). Confirmation appends
+  `💊 Also logged: …` (minor-safe; runs for all). Failure-isolated (try/except after the food
+  commits → `summary["errors"]`, never breaks the food write). Flag `food_supplement_bridge.enabled`
+  (mig 069, default true, Rule #1). Matcher live-validated vs PC's real regimen; suite 339/0/9.
+  **Goes live on push** (CI runs `monitor/` directly — no edge deploy). Known gap: not wired to the
+  reply-supersede loop (same as supplements generally; mig 054).
+
 ## Current State (2026-06-12)
 
 - **Sprint goals atomic writers — lost-tick race FIXED (v3.19.2, mig 066, telegram-webhook v10,

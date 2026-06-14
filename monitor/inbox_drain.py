@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -361,6 +362,139 @@ def lookup_regimen_dose(db: DbRest, profile_id: str, supplement_id: str) -> dict
     if pool:
         return {"dose_amount": pool[0]["dose_amount"], "dose_unit": pool[0]["dose_unit"]}
     return None
+
+
+# ── food→supplement bridge ──────────────────────────────────────────────────
+# A supplement named INSIDE a food log (e.g. "protein shake with creatine") is just
+# text on the food row — food and supplement are separate tables/write paths, and the
+# drain classifies a message as ONE kind, so the creatine never "checks off". This bridge
+# also logs such mentions as supplement intakes, but ONLY for the user's OWN ACTIVE
+# regimen items (never the whole catalog, never learns new rows) so incidental food text
+# can't invent supplements — glutamine, not in the regimen, is correctly ignored; creatine
+# is logged. Matching is whole-PHRASE: a bare "magnesium" matches NEITHER Magnesium Citrate
+# nor Bisglycinate (the differentiator must be present), and "nac" never matches inside
+# "snack". Idempotent: a supplement already logged today is skipped, and the RPC's
+# ON CONFLICT (profile_id,supplement_id,taken_on,source='telegram') backstops races — we
+# pin taken_at to noon-UTC of `today` (the menu's pin), so menu + bridge + "took creatine"
+# text all collapse to one row. Intentionally NOT correlated to the reply-supersede loop —
+# the same limitation supplements already have (see migration 054).
+
+def _normalize_phrase(s: str) -> str:
+    """Lowercase, non-alphanumeric → single spaces, collapsed. One normalization dialect,
+    matching _is_generic_supplement's tokenizer, so phrases compare consistently."""
+    return " ".join("".join(ch if ch.isalnum() else " " for ch in (s or "").lower()).split())
+
+
+def _supp_trigger_phrases(supp: dict) -> set[str]:
+    """Whole-phrase triggers for a regimen supplement: the display name, the display name
+    with any parenthetical removed (so "Vitamin K2 (MK-7)" also triggers on "vitamin k2"),
+    and the snake `name` with _ → space (so single-word "creatine" triggers). Phrases
+    under 3 chars are dropped to avoid trivial collisions."""
+    disp = supp.get("display_name") or ""
+    disp_noparen = re.sub(r"\([^)]*\)", " ", disp)
+    snake = (supp.get("name") or "").replace("_", " ")
+    phrases = {_normalize_phrase(disp), _normalize_phrase(disp_noparen), _normalize_phrase(snake)}
+    return {p for p in phrases if len(p) >= 3}
+
+
+def match_regimen_supplements_in_text(text: str, regimen: list[dict]) -> list[dict]:
+    """Regimen supplements whose trigger phrase appears as a whole-token run in `text`
+    (space-padded so matches are on token boundaries, never substrings). Deduped by
+    supplement_id, first match wins."""
+    norm = f" {_normalize_phrase(text)} "
+    matched: dict[str, dict] = {}
+    for supp in regimen:
+        sid = supp.get("supplement_id")
+        if not sid or sid in matched:
+            continue
+        if any(f" {p} " in norm for p in _supp_trigger_phrases(supp)):
+            matched[sid] = supp
+    return list(matched.values())
+
+
+def fetch_active_regimen_supplements(db: DbRest, profile_id: str, today: str) -> list[dict]:
+    """Active, date-valid regimen rows joined to their supplement name/display_name + the
+    regimen dose. The regimen table carries only supplement_id, so we fetch names in a
+    second query. Returns [] on any error or an empty regimen."""
+    try:
+        regs = db.select(
+            "supplement_regimens",
+            select="supplement_id,dose_amount,dose_unit",
+            filters={
+                "profile_id": f"eq.{profile_id}",
+                "status": "eq.active",
+                "start_date": f"lte.{today}",
+                "or": f"(end_date.is.null,end_date.gte.{today})",
+            },
+        ) or []
+        ids = {r["supplement_id"] for r in regs if r.get("supplement_id")}
+        if not ids:
+            return []
+        supps = db.select(
+            "supplements",
+            select="id,name,display_name",
+            filters={"id": f"in.({','.join(ids)})", "is_active": "eq.true"},
+        ) or []
+        by_id = {s["id"]: s for s in supps}
+        out: list[dict] = []
+        for r in regs:
+            s = by_id.get(r.get("supplement_id"))
+            if not s:
+                continue
+            out.append({
+                "supplement_id": r["supplement_id"],
+                "name": s.get("name") or "",
+                "display_name": s.get("display_name") or "",
+                "dose_amount": r.get("dose_amount"),
+                "dose_unit": r.get("dose_unit"),
+            })
+        return out
+    except Exception:
+        return []
+
+
+def bridge_food_supplements(db: DbRest, profile_id: str, today: str, search_text: str) -> list[str]:
+    """Log regimen supplements mentioned in a food's text as supplement intakes. Returns
+    the display names NEWLY logged (for the Telegram confirmation). Best-effort — callers
+    wrap in try/except; an empty list means nothing matched or nothing new today."""
+    regimen = fetch_active_regimen_supplements(db, profile_id, today)
+    if not regimen:
+        return []
+    matched = match_regimen_supplements_in_text(search_text, regimen)
+    if not matched:
+        return []
+    # Skip anything already logged today (don't clobber a menu/manual dose; don't
+    # re-announce on a re-drain). The noon-UTC pin + ON CONFLICT backstop any race.
+    existing = db.select(
+        "supplement_intake_logs",
+        select="supplement_id",
+        filters={"profile_id": f"eq.{profile_id}", "taken_on": f"eq.{today}",
+                 "voided_at": "is.null"},
+    ) or []
+    already = {r["supplement_id"] for r in existing}
+    to_write = [m for m in matched if m["supplement_id"] not in already]
+    if not to_write:
+        return []
+    taken_at = f"{today}T12:00:00Z"
+    written: list[str] = []
+    for m in to_write:
+        extracted = {
+            "supplement_id": m["supplement_id"],
+            "dose_amount": m.get("dose_amount"),
+            "dose_unit": m.get("dose_unit"),
+            "taken_at": taken_at,
+            "notes": "[auto-detected in food log]",
+            "name": m.get("display_name"),
+        }
+        try:
+            res = db.rpc("maintainer_ingest_supplement", _supplement_rpc_args(
+                profile_id, extracted, 1.0, search_text, False, None,
+            )) or {}
+            if res.get("status") == "inserted":
+                written.append(m.get("display_name") or m.get("name") or "supplement")
+        except Exception as exc:
+            log.warning("bridge supplement write failed for %r: %s", m.get("display_name"), exc)
+    return written
 
 
 def _food_reference_candidates(caption: str, food_item: dict) -> list[str]:
@@ -1226,6 +1360,7 @@ def _process_cluster(
     today: str | None = None,
     learn_min_logs: int = 2,
     brief_profiles: set | None = None,
+    supp_bridge_enabled: bool = True,
 ) -> None:
     """Extract, write, and confirm one cluster. Updates summary in place.
 
@@ -1300,6 +1435,7 @@ def _process_cluster(
 
     viome_verdicts: list[dict] = []
     learn_offer: str = ""
+    bridged_supp_names: list[str] = []  # regimen supplements auto-logged from food text
 
     # An image is ALWAYS a log, never a brief. The vision prompt says so, but the model
     # occasionally returns "brief" for a caption-less / ambiguous photo (e.g. a French
@@ -1464,6 +1600,25 @@ def _process_cluster(
                         learn_offer = f"💡 You've logged '{desc}' {past['count']}× before."
                         break
 
+        # Food→supplement bridge: a regimen supplement named inside the food text (e.g.
+        # "shake with creatine") also gets logged as a supplement intake. Best-effort and
+        # strictly after the food committed — never breaks the food write or confirmation.
+        if rpc_status == "inserted" and supp_bridge_enabled and today:
+            try:
+                parts = [raw_text or ""]
+                for fi in food_items:
+                    if not isinstance(fi, dict):
+                        continue
+                    parts.append(fi.get("description") or "")
+                    for f in (fi.get("foods") or []):
+                        parts.append((f or {}).get("name") or "")
+                bridged_supp_names = bridge_food_supplements(
+                    db, str(profile_id), today, " ".join(p for p in parts if p),
+                )
+            except Exception as exc:
+                log.warning("food→supplement bridge errored: %s", exc)
+                summary["errors"].append(f"supp_bridge: {exc}")
+
         # Keep the FULL item list so the confirmation names every item, not just the first
         # (a 2-item "pineapple and dragon fruit" must not report as just "Pineapple").
         extracted = [fi for fi in food_items if isinstance(fi, dict)] or [{}]
@@ -1619,6 +1774,10 @@ def _process_cluster(
     if kind == "food" and rpc_status == "inserted" and not is_minor and learn_offer:
         msg = f"{msg}\n{learn_offer}"
 
+    # Food→supplement bridge confirmation (neutral wording — safe for minors too)
+    if kind == "food" and rpc_status == "inserted" and bridged_supp_names:
+        msg = f"{msg}\n💊 Also logged: {', '.join(bridged_supp_names)}"
+
     if rpc_status == "inserted" and kind == "food" and today and profile_ctx is not None:
         ctx = profile_ctx.get(str(profile_id), {})
         target_cal = (ctx.get("targets") or {}).get("daily_calories")
@@ -1659,6 +1818,8 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
     learn_min_logs = int(cfg.get("food_reference.learn_min_logs", 2))
     clarify_window = int(float(cfg.get("clarify.match_window_sec", 900)))
     clarify_min_conf = float(cfg.get("clarify.match_min_conf", 0.7))
+    _bridge = cfg.get("food_supplement_bridge.enabled", True)
+    supp_bridge_enabled = _bridge if isinstance(_bridge, bool) else str(_bridge).strip().lower() in ("true", "1", "yes")
     now_iso = datetime.now(timezone.utc).isoformat()
     today_date = datetime.now(timezone.utc).date().isoformat()
 
@@ -1732,6 +1893,7 @@ def run_once(db: DbRest, cfg: dict, api_key: str, token: str, settle_sec_overrid
                 conf_threshold, chat_is_minor, token, summary,
                 profile_ctx=profile_ctx, per_chat=per_chat, today=today_date,
                 learn_min_logs=learn_min_logs, brief_profiles=brief_profiles,
+                supp_bridge_enabled=supp_bridge_enabled,
             )
         except Exception as exc:
             summary["failed"] += 1
