@@ -56,8 +56,15 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
   sprint. (3) **Macro-sum data triage (deep-scan F8):** Bucket B FIXED — 2× 7-Eleven chicken rows
   (`d99a11dd`,`9a611944`) had `fat_g=5` vs label's 1.5g in their own description → corrected
   `fat 5→1.5g` (reconcile 90=90). Bucket A (4 protein shakes, kcal<macros) and Bucket C (2 Dea
-  `is_day_summary` imports, excluded from analysis) LEFT — see BACKLOG #28. **Still open for PC:**
-  F5 Dea `is_minor=false` schema-override record; F15 interval_report CLI thresholds; #29 fix.
+  `is_day_summary` imports, excluded from analysis) LEFT — see BACKLOG #28.
+- **Dea `is_minor=false` made permanent + machine-evident (mig 072, F5 RESOLVED, PC consent
+  2026-06-15).** Added `profiles.is_minor_override` + `is_minor_override_note` (provenance); set for
+  Dea (father/PC authorized, permanent). Guard test
+  (`test_rls_view_isolation::test_minor_framing_requires_explicit_override`) forbids any
+  `relationship='child'` profile being adult-framed without the override — protects Dev/future minors,
+  makes Dea's exception explicit. Operative flag stays `telegram_identities.is_minor` (already false).
+  Docs/context reconciled (SYSTEM.md/.html, SCHEMA-MAP, context/dea.context.md fixed stale "13F"→14F).
+  **Still open for PC:** F15 interval_report CLI thresholds; #29 legacy-array goals fix.
 
 ## Current State (2026-06-14)
 

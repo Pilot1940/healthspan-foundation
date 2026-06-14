@@ -1,9 +1,12 @@
 # Dea — HealthSpan Context
 <!-- v2.1 — 2026-06-13 — HR zones updated to %HRmax (max 206), Whoop settings + 2026 program added -->
 profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 14   sex: F   is_minor: false
+<!-- CONSENT: adult coaching framing is a PERMANENT, father-authorized override (PC, maintainer).
+     Recorded with provenance in profiles.is_minor_override (mig 072); a guard test enforces it.
+     Do NOT revert to minor framing. -->
 
 ## Who & why
-13F, growing and active. Primary sports: box-fitness, weightlifting (circuit-style), swimming,
+14F, growing and active. Primary sports: box-fitness, weightlifting (circuit-style), swimming,
 running. Optimising for healthy growth, sleep, energy, and enjoyment of sport — NEVER weight
 loss, restriction, or adult performance protocols.
 

@@ -1,8 +1,7 @@
-# HealthSpan — Schema Map (semantic reference)
-
-> **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-13 05:26 UTC.
-> generated_at: 2026-06-13T05:26:07Z
+Wrote /Users/p.chitalkar/Library/CloudStorage/Dropbox/Development/HealthSpan/CODE/healthspan-foundation/docs/SCHEMA-MAP.md (62/63 tables documented, 1 unmapped)
+n `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
+> Generated 2026-06-14 17:38 UTC.
+> generated_at: 2026-06-14T17:38:20Z
 > coverage: 62 of 63 public base tables documented.
 
 ## `profiles`
@@ -22,6 +21,8 @@ _One row per tracked person. auth_user_id nullable (children with no login). Hea
 | `created_at` | timestamp with time zone | Row insert time. |
 | `updated_at` | timestamp with time zone | Last update. |
 | `is_maintainer` | boolean | TRUE = this profile is a family maintainer (PC). Resolved live via public.is_maintainer() over family_memberships; gates maintainer-only RLS SELECT on query_audit / wearable_sync_log / wearable_sync_errors / stg_*_review. A non-maintainer (Dea/Dev) sees outcomes, never the machinery. |
+| `is_minor_override` | boolean | TRUE when this profile's is_minor framing is an explicit, authorized override of the age/relationship default (e.g. maintainer/parent-consented adult coaching framing for a <18 child). The operative runtime flag remains telegram_identities.is_minor; this column records that a non-default value is intentional. Provenance in is_minor_override_note. |
+| `is_minor_override_note` | text | Who authorized the is_minor override, why, and when (free text). Set when is_minor_override=true. |
 
 ## `families`
 _Household grouping for multi-tenant access._

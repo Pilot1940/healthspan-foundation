@@ -144,3 +144,52 @@ def test_all_profile_views_have_security_invoker():
     finally:
         conn.rollback()
         conn.close()
+
+
+# ── minor-framing governance invariant (mig 072) ───────────────────────────────
+
+def test_minor_framing_requires_explicit_override():
+    """No child-relationship profile may have an ACTIVE telegram identity flagged
+    is_minor=false UNLESS profiles.is_minor_override=true. Guards against a future minor being
+    silently adult-framed (deep-scan F5). Dea is the one authorized exception (mig 072)."""
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.display_name
+                FROM profiles p
+                JOIN telegram_identities ti ON ti.profile_id = p.id
+                WHERE ti.status = 'active'
+                  AND ti.is_minor = false
+                  AND p.relationship = 'child'
+                  AND p.is_minor_override IS NOT TRUE
+                """
+            )
+            offenders = [r[0] for r in cur.fetchall()]
+            assert not offenders, (
+                "child profile(s) adult-framed (is_minor=false) without an explicit "
+                f"is_minor_override: {offenders}"
+            )
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_dea_minor_override_recorded_with_provenance():
+    """Dea's authorized override is recorded with consent provenance (mig 072), so
+    is_minor=false reads as intentional, not accidental."""
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT is_minor_override, is_minor_override_note FROM profiles WHERE id = %s",
+                (_DEA_PROFILE_ID,),
+            )
+            row = cur.fetchone()
+            assert row and row[0] is True, "Dea's is_minor_override must be TRUE"
+            assert row[1] and "consent" in row[1].lower(), \
+                "override note must record consent provenance"
+    finally:
+        conn.rollback()
+        conn.close()

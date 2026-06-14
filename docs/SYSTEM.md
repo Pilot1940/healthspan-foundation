@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 071 applied (2026-06-14), skill v3.20.0.
+> state with migration 072 applied (2026-06-15), skill v3.20.0.
 
 ---
 
@@ -76,7 +76,7 @@ pipeline.
 | Profile | Role | RLS scope | Visibility |
 |---|---|---|---|
 | **PC** | Owner, sole maintainer (`profiles.is_maintainer = true`) | All managed profiles | Everything: query audit, sync logs/errors, staging queues |
-| **Dea** | Non-owner, minor (`is_minor: true` in config + context MD — not a `profiles` column) | Self only | Per-ingest outcomes only ("saved"/"flagged"); 0 rows from any maintainer-only table |
+| **Dea** | Non-owner, 14F but **`is_minor=false`** (adult coaching framing — a PERMANENT father/PC-authorized override, recorded in `profiles.is_minor_override`, mig 072; the operative flag is `telegram_identities.is_minor` + context MD) | Self only | Per-ingest outcomes only ("saved"/"flagged"); 0 rows from any maintainer-only table |
 | **Nanki** | Non-owner, **adult** (PC's wife, 45F) — *ready to onboard when she is* | Self only | Full adult framing (deficits/targets like PC), but non-maintainer — no audit/sync/staging visibility. Onboard exactly like §6: profile (`relationship` not `child` → `is_minor=false`), config + `context/nanki.context.md`, `mint-link-code`, she sends it from her phone. Supplement learn-on-clarify auto-adds under her own profile (adult). |
 
 Maintainer status resolves through `family_memberships` (not `profiles.auth_user_id`).
@@ -96,7 +96,7 @@ What's actually running, and when each piece was last shipped. **Live source of 
 | Component | Version | Last deployed (UTC) | What's live |
 |---|---|---|---|
 | **Skill** (Python: drain / brief / ingest) | **v3.20.0** | on push to `main` (GH Actions — no edge deploy) | food→supplement bridge (regimen supplements named in a food log auto-log as intakes → mig 069); food micronutrient check-in |
-| **DB schema** | **mig 071** | 2026-06-14 | deep-scan cleanup: 070 threshold config keys (Rule #1), 071 Proten Thai Tea aliases; + 069 bridge flag, 067 view RLS leak fix, 068 nutrition keys |
+| **DB schema** | **mig 072** | 2026-06-15 | 072 Dea is_minor override record (parent consent); 070 threshold config keys, 071 Proten aliases; + 069 bridge flag, 067 view RLS leak fix, 068 nutrition keys |
 | **telegram-webhook** | **v11** | **2026-06-12** | supp-menu UX (#26): named toast + slot count, slot-drill hint, `taken_on`→local-day; adherence ticks via `sprint_set_adherence` RPC (atomic); two-level "📝 Update today" menu + `/whoop` reconnect |
 | **whoop-webhook** | recovery-v3 + reconnect-alert (Supabase #18) | 2026-06-11 15:39 | `recovery.updated` fix + debounced dead-token reconnect prompt |
 | **whoop-oauth** | ticket-ONLY reconnect (Supabase #15) | 2026-06-14 | SECURITY: removed the unauthenticated `?profile_id=` consent path + legacy raw `state` (cross-profile token injection); consent now requires the signed one-time `?t=` ticket ONLY. `offline`-scope consent + token store + TG confirm |
@@ -769,7 +769,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 
 | Table | Purpose / key columns |
 |---|---|
-| **profiles** | `id, auth_user_id, family_id, managed_by_auth_user_id, display_name, date_of_birth, sex, relationship, is_active, is_maintainer, created_at, updated_at`. The subject of every health record. `is_maintainer = true` (PC only, `relationship = 'self'`) unlocks staging/audit/sync-log visibility via RLS. |
+| **profiles** | `id, auth_user_id, family_id, managed_by_auth_user_id, display_name, date_of_birth, sex, relationship, is_active, is_maintainer, is_minor_override, is_minor_override_note, created_at, updated_at`. The subject of every health record. `is_maintainer = true` (PC only, `relationship = 'self'`) unlocks staging/audit/sync-log visibility via RLS. `is_minor_override` (mig 072) records that a non-default `is_minor` framing is intentional + authorized (Dea: adult framing, father-consented), with provenance in `is_minor_override_note`; a guard test forbids a `relationship='child'` profile being adult-framed without it. |
 | family_memberships | `auth_user_id → profile_id` binding with `role`. Drives both `has_profile_access()` and `is_maintainer()`. One auth identity can map to several profiles (PC + Dea + Dev; drain account → all three). |
 | telegram_identities | `chat_id (PK) → profile_id`. `status` (pending/active/revoked), `is_minor`, `linked_at`, `link_code`. Profile_id for an inbound photo is derived ONLY from here, never from caption text. |
 | telegram_link_codes | One-time activation codes: `code (PK), profile_id, expires_at, used_at`. |
@@ -901,7 +901,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–071)
+### 4.4 Migration History (001–072)
 
 | # | File | Summary |
 |---|---|---|
@@ -983,6 +983,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 069 | food_supplement_bridge_config | **Applied 2026-06-14.** BACKLOG #27: seeds `food_supplement_bridge.enabled` (default true) — the flag for the food→supplement bridge (regimen supplements named inside a food log now also log as intakes; see §3.1 / `monitor/inbox_drain.py:bridge_food_supplements`). Config-only (Rule #1, no hardcoded toggle); idempotent ON CONFLICT upsert. |
 | 070 | threshold_config_keys | **Applied 2026-06-14.** Deep-scan Rule-#1 cleanup: seeds `brief.food_intake_threshold_pct` (0.6, the minor "keep fuelling" floor used by brief.py + inbox_drain.py), `brief.supp_slot_{morning,lunch,dinner,bedtime}_utc` (5/11/15/20, brief supplement-slot hour boundaries), and `supplement.adherence_threshold_pct` (70, supplement_summary low-adherence cutoff). Code reads each with an equal code-side fallback, so behaviour is unchanged at defaults. Config-only, idempotent. |
 | 071 | proten_thai_tea_aliases | **Applied 2026-06-14.** Appends missing aliases (`proten thai tea protein shake` + the `protien` misspelling, etc.) to the global "Protein Thai Tea Shake" (Proten, 190 kcal/35g) `food_reference` row so PC's phrasing auto-resolves instead of asking for calories. `lookup_food_reference` matches aliases exactly; DISTINCT-merge keeps it idempotent. (Deeper fix = fuzzy match — BACKLOG #25.) |
+| 072 | minor_override_consent | **Applied 2026-06-15.** Records Dea's `is_minor=false` (adult coaching framing) as an EXPLICIT, father/PC-authorized **permanent** override: adds `profiles.is_minor_override` (bool) + `is_minor_override_note` (provenance), sets them for Dea. The operative flag stays `telegram_identities.is_minor`; this declares the non-default value intentional. A guard test forbids any `relationship='child'` profile being adult-framed without the override (deep-scan finding F5). Columns inherit profiles' RLS; idempotent. |
 
 ---
 
@@ -1105,7 +1106,7 @@ column** and **no `is_minor` column** on `profiles`. `family_id` is a direct FK 
 (not resolved through `family_memberships`). For a profile the drain account should manage
 (e.g. a minor), also set `managed_by_auth_user_id` to the drain account's `auth_user_id`.
 
-`is_maintainer = false` means staging queues, wearable sync logs, and query audit are invisible to this user at the DB level (RLS). Minor status is **not** a `profiles` column — set `is_minor: true` in the config JSON (step 4) AND the context MD (step 5) if the user is under 18. Minor safety is defence-in-depth and both must agree.
+`is_maintainer = false` means staging queues, wearable sync logs, and query audit are invisible to this user at the DB level (RLS). The operative minor flag is **not** the headline `profiles` column — set `is_minor: true` in the config JSON (step 4) AND the context MD (step 5) if the user is under 18. Minor safety is defence-in-depth and both must agree. **Adult-framing a minor (is_minor=false for a `relationship='child'` profile) requires an explicit override:** set `profiles.is_minor_override=true` with provenance in `is_minor_override_note` (mig 072) — a guard test (`tests/integration/test_rls_view_isolation.py`) fails otherwise. Dea is the one authorized case (father/PC consent, permanent).
 
 ### Step 3 — Insert family_memberships row
 
