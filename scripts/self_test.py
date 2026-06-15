@@ -203,6 +203,8 @@ def main() -> int:
     # ===================== STEP 3 — CONNECTION + RLS =====================
     print("\n[3] CREDENTIALS / CONNECTION + RLS SCOPE")
     probe = None
+    handle = None
+    driver = None
     try:
         handle, driver = dbm.get_app_connection(cfg)
         probe = _probe_psycopg2(handle) if driver == "psycopg2" else _probe_supabase(handle)
@@ -229,22 +231,31 @@ def main() -> int:
                   f"== my_profile? {scoped_ok}")
             print(f"    maintainer: is_maintainer()={probe['is_maintainer']}")
         if driver == "psycopg2":
-            handle.rollback(); handle.close()
+            handle.rollback()        # reset the probe txn; keep OPEN for the DB-first context read below
     except Exception as e:
         print(f"    connected=False  ERROR={str(e).splitlines()[0]!r}")
         print("    (egress/credential issue — the real unknown for App runs)")
 
     # ===================== STEP 4 — CONTEXT =====================
-    print("\n[4] CONTEXT  (targets from context MD — validated vs config, not defaults)")
+    print("\n[4] CONTEXT  (targets from context — DB-first (mig 073), file fallback; vs config, not defaults)")
     try:
-        ctx = ctxm.get_context(cfg)
+        # Pass the live handle so get_context reads profiles.context_md (mig 073). _source
+        # reports which tier served it: 'db' (live), 'file' (bundle fallback), or 'project_knowledge'.
+        ctx = ctxm.get_context(cfg, conn=handle)
         g = lambda k: ctxm.get_target(ctx, k)
-        print(f"    is_minor={ctx.get('is_minor')}  source={ctx.get('_path')}")
+        print(f"    is_minor={ctx.get('is_minor')}  source={ctx.get('_source')}  "
+              f"path={ctx.get('_path') or '(DB)'}")
         for k in ("daily_calories", "maintenance_kcal", "calorie_floor", "protein_g",
                   "vo2max_target_jan2027", "vo2max_target_longterm", "hrv_target_ms"):
             print(f"      {k:24s}= {g(k)}")
     except Exception as e:
         print(f"    CONTEXT ERROR: {str(e).splitlines()[0]!r}")
+    finally:
+        if driver == "psycopg2" and handle is not None:
+            try:
+                handle.rollback(); handle.close()
+            except Exception:
+                pass
 
     # ===================== STEP 5 — MAINTAINER =====================
     print("\n[5] MAINTAINER CHECK")

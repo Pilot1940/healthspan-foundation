@@ -1,5 +1,7 @@
 # Dea — HealthSpan Context
-<!-- v2.1 — 2026-06-13 — HR zones updated to %HRmax (max 206), Whoop settings + 2026 program added -->
+<!-- v2.2 — 2026-06-15 — Body baseline (70 kg / 167.6 cm) added; macros restructured: day-type
+     calorie split (hard/base/rest), explicit protein/carbs/fat at 1.5/4.9/1.1 g/kg @70kg.
+     Body composition test booked 2026-06-15 (gym) — revisit protein if body_fat_pct >30%. -->
 profile_id: 3eed5503-a26f-4b88-bb76-075208fa5de3   age: 14   sex: F   is_minor: false
 <!-- CONSENT: adult coaching framing is a PERMANENT, father-authorized override (PC, maintainer).
      Recorded with provenance in profiles.is_minor_override (mig 072); a guard test enforces it.
@@ -11,6 +13,16 @@ running. Optimising for healthy growth, sleep, energy, and enjoyment of sport �
 loss, restriction, or adult performance protocols.
 
 ## Measured baselines (from Whoop data, Dec 2024 – Jun 2026)
+
+### Body (parent-reported 2026-06-15)
+- weight_kg: 70                # parent-reported, no DEXA on file
+- height_cm: 167.6             # 5'6" — ~90th %ile for 14F; tall, more room to grow
+- bmi: 24.9                    # CDC ~85th %ile for 14F — borderline by tables, but
+                               #   she lifts 3-4×/wk + swims/hikes daily — almost certainly
+                               #   high lean mass, NOT high fat. Body comp test 2026-06-15 will confirm.
+- body_fat_pct: TBD            # gym body-comp test 2026-06-15 — revisit protein if >30%
+- lean_mass_kg: TBD             # same
+- ⚠️ FRAMING: do NOT use BMI as a coaching cue. Growth + fuel + sport, never restriction.
 
 ### Recovery & cardiovascular
 - avg_recovery_pct: 63.3       # moderate — should be 70-80 for her age (283 scored cycles)
@@ -34,15 +46,41 @@ loss, restriction, or adult performance protocols.
 - Regular recovery crashes to 20-30% range (Feb 2025, Oct 2025, Dec 2025, Feb 2026)
 
 ## Targets / norms
-- daily_calories: 2400         # she is GROWING — flag <2400 as LOW, never as "good restraint"
-- protein_g: 80 ; sleep_target_h: 9
+
+### Energy & macros (@70 kg, 167.6 cm — revisit after body-comp 2026-06-15)
+- daily_calories: 2500         # WEEKLY-AVG target — supports growth + 5 training days/wk
+- daily_calories_hard: 2700    # gym day OR 4+ hr Phuket movement (gym+hike+pool)
+- daily_calories_base: 2500    # Z2 swim + normal day
+- daily_calories_rest: 2400    # rest / school-only day
+- calorie_floor: 2400          # ABSOLUTE minimum — never sustain below, any day
+  # Reference: Mifflin BMR ≈ 1516 kcal × activity 1.55–1.7 = 2350–2580 TDEE, + ~200 growth.
+  # GROWTH PRIORITY — never restrict; flag <2400 as LOW, never praise undereating.
+- protein_g: 105               # 1.5 g/kg — hypertrophy + growth + lean preservation
+- carbs_g: 340                 # ~55% of 2500 — fuels gym, swim, hike volume + recovery
+- fat_g: 80                    # ~30% of 2500 — estrogen/cycle/brain; ~1.1 g/kg
+  # split: P 420 + C 1360 + F 720 = 2500 kcal base day; on hard days carbs flex to ~370g
+  # If body-comp shows body_fat >30%, bump protein → 110-115g (spare lean, fuel growth).
+- sleep_target_h: 9            # growth-hormone window — non-negotiable
+
+### Performance
 - resting_hr_target: 60        # currently 68 avg — should improve with aerobic base work
 - hrv_target_ms: 65            # currently 50 avg — should improve with less chronic high-intensity
-- training_focus: fun, movement, sport skill, AEROBIC BASE
+- training_focus: fun, movement, sport skill, AEROBIC BASE, height-protective lifting
 - weekly_active_days_target: 5
 - max_sessions_above_185bpm: 2  # per week — currently ~3-4, too many
 - weekly_zone2_sessions: 2      # swimming or easy running at 120-145 bpm — ADDING
-- biomarker_priorities: hemoglobin, ferritin, vitamin_d   # growth/iron, not cardio-risk panel
+
+### Growth-protection rules (HEIGHT is the #1 outcome)
+- avoid_heavy_axial_loading: true   # no max-effort back squat / overhead press until growth plates closed
+- decompression_daily: dead hangs + mobility 10 min (already in program)
+- protect_sleep: 9h non-negotiable — GH pulses peak in first 90 min of deep sleep
+- fuel_first: never under-eat, even on rest days (calorie_floor 2400)
+- micronutrients_for_growth: calcium 1300mg, vit-D 600IU, iron 15mg (with vit-C)
+
+### Bloodwork priorities
+- biomarker_priorities: hemoglobin, ferritin, vitamin_d, calcium, b12
+  # growth/iron focus, not cardio-risk panel
+  # OVERDUE: no labs on file — book CBC + ferritin + 25-OH vit-D + Ca after Phuket
 
 ## Daily micronutrients (via food)
 Tracked through FOOD, never pills (minor-safe). Renders as the brief's 🥗 Food check-in (iron, calcium, vitamin D) and is tickable.
