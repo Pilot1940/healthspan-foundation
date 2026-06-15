@@ -1,5 +1,39 @@
 # HealthSpan Skill — Changelog
 
+## v3.21.0 — server-side per-profile context (mig 073) (2026-06-15)
+
+- **What:** per-profile context (targets, coaching voice, safety rules, micronutrients, HR zones)
+  is now DB-backed in `profiles.context_md`, read **DB-first** at session start. A maintainer edits
+  ONE row in Supabase and every bundle (Cowork / claude.ai / App) reads fresh on its next session —
+  no rebundle for a target tweak. The bundle-baked `context/<who>.context.md` stays as the offline
+  fallback.
+- **mig 073:** adds `profiles.context_md` / `context_version` (NOT NULL DEFAULT 1) / `context_updated_at`.
+  WRITE is **maintainer-only**: a `BEFORE UPDATE` trigger `guard_profile_context_update` RAISEs if a
+  non-maintainer changes the context columns (Postgres has no column-level RLS, and `profiles_access`
+  is FOR ALL — so the trigger is the column-scoped guard), and `maintainer_set_profile_context(
+  p_profile_id, p_context_md, p_reason)` is the clean write path (≥50-char floor, monotonic version
+  bump, stamps `context_updated_at`). SELECT inherits the existing `profiles_access` policy.
+- **`lib/context.py`:** `get_context(config, base_dir=None, conn=None)` + `load_context(..., conn=,
+  profile_id=)` implement a **DB → file → project-knowledge** fallback chain; `_read_context_from_db`
+  supports the psycopg2 / `DbRest` / supabase-`Client` handles and never raises (a DB hiccup degrades
+  to the file). `_source` ('db'/'file'/'project_knowledge') records which tier served it. Also
+  FIXED a latent parser bug: `parse_context_md` now accrues `###` sub-section bullets into their
+  parent `##` umbrella, so targets authored under sub-headings (Dea's v2.2 `### Energy & macros`
+  etc.) are read instead of silently dropped. PC parsing is byte-for-byte unchanged.
+- **Callers:** the brief (`monitor/brief.py`) reads context DB-first via its REST handle (failure-
+  isolated → file on any error); `scripts/self_test.py` passes the live connection and reports
+  `context source=db`. The drain (`monitor/inbox_drain.py`) stays file-only by design (it runs from
+  the deployed repo checkout; no per-identity DB round-trip on the hot path).
+- **Backfill:** `scripts/backfill_073_context.py` (idempotent; `--force`/`--dry-run`) routes each
+  `context/*.context.md` to the `profile_id` it declares and writes via the RPC under a maintainer
+  JWT claim. PC + Dea seeded (version 2). Edit-in-place runbook: SYSTEM.md §7.10.
+- **Tests:** unit `tests/unit/test_context.py` (DB-first wins, file fallback, scoped-by-profile_id,
+  DB-error-never-explodes, shape-unchanged, fallback chain) + live integration
+  `tests/integration/test_maintainer_set_profile_context.py` (maintainer bump, non-maintainer reject,
+  <50 reject, trigger blocks direct non-maintainer UPDATE). Suite **378 passed / 0 failed / 22 skipped**.
+- Reviewed by 3 adversarial production-safety advisors (DB blast-radius, parser/context-layer,
+  caller wiring): no blockers, no regressions, PC parsing provably unchanged.
+
 ## v3.20.0 — food-based daily micronutrient check-in (iron/calcium/vitamin D) (2026-06-13)
 
 - **What:** a FOOD-based daily micronutrient check-in (iron, calcium, vitamin D) that renders
