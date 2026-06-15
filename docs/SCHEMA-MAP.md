@@ -1,7 +1,8 @@
-Wrote /Users/p.chitalkar/Library/CloudStorage/Dropbox/Development/HealthSpan/CODE/healthspan-foundation/docs/SCHEMA-MAP.md (62/63 tables documented, 1 unmapped)
-n `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
-> Generated 2026-06-14 17:38 UTC.
-> generated_at: 2026-06-14T17:38:20Z
+# HealthSpan — Schema Map (semantic reference)
+
+> **GENERATED from pg_description (column/table COMMENTs, migrations 016/016b/016c). Do NOT hand-edit — re-run `scripts/gen_schema_map.py`.** The skill loads this before composing any ad-hoc SQL.
+> Generated 2026-06-15 04:31 UTC.
+> generated_at: 2026-06-15T04:31:40Z
 > coverage: 62 of 63 public base tables documented.
 
 ## `profiles`
@@ -23,6 +24,9 @@ _One row per tracked person. auth_user_id nullable (children with no login). Hea
 | `is_maintainer` | boolean | TRUE = this profile is a family maintainer (PC). Resolved live via public.is_maintainer() over family_memberships; gates maintainer-only RLS SELECT on query_audit / wearable_sync_log / wearable_sync_errors / stg_*_review. A non-maintainer (Dea/Dev) sees outcomes, never the machinery. |
 | `is_minor_override` | boolean | TRUE when this profile's is_minor framing is an explicit, authorized override of the age/relationship default (e.g. maintainer/parent-consented adult coaching framing for a <18 child). The operative runtime flag remains telegram_identities.is_minor; this column records that a non-default value is intentional. Provenance in is_minor_override_note. |
 | `is_minor_override_note` | text | Who authorized the is_minor override, why, and when (free text). Set when is_minor_override=true. |
+| `context_md` | text | Per-profile context markdown — targets / coaching voice / safety rules / micronutrients / HR zones. DB-backed source of truth for lib.context.get_context (DB-first, then the bundle file fallback). SELECT inherits the profiles_access RLS policy; WRITE is maintainer-only (trg_guard_profile_context_update + maintainer_set_profile_context). |
+| `context_version` | integer | Monotonic version of context_md, auto-bumped on every context write (RPC + trigger). Starts at 1. |
+| `context_updated_at` | timestamp with time zone | When context_md was last written. Stamped by trg_guard_profile_context_update. |
 
 ## `families`
 _Household grouping for multi-tenant access._

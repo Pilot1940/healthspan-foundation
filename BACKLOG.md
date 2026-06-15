@@ -748,3 +748,39 @@ A read-only 12-dimension deep audit (55-agent workflow) + personal re-verificati
 **Fix options (PC to pick — touches a live SECURITY DEFINER fn, so gate it):** (a) one-time backfill the 2 legacy rows to object form; or (b) harden the RPC to COALESCE a non-object `goals` to `{}` (or normalize array→object) before the `jsonb_set`, so it can never raise. (a) is the smaller, safer change. Either way, add the legacy-array case to the integration test.
 
 **Note:** the #13 integration test fixture now selects an **object-goals** sprint specifically (`jsonb_typeof(goals)='object'`, most-recent) so it mirrors what production actually ticks and doesn't trip over this.
+
+---
+
+## #30 — DB-backed per-profile context (edit-in-place, no rebundle) — **SHIPPED 2026-06-15 (mig 073, skill v3.21.0)**
+
+**Severity:** MED · **Owner:** CC · **Status:** SHIPPED — applied + backfilled + live-verified; reviewed by 3 adversarial production-safety advisors (no blockers).
+
+**Was:** per-profile context (targets/voice/safety/micronutrients/HR-zones) lived ONLY in the bundle-baked `context/<who>.context.md`, so a macro tweak meant rebuilding & re-shipping every bundle; new bundles shipped frozen targets.
+
+**Shipped:** `profiles.context_md` (+`context_version` NOT NULL DEFAULT 1, `context_updated_at`), read **DB-first** by `lib.context.get_context` (DB → bundle file → project-knowledge; `_source` reports tier). WRITE maintainer-only — BEFORE-UPDATE trigger `guard_profile_context_update` (column-scoped guard; Postgres has no column-level RLS and `profiles_access` is FOR ALL) + RPC `maintainer_set_profile_context` (≥50-char floor, monotonic bump, stamps updated_at). Backfill `scripts/backfill_073_context.py` (idempotent; PC+Dea at version 2). Brief reads DB-first (failure-isolated → file); drain stays file-only by design. Also FIXED a latent parser bug — `parse_context_md` accrues `###` sub-section bullets into the parent `##` umbrella, so Dea's v2.2 sub-headed targets (2500/2400/P105·C340·F80) are read instead of silently dropped (PC parsing byte-for-byte unchanged). Unit + live integration tests; suite 378/0/22. Runbook: SYSTEM.md §7.10.
+
+**Residual (LOW, noted by advisor):** the `###`→`##` accrual is unconditional, so authoring an off-topic `### …` under `## Coaching framing` / `## Safety constraints` would absorb its bullets into that umbrella. Benign for the two real files today; if it ever bites, restrict accrual to the targets/norms umbrella or warn in the context files. Strictly safer than the prior behaviour (which dropped those bullets outright).
+
+---
+
+## #31 — `whoop_sleeps.whoop_cycle_id` NULL on freshly-synced rows (cycle-join backfill lags) — **OPEN, LOW (reported 2026-06-15)**
+
+**Severity:** LOW · **Owner:** PC (confirm) → CC · **Status:** OPEN.
+
+**Where it bites:** the two most-recent `whoop_sleeps` rows had `whoop_cycle_id` NULL even though both the sleep AND the cycle records exist — a cycle-only query that joins/filters on `whoop_sleeps.whoop_cycle_id` shows NULLs/misses those nights. The sleep webhook fires fine; it's the sleep→cycle linkage that lags on fresh sync.
+
+**Likely cause:** WHOOP delivers sleep and cycle as separate objects; `whoop_cycle_id` on a sleep row is resolved by matching the sleep to its enclosing cycle. On the most-recent rows the cycle may not be scored/landed yet (or the resolver runs before the cycle row exists), so the FK stays NULL until a later sync backfills it — which may not happen for already-ingested rows.
+
+**Fix options (to scope):** (a) on each sleep sync, re-resolve `whoop_cycle_id` for recent rows where it's NULL (small backfill pass keyed on the cycle window); (b) a periodic reconcile that fills NULL `whoop_cycle_id` from the now-present cycle; (c) make consumers tolerate NULL by joining on the date window instead of the FK. Confirm scope + which surfaces actually read `whoop_sleeps.whoop_cycle_id` before building.
+
+---
+
+## #32 — Food micronutrient check-in (iron/calcium/vit-D) renders for ALL active sprints, incl. PC — **OPEN, MED (reported 2026-06-15)**
+
+**Severity:** MED · **Owner:** PC (decide) → CC · **Status:** OPEN — diagnosed; fix proposed, awaiting go-ahead (not a data leak).
+
+**Where it bites:** PC's daily brief shows `🥗 Food check-in: ⬜ iron ⬜ calcium ⬜ vitamin D` and the LLM "Rest of day" then recommends iron/calcium/vit-D foods (e.g. sardines). Those are **Dea's** growth-tracking micronutrients, irrelevant to PC (whose priorities are fasting_insulin/HbA1c/ApoB/Lp(a)/hsCRP). PC read it as Dea's data leaking.
+
+**It is NOT a cross-profile leak.** Mechanism (live code `b007a69`): `lib/sprints.py:35` `NUTRITION = ["iron","calcium","vitamin_d"]` is **hardcoded**; `_food_checkin_line` (line 167) does `keys = goals.get("food_checkin") or NUTRITION` — so a sprint with no explicit `food_checkin` (PC's "Phuket Sprint 2") **falls back to that hardcoded triple**; `render_training_section` appends the line for ANY active sprint, every profile. PC's brief is reading PC's OWN sprint — no row crossed profiles. It violates the "everything personal comes from context, never a hardcoded default" principle. Shipped 2026-06-13 (v3.20.0), designed for Dea but rendered too broadly.
+
+**Recommended fix (context-driven):** drive the food check-in from the PROFILE'S CONTEXT, not a global default. Dea's context has a `## Daily micronutrients (via food)` section (`daily_checkin: iron, calcium, vitamin D`); PC's has none → PC gets NO line. Pass the context's micronutrient list into `render_training_section`; render only when non-empty; drop the `or NUTRITION` fallback. Must verify Dea keeps her line (seed her sprint's `food_checkin` or read from context). Needs its own tests + live verify (per the "nothing can break" bar) — kept OUT of the mig-073 commit.

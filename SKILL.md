@@ -24,8 +24,10 @@ generic; always reference their real data points, trends, targets, and goals.
 **Medical disclaimer:** analysis is informational; significant medical decisions are confirmed with
 their physician(s). Be substantive, not hedged — the user wants the *why*.
 
-> **The live Supabase DB is the source of truth for NUMBERS. The context MD is the source of truth for
-> TARGETS/NORMS/TONE.** Old markdown reference files are archived; read them only on explicit request.
+> **The live Supabase DB is the source of truth for NUMBERS. The per-profile context is the source of
+> truth for TARGETS/NORMS/TONE** — and since mig 073 that context is itself DB-backed
+> (`profiles.context_md`), read DB-first at session start with the bundle `context/<who>.context.md`
+> as the offline fallback. Old markdown reference files are archived; read them only on explicit request.
 
 **The engine is profile-agnostic. Everything personal — calorie/protein/sleep targets, training focus,
 what counts as "low/high/good", coaching voice, age-appropriateness — comes from the context MD, NEVER a
@@ -68,10 +70,14 @@ hardcoded or population default.** Same engine for PC and Dea; only the config +
      connects via `supabase_client`/HTTPS), but because engine modules import `psycopg2.extras` at module
      load time and would otherwise crash on import. This matches `requirements.txt`, which pins it
      unconditionally for the same reason.
-3. **Load the CONTEXT MD** — `lib.context.get_context(config)` → `{targets, coaching, safety, is_minor,…}`.
-   It cross-checks the file's profile_id against the config (wrong file = hard error). **Take every
-   target/norm from here** (`lib.context.get_target(ctx, "daily_calories")`); a missing entry returns
-   `None` → **ask, never assume a default.** For a minor, the `safety` constraints are binding (see §6).
+3. **Load the CONTEXT** — `lib.context.get_context(config, conn=conn)` → `{targets, coaching, safety,
+   is_minor,…}`. **Pass the open connection** so it reads **DB-first** (mig 073: `profiles.context_md`),
+   falling back to the bundle file, then a project-knowledge inline body; `ctx["_source"]` says which
+   tier served it. It cross-checks the loaded profile_id against the config (wrong context = hard error).
+   **Take every target/norm from here** (`lib.context.get_target(ctx, "daily_calories")`); a missing
+   entry returns `None` → **ask, never assume a default.** For a minor, the `safety` constraints are
+   binding (see §6). To CHANGE a target for any profile in one place (no rebundle), the maintainer edits
+   `profiles.context_md` — see SYSTEM.md §7.10.
 4. **Load session memory** — from `health_context_notes` (RLS-scoped): the single `kind='current'` note
    + the last 5 `kind='log'` notes. These hold **narrative + references to numbers, NEVER the numbers** —
    always pull live numbers from the DB.

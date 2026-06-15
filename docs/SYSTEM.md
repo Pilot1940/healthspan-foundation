@@ -5,7 +5,7 @@
 
 > The **live Supabase DB is the source of truth for numbers**; the per-person context MD
 > is the source of truth for targets, norms, and coaching voice. Generated against repo
-> state with migration 072 applied (2026-06-15), skill v3.20.0.
+> state with migration 073 applied (2026-06-15), skill v3.21.0.
 
 ---
 
@@ -95,8 +95,8 @@ What's actually running, and when each piece was last shipped. **Live source of 
 
 | Component | Version | Last deployed (UTC) | What's live |
 |---|---|---|---|
-| **Skill** (Python: drain / brief / ingest) | **v3.20.0** | on push to `main` (GH Actions — no edge deploy) | food→supplement bridge (regimen supplements named in a food log auto-log as intakes → mig 069); food micronutrient check-in |
-| **DB schema** | **mig 072** | 2026-06-15 | 072 Dea is_minor override record (parent consent); 070 threshold config keys, 071 Proten aliases; + 069 bridge flag, 067 view RLS leak fix, 068 nutrition keys |
+| **Skill** (Python: drain / brief / ingest) | **v3.21.0** | on push to `main` (GH Actions — no edge deploy) | DB-backed per-profile context (mig 073 — `lib.context` reads `profiles.context_md` DB-first, edit-in-place, no rebundle); + food→supplement bridge (mig 069); food micronutrient check-in |
+| **DB schema** | **mig 073** | 2026-06-15 | 073 DB-backed per-profile context (`profiles.context_md` + maintainer-only write guard/RPC); 072 Dea is_minor override record; 070 threshold config keys, 071 Proten aliases; + 069 bridge flag, 067 view RLS leak fix |
 | **telegram-webhook** | **v11** | **2026-06-12** | supp-menu UX (#26): named toast + slot count, slot-drill hint, `taken_on`→local-day; adherence ticks via `sprint_set_adherence` RPC (atomic); two-level "📝 Update today" menu + `/whoop` reconnect |
 | **whoop-webhook** | recovery-v3 + reconnect-alert (Supabase #18) | 2026-06-11 15:39 | `recovery.updated` fix + debounced dead-token reconnect prompt |
 | **whoop-oauth** | ticket-ONLY reconnect (Supabase #15) | 2026-06-14 | SECURITY: removed the unauthenticated `?profile_id=` consent path + legacy raw `state` (cross-profile token injection); consent now requires the signed one-time `?t=` ticket ONLY. `offline`-scope consent + token store + TG confirm |
@@ -769,7 +769,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 
 | Table | Purpose / key columns |
 |---|---|
-| **profiles** | `id, auth_user_id, family_id, managed_by_auth_user_id, display_name, date_of_birth, sex, relationship, is_active, is_maintainer, is_minor_override, is_minor_override_note, created_at, updated_at`. The subject of every health record. `is_maintainer = true` (PC only, `relationship = 'self'`) unlocks staging/audit/sync-log visibility via RLS. `is_minor_override` (mig 072) records that a non-default `is_minor` framing is intentional + authorized (Dea: adult framing, father-consented), with provenance in `is_minor_override_note`; a guard test forbids a `relationship='child'` profile being adult-framed without it. |
+| **profiles** | `id, auth_user_id, family_id, managed_by_auth_user_id, display_name, date_of_birth, sex, relationship, is_active, is_maintainer, is_minor_override, is_minor_override_note, context_md, context_version, context_updated_at, created_at, updated_at`. The subject of every health record. `is_maintainer = true` (PC only, `relationship = 'self'`) unlocks staging/audit/sync-log visibility via RLS. `is_minor_override` (mig 072) records that a non-default `is_minor` framing is intentional + authorized (Dea: adult framing, father-consented), with provenance in `is_minor_override_note`; a guard test forbids a `relationship='child'` profile being adult-framed without it. `context_md` (mig 073) is the DB-backed per-profile context (targets/voice/safety) read DB-first by `lib.context`; WRITE is maintainer-only via `guard_profile_context_update` + `maintainer_set_profile_context` (§4.2, §7.10). |
 | family_memberships | `auth_user_id → profile_id` binding with `role`. Drives both `has_profile_access()` and `is_maintainer()`. One auth identity can map to several profiles (PC + Dea + Dev; drain account → all three). |
 | telegram_identities | `chat_id (PK) → profile_id`. `status` (pending/active/revoked), `is_minor`, `linked_at`, `link_code`. Profile_id for an inbound photo is derived ONLY from here, never from caption text. |
 | telegram_link_codes | One-time activation codes: `code (PK), profile_id, expires_at, used_at`. |
@@ -874,6 +874,8 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | `maintainer_void_food(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `food_logs`. |
 | `maintainer_void_biomarker(p_id, p_reason)` | DEFINER | Mig 060 — same contract, for `biomarkers`. |
 | `maintainer_void_strength(p_id, p_reason)` | DEFINER | Mig 063 — same contract, for `strength_logs`. |
+| `maintainer_set_profile_context(p_profile_id, p_context_md, p_reason)` | DEFINER | Mig 073. Maintainer-only write of `profiles.context_md` (the DB-backed per-profile context — targets/voice/safety). Guards: `is_maintainer()`, body ≥50 chars, profile must exist. Bumps `context_version` (+1; the trigger's monotonic guard collapses to a single increment); the trigger stamps `context_updated_at`. GRANTed to authenticated, REVOKEd from PUBLIC. |
+| `guard_profile_context_update()` **(trigger)** | DEFINER | Mig 073. `BEFORE UPDATE` on `profiles` (`trg_guard_profile_context_update`). RAISEs `profile context is maintainer-only` if a non-maintainer changes `context_md`/`context_version` (column-scoped write guard — Postgres has no column-level RLS and `profiles_access` is FOR ALL). On a maintainer write it stamps `context_updated_at` + enforces monotonic `context_version`. Disjoint from + fires before `trg_profiles_updated_at` (alphabetical). |
 | `lookup_food_reference(p_name, p_profile_id)` | DEFINER | Best macro match from `food_reference`; personal rows beat global. |
 | `lookup_viome_verdicts(p_items[], p_profile_id)` | DEFINER | Returns avoid/minimize/superfood verdicts for a list of ingredient names. |
 | `promote_food_to_reference(p_name, p_profile_id, …)` | DEFINER | Upserts a user-confirmed food into their personal `food_reference` library. |
@@ -901,7 +903,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 - **Drain service account:** `healthspan.drainer@chitalkar.com` (env `HS_AUTH_EMAIL`). Holds `owner` `family_memberships` to PC, Dea, and Dev profiles so the three `maintainer_ingest_*` RPCs pass `has_profile_access()`. UID resolved dynamically (mig 035) — no hardcoded UUID. Not itself a maintainer.
 - **Grant hardening** (mig 010/014): DELETE and TRUNCATE revoked from `authenticated` and `healthspan_app` on all public tables; `ALL` revoked from `anon`; shared catalogs are SELECT-only for `authenticated`.
 
-### 4.4 Migration History (001–072)
+### 4.4 Migration History (001–073)
 
 | # | File | Summary |
 |---|---|---|
@@ -984,6 +986,7 @@ no live rows per the SCHEMA-MAP — they are kept for forward use, not yet writt
 | 070 | threshold_config_keys | **Applied 2026-06-14.** Deep-scan Rule-#1 cleanup: seeds `brief.food_intake_threshold_pct` (0.6, the minor "keep fuelling" floor used by brief.py + inbox_drain.py), `brief.supp_slot_{morning,lunch,dinner,bedtime}_utc` (5/11/15/20, brief supplement-slot hour boundaries), and `supplement.adherence_threshold_pct` (70, supplement_summary low-adherence cutoff). Code reads each with an equal code-side fallback, so behaviour is unchanged at defaults. Config-only, idempotent. |
 | 071 | proten_thai_tea_aliases | **Applied 2026-06-14.** Appends missing aliases (`proten thai tea protein shake` + the `protien` misspelling, etc.) to the global "Protein Thai Tea Shake" (Proten, 190 kcal/35g) `food_reference` row so PC's phrasing auto-resolves instead of asking for calories. `lookup_food_reference` matches aliases exactly; DISTINCT-merge keeps it idempotent. (Deeper fix = fuzzy match — BACKLOG #25.) |
 | 072 | minor_override_consent | **Applied 2026-06-15.** Records Dea's `is_minor=false` (adult coaching framing) as an EXPLICIT, father/PC-authorized **permanent** override: adds `profiles.is_minor_override` (bool) + `is_minor_override_note` (provenance), sets them for Dea. The operative flag stays `telegram_identities.is_minor`; this declares the non-default value intentional. A guard test forbids any `relationship='child'` profile being adult-framed without the override (deep-scan finding F5). Columns inherit profiles' RLS; idempotent. |
+| 073 | profile_context_md | **Applied 2026-06-15.** DB-backed per-profile context: adds `profiles.context_md` / `context_version` (NOT NULL DEFAULT 1) / `context_updated_at`. `lib.context.get_context` now reads **DB-first** (then the bundle file, then a project-knowledge inline bootstrap), so a maintainer edit in Supabase reaches every bundle on next session start with no rebundle. WRITE is maintainer-only: a BEFORE-UPDATE trigger `guard_profile_context_update` RAISEs if a non-maintainer changes the context columns (Postgres has no column-level RLS and `profiles_access` is FOR ALL), and `maintainer_set_profile_context(p_profile_id, p_context_md, p_reason)` is the clean write path (≥50-char floor, monotonic version bump, stamps `context_updated_at`). SELECT inherits `profiles_access`. Bodies seeded separately (`scripts/backfill_073_context.py`, idempotent) — transportable schema, no personal data in the migration. PC + Dea backfilled (version 2). Verified live (rolled-back txn): maintainer bump, non-maintainer reject, <50 reject, trigger blocks direct non-maintainer UPDATE. See §7.10. |
 
 ---
 
@@ -1101,7 +1104,8 @@ VALUES (
 
 Schema note (verified against the live DB): `profiles` columns are
 `id, auth_user_id, family_id, managed_by_auth_user_id, display_name, date_of_birth, sex,
-relationship, is_active, created_at, updated_at, is_maintainer`. There is **no `email`
+relationship, is_active, created_at, updated_at, is_maintainer, is_minor_override,
+is_minor_override_note, context_md, context_version, context_updated_at`. There is **no `email`
 column** and **no `is_minor` column** on `profiles`. `family_id` is a direct FK on the row
 (not resolved through `family_memberships`). For a profile the drain account should manage
 (e.g. a minor), also set `managed_by_auth_user_id` to the drain account's `auth_user_id`.
@@ -1478,12 +1482,14 @@ void automatically. `healthspan_app` holds no DELETE grants (revoked in mig 060)
 nothing to "hard-delete" outside the postgres role. `strength_logs` (mig 063) follows the same
 pattern: `SELECT maintainer_void_strength('<row-uuid>', '…')` (no upsert key, so no un-void path).
 
-### 7.9 Building a Per-Person Skill Bundle (v3.16.0)
+### 7.9 Building a Per-Person Skill Bundle (v3.21.0)
 
 Two bundle variants ship from one packager. The **leak guard always runs on the base bundle**
 (repo hygiene); the per-person config is injected **post-guard** into the `dist/` zip only —
 credentials come from gitignored `*.secret.txt` files resolved AT BUILD TIME (`@secret:FILE#KEY`
-sentinels), so they never reach the guard scan or git.
+sentinels), so they never reach the guard scan or git. The bundle ships `context/<who>.context.md`
+as the OFFLINE FALLBACK; since mig 073 the DB (`profiles.context_md`) is the primary source on
+session start, so a target tweak no longer needs a rebundle (edit the DB — see §7.10).
 
 **Restricted (Dea / App, supabase_client):**
 ```bash
@@ -1491,26 +1497,46 @@ sentinels), so they never reach the guard scan or git.
 #   auth_email=dea@chitalkar.com
 #   auth_password=<Dea's Supabase auth password>
 #   supabase_anon_key=<project publishable anon key>
-python3 scripts/package_skill.py v3.16.0 \
+python3 scripts/package_skill.py v3.21.0 \
   --person config/dea_app.config.example.json \
-  --out healthspan-Dea-v3.16.0.skill
+  --out healthspan-DEA-APP-v3.21.0.skill
 ```
 
 **Unrestricted (PC maintainer, privileged — bypasses RLS, DELETE/DDL on every profile):**
 ```bash
 # config/pc_unrestricted.secret.txt (gitignored), ONE line — the privileged postgres URL:
 #   postgresql://postgres:<pwd>@aws-1-<region>.pooler.supabase.com:5432/postgres
-python3 scripts/package_skill.py v3.16.0 \
+python3 scripts/package_skill.py v3.21.0 \
   --person config/pc_unrestricted.config.example.json --unrestricted \
-  --out healthspan-PC-MAINTAINER-UNRESTRICTED-v3.16.0.skill
+  --out healthspan-PC-MAINTAINER-UNRESTRICTED-v3.21.0.skill
 ```
 `--unrestricted` prepends the ⚠️ warning header to the bundle's SKILL.md. **Never share, sync, or
 commit an unrestricted bundle or its secret** — the credential bypasses RLS for the whole DB.
 
 **Verify each bundle** (after install, or locally against the assembled config):
 `python3 scripts/self_test.py <config>` →
-- Dea: `is_maintainer=False`, `distinct_profiles=1` (herself only), READY.
-- PC unrestricted: `current_user=postgres`, `is_maintainer=True`, sees all profiles, READY (UNRESTRICTED).
+- Dea: `is_maintainer=False`, `distinct_profiles=1` (herself only), READY; context `source=db` once connected.
+- PC unrestricted: `current_user=postgres`, `is_maintainer=True`, sees all profiles, READY (UNRESTRICTED); context `source=db`.
+
+### 7.10 Editing a Profile's Context (mig 073)
+
+Per-profile context (targets, coaching voice, safety rules, micronutrients, HR zones) lives in
+`profiles.context_md` and is read DB-first at session start by `lib.context.get_context`. To change
+a target for ANY profile in one place — no rebundle, propagates to every bundle on next session:
+
+1. Edit the human-authored `context/<who>.context.md` (keep it as the canonical, reviewable copy).
+2. Push it to the DB (idempotent skips already-set rows; `--force` overwrites):
+   ```bash
+   python3 scripts/backfill_073_context.py --force
+   ```
+   Or, for a single profile via the maintainer-only RPC (PostgREST/psql), where `is_maintainer()`
+   resolves true for the caller:
+   ```sql
+   SELECT maintainer_set_profile_context('<profile_id>', '<full markdown body>', 'why');
+   ```
+   The RPC + the `guard_profile_context_update` trigger are MAINTAINER-ONLY (a non-maintainer or a
+   direct UPDATE by a non-maintainer RAISEs), enforce a ≥50-char floor, bump `context_version`, and
+   stamp `context_updated_at`. A DB read failure degrades gracefully to the bundled file.
 
 ---
 
