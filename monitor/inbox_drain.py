@@ -1240,6 +1240,12 @@ def sweep_staged_orphans(db: DbRest, api_key: str, model: str, cfg: dict,
 def _load_profile_contexts(identities: list[dict]) -> dict[str, dict]:
     """Map profile_id → parsed context dict from context/<slug>.context.md.
     Missing or unreadable context files → empty dict for that profile.
+
+    NB: the drain runs server-side from the repo checkout, so the file IS the deployed
+    source here — it deliberately does NOT do the mig-073 DB-first read (that lives in the
+    skill bootstrap `get_context` and in `compose_brief`, the surfaces a maintainer's DB edit
+    must reach without a redeploy). Keeping the drain file-only avoids a per-identity DB
+    round-trip on this hot path.
     """
     try:
         from lib.context import load_context

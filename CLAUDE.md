@@ -45,6 +45,29 @@ the *full* picture. If they disagree, the live DB and this file win — then upd
 
 ## Current State (2026-06-15)
 
+- **DB-backed per-profile context SHIPPED (mig 073, skill v3.21.0, 2026-06-15).** Per-profile
+  context (targets/coaching-voice/safety/micronutrients/HR-zones) is now in `profiles.context_md`
+  and read **DB-first** at session start — a maintainer edits ONE Supabase row and every bundle
+  (Cowork/claude.ai/App) reads fresh on next session, **no rebundle for a target tweak**. The
+  bundle-baked `context/<who>.context.md` stays as the offline fallback (DB → file →
+  project-knowledge chain in `lib/context.get_context`; `ctx["_source"]` reports the tier).
+  **mig 073** adds `context_md`/`context_version`(NOT NULL DEFAULT 1)/`context_updated_at`; WRITE is
+  **maintainer-only** — a `BEFORE UPDATE` trigger `guard_profile_context_update` RAISEs if a
+  non-maintainer changes the context columns (Postgres has no column-level RLS and `profiles_access`
+  is FOR ALL), and `maintainer_set_profile_context(profile_id, body, reason)` is the clean write path
+  (≥50-char floor, monotonic bump, stamps `context_updated_at`). SELECT inherits `profiles_access`.
+  Bodies seeded via `scripts/backfill_073_context.py` (idempotent; routes each file to the
+  `profile_id` it declares; maintainer-JWT-claim trick) — **PC + Dea at version 2**. Brief
+  (`monitor/brief.py`) reads DB-first via its REST handle (failure-isolated → file); drain stays
+  file-only by design (runs from the repo checkout). **Also fixed a latent parser bug:**
+  `parse_context_md` now accrues `###` sub-section bullets into the parent `##` umbrella, so Dea's
+  v2.2 `### Energy & macros`/`### Performance` targets (2500 kcal / 2400 floor / P105·C340·F80) are
+  read instead of silently dropped — PC parsing is byte-for-byte unchanged. Reviewed by 3 adversarial
+  production-safety advisors (DB blast-radius / parser / caller wiring): **no blockers, no
+  regressions.** Live-verified (rolled-back txn): maintainer bump, non-maintainer reject, <50 reject,
+  trigger blocks direct non-maintainer UPDATE; DB-first read returns `_source=db` for both, file
+  fallback still works when the file is absent. Suite **378/0/22**. Edit-in-place runbook: SYSTEM.md
+  §7.10. Bundles rebuilt at **v3.21.0** (PC unrestricted + Dea App).
 - **Deep-scan deferred follow-ups closed (2026-06-15).** (1) **mig-068 nutrition-key integration
   test SHIPPED** (`tests/integration/...TestSprintAdherenceRPC`, commit `435f46b`) — exercises
   `sprint_set_adherence` with iron/calcium/vitamin_d + a workout key, asserts accumulate+persist,

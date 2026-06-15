@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+import lib.context as ctxmod
 from lib.context import (
     parse_context_md,
     load_context,
@@ -105,11 +106,16 @@ class TestRealContextFiles:
         assert get_target(ctx, "maintenance_kcal") == 2514    # TDEE, reference only
         assert ctx["is_minor"] is False
 
-    def test_dea_calorie_target_is_2400_and_safety_present(self):
+    def test_dea_calorie_targets_and_safety_present(self):
         ctx = load_context("dea")
-        assert get_target(ctx, "daily_calories") == 2400
-        # is_minor was flipped to false 2026-06-13 (PC-authorized adult framing); the
-        # protective safety constraints are kept regardless of the minor flag.
+        # v2.2 (2026-06-15) restructured Dea's macros under ### sub-headings with a day-type
+        # split: weekly-avg 2500, absolute floor 2400. The parser accrues ### sub-section
+        # bullets into the "## Targets / norms" umbrella, so these are read (not silently lost).
+        assert get_target(ctx, "daily_calories") == 2500     # weekly-avg target
+        assert get_target(ctx, "calorie_floor") == 2400      # absolute floor — never below
+        assert get_target(ctx, "protein_g") == 105
+        # is_minor is false (PC-authorized adult framing, mig 072); protective safety
+        # constraints are kept regardless of the minor flag.
         assert ctx["is_minor"] is False
         assert ctx["safety"], "Dea's context must carry safety constraints"
         assert any("restriction" in s.lower() or "deficit" in s.lower()
@@ -140,3 +146,136 @@ class TestGetContext:
     def test_missing_context_file_raises(self):
         with pytest.raises(FileNotFoundError, match="context MD not found"):
             load_context("nonexistent_person")
+
+
+# ── DB-first context (mig 073) ──────────────────────────────────────────────────
+
+_PC_ID = "21f69003-46f8-4e1c-a928-b1f694ce4aff"
+_DEA_ID = "3eed5503-a26f-4b88-bb76-075208fa5de3"
+
+# A DB-sourced body that is DELIBERATELY different from SAMPLE (1234 kcal, not 2400) so a test
+# can prove which tier served the context.
+_DB_BODY = """\
+# DBPerson — HealthSpan Context
+profile_id: 21f69003-46f8-4e1c-a928-b1f694ce4aff   age: 45   sex: M   is_minor: false
+
+## Targets / norms
+- daily_calories: 1234
+- protein_g: 200
+
+## Coaching framing
+- voice: db-sourced coach
+
+## Safety constraints
+- DB safety rule.
+"""
+
+
+class _FakeCursor:
+    def __init__(self, body_by_id):
+        self._body_by_id = body_by_id
+        self._row = None
+        self.last_params = None
+
+    def execute(self, sql, params=None):
+        self.last_params = params
+        pid = params[0] if params else None
+        self._row = (self._body_by_id[pid],) if pid in self._body_by_id else None
+
+    def fetchone(self):
+        return self._row
+
+
+class _FakePsycopgConn:
+    """Mimics the psycopg2 handle _read_context_from_db is given (it has .cursor)."""
+
+    def __init__(self, body_by_id):
+        self._body_by_id = body_by_id
+        self.cursors = []
+
+    def cursor(self):
+        c = _FakeCursor(self._body_by_id)
+        self.cursors.append(c)
+        return c
+
+
+class TestDbFirstContext:
+    def _file(self, tmp_path, slug, body):
+        (tmp_path / f"{slug}.context.md").write_text(body)
+        return str(tmp_path)
+
+    def test_db_first_wins_over_file(self, tmp_path):
+        base = self._file(tmp_path, "pc", SAMPLE)              # file says 2400
+        conn = _FakePsycopgConn({_PC_ID: _DB_BODY})           # DB says 1234
+        ctx = load_context("pc", base_dir=base, conn=conn, profile_id=_PC_ID)
+        assert ctx["_source"] == "db"
+        assert ctx["targets"]["daily_calories"] == 1234       # DB wins, not the file's 2400
+
+    def test_file_fallback_when_db_empty(self, tmp_path):
+        base = self._file(tmp_path, "pc", SAMPLE)
+        conn = _FakePsycopgConn({})                           # no row → None → fall to file
+        ctx = load_context("pc", base_dir=base, conn=conn, profile_id=_PC_ID)
+        assert ctx["_source"] == "file"
+        assert ctx["targets"]["daily_calories"] == 2400
+
+    def test_db_read_is_keyed_on_the_passed_profile_id(self, tmp_path):
+        # Proves an RLS-scoped conn returns the caller's OWN row: the SELECT keys on the
+        # profile_id we pass. The fake only knows Dea's id, so Dea reads, and a query for a
+        # different id finds nothing (→ would fall back, here to a missing file → raises).
+        conn = _FakePsycopgConn({_DEA_ID: _DB_BODY})
+        ctx = load_context("dea", conn=conn, profile_id=_DEA_ID)
+        assert ctx["_source"] == "db"
+        assert conn.cursors[-1].last_params == (_DEA_ID,)
+        with pytest.raises(FileNotFoundError):
+            load_context("ghost", base_dir=str(tmp_path),
+                         conn=_FakePsycopgConn({_DEA_ID: _DB_BODY}), profile_id=_PC_ID)
+
+    def test_db_error_never_explodes_falls_to_file(self, tmp_path):
+        base = self._file(tmp_path, "pc", SAMPLE)
+
+        class _BoomConn:
+            def cursor(self):
+                raise RuntimeError("db down")
+
+        ctx = load_context("pc", base_dir=base, conn=_BoomConn(), profile_id=_PC_ID)
+        assert ctx["_source"] == "file"          # a DB hiccup must not block the file fallback
+
+    def test_parse_output_shape_unchanged(self, tmp_path):
+        base = self._file(tmp_path, "pc", SAMPLE)
+        file_ctx = load_context("pc", base_dir=base)
+        db_ctx = load_context("pc", base_dir=base,
+                              conn=_FakePsycopgConn({_PC_ID: SAMPLE}), profile_id=_PC_ID)
+        data_keys = lambda d: {k for k in d if not k.startswith("_")}
+        assert data_keys(file_ctx) == data_keys(db_ctx)
+        for k in ("name", "profile_id", "age", "sex", "is_minor", "who",
+                  "targets", "coaching", "safety"):
+            assert file_ctx[k] == db_ctx[k], f"{k} differs between file and DB source"
+
+
+class TestGetContextFallbackChain:
+    def test_db_first_via_get_context(self, tmp_path):
+        cfg = {"display_name": "pc", "profile_id": _PC_ID}
+        ctx = get_context(cfg, base_dir=str(tmp_path), conn=_FakePsycopgConn({_PC_ID: _DB_BODY}))
+        assert ctx["_source"] == "db"
+        assert ctx["targets"]["daily_calories"] == 1234
+
+    def test_project_knowledge_fallback_when_no_db_no_file(self, tmp_path, monkeypatch):
+        cfg = {"display_name": "ghost", "profile_id": _PC_ID}
+        body = SAMPLE.replace("11111111-1111-1111-1111-111111111111", _PC_ID)
+        monkeypatch.setattr(ctxmod, "_read_from_project_knowledge", lambda c: body)
+        ctx = get_context(cfg, base_dir=str(tmp_path))          # empty dir, conn None
+        assert ctx["_source"] == "project_knowledge"
+        assert ctx["targets"]["daily_calories"] == 2400
+
+    def test_project_knowledge_reads_inline_config_body(self, tmp_path):
+        # the real (un-patched) helper picks up an inline config['context_md'] bootstrap
+        body = SAMPLE.replace("11111111-1111-1111-1111-111111111111", _PC_ID)
+        cfg = {"display_name": "ghost", "profile_id": _PC_ID, "context_md": body}
+        ctx = get_context(cfg, base_dir=str(tmp_path))
+        assert ctx["_source"] == "project_knowledge"
+
+    def test_raises_when_no_source(self, tmp_path, monkeypatch):
+        cfg = {"display_name": "ghost", "profile_id": _PC_ID}
+        monkeypatch.setattr(ctxmod, "_read_from_project_knowledge", lambda c: None)
+        with pytest.raises(RuntimeError, match="must not run on population defaults"):
+            get_context(cfg, base_dir=str(tmp_path))

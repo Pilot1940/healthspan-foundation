@@ -468,7 +468,10 @@ def compose_brief(
                          filters={"id": f"eq.{profile_id}"}, limit=1)
         pname = ((prof[0].get("display_name") if prof else "") or "").strip()
         slug = pname.split()[0].lower() if pname else ""
-        ctx  = load_context(slug) if slug else {}
+        # DB-first (mig 073): profiles.context_md, falling back to the repo file. Passing the
+        # REST handle + profile_id means a maintainer's Supabase edit reaches the brief without
+        # a redeploy. load_context never raises on a DB hiccup — it falls through to the file.
+        ctx  = load_context(slug, conn=db, profile_id=profile_id) if slug else {}
     except Exception:
         ctx = {}
     targets = ctx.get("targets") or {}
